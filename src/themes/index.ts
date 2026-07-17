@@ -361,8 +361,8 @@ export const claudeTheme: ThemePreset = {
 const breezeLight: ThemeColors = {
   background: {
     bg000: '210 20% 99%', // 极淡蓝白
-    bg100: '210 15% 97%', // 浅灰蓝
-    bg200: '210 12% 94%', // 淡灰蓝
+    bg100: '210 15% 96.5%', // 浅灰蓝
+    bg200: '210 12% 93.5%', // 淡灰蓝
     bg300: '210 10% 90%', // 中灰蓝
     bg400: '210 8% 86%', // 深灰蓝
   },

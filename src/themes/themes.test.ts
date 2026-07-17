@@ -64,7 +64,7 @@ describe('resolveStyleId', () => {
   })
 })
 
-const HSL_TOKEN = /^\d{1,3} \d{1,3}% \d{1,3}%$/
+const HSL_TOKEN = /^\d{1,3} \d{1,3}(?:\.\d+)?% \d{1,3}(?:\.\d+)?%$/
 
 function expectHslTokens(colors: ThemeColors) {
   const groups = [colors.background, colors.text, colors.accent, colors.semantic, colors.border]
