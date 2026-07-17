@@ -161,6 +161,10 @@
   "appearance": {
     "themePresets": "Theme Presets",
     "themePresetsDesc": "Choose a base visual style for the app",
+    "uiStyle": "Interface Style",
+    "uiStyleDesc": "Layer shape, blur, or terminal effects on top of any color theme",
+    "uiStyleAuto": "Follow Theme",
+    "uiStyleNone": "None",
     "customCss": "Custom CSS",
     "customCssDesc": "Override fonts, colors, and any CSS variables. Works with all themes.",
     "customCssHelp": "Override fonts, colors, and styles with custom CSS.",

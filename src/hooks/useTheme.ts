@@ -116,6 +116,12 @@ export function useTheme() {
       })
   }, [])
 
+  // ---- Interface Style (界面风格) ----
+
+  const setStyleId = useCallback((id: string) => {
+    themeStore.setStyleId(id)
+  }, [])
+
   // ---- Custom CSS ----
 
   const setCustomCSS = useCallback((css: string) => {
@@ -253,6 +259,11 @@ export function useTheme() {
     setPreset,
     setPresetWithAnimation,
     availablePresets: themeStore.getAvailablePresets(),
+
+    // 界面风格
+    styleId: state.styleId,
+    setStyleId,
+    availableStylePresets: themeStore.getAvailableStylePresets(),
 
     // 自定义 CSS
     customCSS: state.customCSS,

@@ -496,6 +496,9 @@ export function AppearanceSettings() {
     resolvedTheme,
     setPresetWithAnimation,
     availablePresets,
+    styleId,
+    setStyleId,
+    availableStylePresets,
     customCSS,
     setCustomCSS,
     customCSSSnippets,
@@ -576,6 +579,19 @@ export function AppearanceSettings() {
           </div>
         </SettingsSection>
       )}
+
+      <SettingsSection title={t('appearance.uiStyle')}>
+        <p className="text-[length:var(--fs-sm)] text-text-400">{t('appearance.uiStyleDesc')}</p>
+        <SegmentedControl
+          value={styleId}
+          options={[
+            { value: 'auto', label: t('appearance.uiStyleAuto') },
+            { value: 'none', label: t('appearance.uiStyleNone') },
+            ...availableStylePresets.map(s => ({ value: s.id, label: s.name })),
+          ]}
+          onChange={v => setStyleId(v)}
+        />
+      </SettingsSection>
 
       <SettingsSection title={t('appearance.customCss')}>
         <p className="text-[length:var(--fs-sm)] text-text-400">{t('appearance.customCssDesc')}</p>

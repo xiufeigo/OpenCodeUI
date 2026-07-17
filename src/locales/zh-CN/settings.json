@@ -161,6 +161,10 @@
   "appearance": {
     "themePresets": "主题预设",
     "themePresetsDesc": "选择应用的基础视觉风格",
+    "uiStyle": "界面风格",
+    "uiStyleDesc": "在任意颜色主题上叠加形状、毛玻璃或终端特效",
+    "uiStyleAuto": "跟随主题",
+    "uiStyleNone": "无",
     "customCss": "自定义 CSS",
     "customCssDesc": "覆盖字体、颜色和任何 CSS 变量。适用于所有主题。",
     "customCssHelp": "使用自定义 CSS 覆盖字体、颜色和样式。",
