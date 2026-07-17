@@ -8,8 +8,17 @@
  * - CSS 变量注入
  */
 
-import { getThemePreset, themeColorsToCSSVars, builtinThemes, DEFAULT_THEME_ID } from '../themes'
-import type { ThemePreset, ThemeColors } from '../themes'
+import {
+  DEFAULT_THEME_ID,
+  builtinStyleThemes,
+  builtinThemes,
+  getStylePreset,
+  getThemePreset,
+  resolveStyleId,
+  themeColorsToCSSVars,
+  themeStyleToCSS,
+} from '../themes'
+import type { ThemePreset, ThemeColors, ThemeStyle } from '../themes'
 
 // ============================================
 // Color Conversion Utility
@@ -120,6 +129,9 @@ const DEFAULT_CODE_WORD_WRAP = false
 const DEFAULT_UI_FONT_SCALE = 0
 const DEFAULT_CODE_FONT_SCALE = 0
 
+/** 界面风格默认值：'auto' = 跟随色板预设的 defaultStyleId */
+const DEFAULT_STYLE_ID = 'auto'
+
 /** 工具输出渲染风格：classic = 经典（input+output 分离），compact = 精简（只展示 output，header 更矮） */
 export type ToolCardStyle = 'classic' | 'compact'
 const DEFAULT_TOOL_CARD_STYLE: ToolCardStyle = 'classic'
@@ -140,6 +152,8 @@ const DEFAULT_PROCESS_COLLAPSE_ENABLED = false
 export interface ThemeState {
   /** 当前选中的主题风格 ID */
   presetId: string
+  /** 界面风格 ID：'auto' 跟随色板配套、'none' 无风格、其余为风格预设 ID */
+  styleId: string
   /** 日夜模式 */
   colorMode: ColorMode
   /** 用户自定义 CSS（覆盖 CSS 变量） */
@@ -203,6 +217,7 @@ export type ThemeBackup = ThemeState
 // ============================================
 
 const STORAGE_KEY_PRESET = 'theme-preset'
+const STORAGE_KEY_STYLE = 'theme-style'
 const STORAGE_KEY_COLOR_MODE = 'theme-mode'
 const STORAGE_KEY_CUSTOM_CSS = 'theme-custom-css'
 const STORAGE_KEY_CUSTOM_CSS_SNIPPETS = 'theme-custom-css-snippets'
@@ -260,6 +275,13 @@ function parseCustomCSSSnippets(raw: string | null): CustomCSSSnippet[] {
   }
 }
 
+/** 归一化界面风格 id：'none' 与已注册的风格 id 有效，其余回退 'auto' */
+function normalizeStyleId(raw: string | null | undefined): string {
+  if (raw === 'none') return 'none'
+  if (raw && raw !== 'auto' && getStylePreset(raw)) return raw
+  return DEFAULT_STYLE_ID
+}
+
 // ============================================
 // Store Implementation
 // ============================================
@@ -271,6 +293,7 @@ class ThemeStore {
   constructor() {
     const savedPreset = localStorage.getItem(STORAGE_KEY_PRESET) || DEFAULT_THEME_ID
     const normalizedPreset = getThemePreset(savedPreset) ? savedPreset : DEFAULT_THEME_ID
+    const styleId = normalizeStyleId(localStorage.getItem(STORAGE_KEY_STYLE))
     const savedMode = (localStorage.getItem(STORAGE_KEY_COLOR_MODE) as ColorMode) || 'system'
     const savedCSS = localStorage.getItem(STORAGE_KEY_CUSTOM_CSS) || ''
     const customCSSSnippets = parseCustomCSSSnippets(localStorage.getItem(STORAGE_KEY_CUSTOM_CSS_SNIPPETS))
@@ -379,6 +402,7 @@ class ThemeStore {
 
     this.state = {
       presetId: normalizedPreset,
+      styleId,
       colorMode: savedMode,
       customCSS: savedCSS,
       customCSSSnippets,
@@ -417,6 +441,9 @@ class ThemeStore {
 
   get presetId() {
     return this.state.presetId
+  }
+  get styleId() {
+    return this.state.styleId
   }
   get colorMode() {
     return this.state.colorMode
@@ -517,6 +544,15 @@ class ThemeStore {
     }))
   }
 
+  /** 获取所有可用界面风格列表 */
+  getAvailableStylePresets(): { id: string; name: string; description: string }[] {
+    return builtinStyleThemes.map(s => ({
+      id: s.id,
+      name: s.name,
+      description: s.description,
+    }))
+  }
+
   /** 解析实际生效的暗/亮模式 */
   getResolvedMode(): 'light' | 'dark' {
     if (this.state.colorMode === 'system') {
@@ -535,6 +571,15 @@ class ThemeStore {
     if (this.state.presetId === id) return
     this.state = { ...this.state, presetId: id }
     localStorage.setItem(STORAGE_KEY_PRESET, id)
+    this.applyTheme()
+    this.emit()
+  }
+
+  setStyleId(id: string) {
+    const normalized = normalizeStyleId(id)
+    if (this.state.styleId === normalized) return
+    this.state = { ...this.state, styleId: normalized }
+    localStorage.setItem(STORAGE_KEY_STYLE, normalized)
     this.applyTheme()
     this.emit()
   }
@@ -834,11 +879,13 @@ class ThemeStore {
       root.setAttribute('data-mode', this.state.colorMode)
     }
 
-    // 2. 注入主题颜色变量
+    // 2. 注入主题颜色变量 + 界面风格（变量与特效 CSS）
     const preset = this.getPreset()
     if (preset) {
       const colors: ThemeColors = resolvedMode === 'dark' ? preset.dark : preset.light
-      this.injectThemeStyle(colors)
+      const styleId = resolveStyleId(this.state.styleId, preset)
+      const style = styleId ? getStylePreset(styleId)?.style : undefined
+      this.injectThemeStyle(colors, style)
     }
 
     // 3. 应用自定义 CSS
@@ -866,7 +913,7 @@ class ThemeStore {
     })
   }
 
-  private injectThemeStyle(colors: ThemeColors) {
+  private injectThemeStyle(colors: ThemeColors, style?: ThemeStyle) {
     let el = document.getElementById(STYLE_ID_THEME) as HTMLStyleElement | null
     if (!el) {
       el = document.createElement('style')
@@ -876,7 +923,10 @@ class ThemeStore {
 
     // 用高优先级选择器覆盖 :root 中的默认值
     // 使用 :root:root 提升特异性，确保覆盖 index.css 中的所有定义
-    el.textContent = `:root:root {\n  ${themeColorsToCSSVars(colors)}\n}`
+    const blocks = [`:root:root {\n  ${themeColorsToCSSVars(colors)}\n}`]
+    const styleCSS = themeStyleToCSS(style)
+    if (styleCSS) blocks.push(styleCSS)
+    el.textContent = blocks.join('\n\n')
   }
 
   /**
@@ -1001,6 +1051,7 @@ function normalizeThemeBackup(raw: unknown): ThemeBackup {
   return {
     presetId:
       typeof parsed?.presetId === 'string' && getThemePreset(parsed.presetId) ? parsed.presetId : DEFAULT_THEME_ID,
+    styleId: normalizeStyleId(typeof parsed?.styleId === 'string' ? parsed.styleId : null),
     colorMode: parsed?.colorMode === 'light' || parsed?.colorMode === 'dark' ? parsed.colorMode : 'system',
     customCSS: typeof parsed?.customCSS === 'string' ? parsed.customCSS : '',
     customCSSSnippets,
@@ -1078,6 +1129,7 @@ export function exportThemeBackup(): ThemeBackup {
 export function importThemeBackup(raw: unknown): void {
   const backup = normalizeThemeBackup(raw)
   localStorage.setItem(STORAGE_KEY_PRESET, backup.presetId)
+  localStorage.setItem(STORAGE_KEY_STYLE, backup.styleId)
   localStorage.setItem(STORAGE_KEY_COLOR_MODE, backup.colorMode)
   localStorage.setItem(STORAGE_KEY_CUSTOM_CSS, backup.customCSS)
   localStorage.setItem(STORAGE_KEY_CUSTOM_CSS_SNIPPETS, JSON.stringify(backup.customCSSSnippets))
