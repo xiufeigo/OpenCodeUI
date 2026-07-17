@@ -155,10 +155,22 @@ jobs:
       - name: Setup Android signing
         run: |
           cd src-tauri/gen/android
-          echo "keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}" > keystore.properties
-          echo "password=${{ secrets.ANDROID_KEY_PASSWORD }}" >> keystore.properties
-          base64 -d <<< "${{ secrets.ANDROID_KEY_BASE64 }}" > $RUNNER_TEMP/keystore.jks
-          echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
+          if [ -n "${{ secrets.ANDROID_KEY_BASE64 }}" ]; then
+            echo "keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}" > keystore.properties
+            echo "password=${{ secrets.ANDROID_KEY_PASSWORD }}" >> keystore.properties
+            base64 -d <<< "${{ secrets.ANDROID_KEY_BASE64 }}" > $RUNNER_TEMP/keystore.jks
+            echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
+          else
+            # 未配置签名 secrets：生成临时 debug 密钥，产出可安装的 APK
+            echo "No signing secrets found, generating ad-hoc debug keystore"
+            keytool -genkeypair -v -keystore $RUNNER_TEMP/debug.keystore \
+              -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass android -keypass android \
+              -dname "CN=Android Debug,O=Android,C=US"
+            echo "keyAlias=androiddebugkey" > keystore.properties
+            echo "password=android" >> keystore.properties
+            echo "storeFile=$RUNNER_TEMP/debug.keystore" >> keystore.properties
+          fi
 
       - name: Build and sign APK
         run: |
