@@ -163,5 +163,6 @@ export const liquidGlassStyle: ThemeStylePreset = {
     transparent 60%
   );
 }`,
+    effects: ['liquid-refraction'],
   },
 }

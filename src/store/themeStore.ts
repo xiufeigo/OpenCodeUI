@@ -19,6 +19,7 @@ import {
   themeStyleToCSS,
 } from '../themes'
 import type { ThemePreset, ThemeColors, ThemeStyle } from '../themes'
+import { startLiquidGlass, stopLiquidGlass } from '../lib/liquidGlass'
 
 // ============================================
 // Color Conversion Utility
@@ -880,11 +881,12 @@ class ThemeStore {
     }
 
     // 2. 注入主题颜色变量 + 界面风格（变量与特效 CSS）
+    let style: ThemeStyle | undefined
     const preset = this.getPreset()
     if (preset) {
       const colors: ThemeColors = resolvedMode === 'dark' ? preset.dark : preset.light
       const styleId = resolveStyleId(this.state.styleId, preset)
-      const style = styleId ? getStylePreset(styleId)?.style : undefined
+      style = styleId ? getStylePreset(styleId)?.style : undefined
       this.injectThemeStyle(colors, style)
     }
 
@@ -911,6 +913,13 @@ class ThemeStore {
         androidBridge.setSystemBars(resolvedMode, hex)
       }
     })
+
+    // 5. 界面风格特效引擎启停（仅 liquid-glass 风格声明 liquid-refraction）
+    if (style?.effects?.includes('liquid-refraction')) {
+      startLiquidGlass()
+    } else {
+      stopLiquidGlass()
+    }
   }
 
   private injectThemeStyle(colors: ThemeColors, style?: ThemeStyle) {

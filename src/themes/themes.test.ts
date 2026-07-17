@@ -120,3 +120,16 @@ describe('liquid glass style specificity', () => {
     expect(bareSelector.test(css)).toBe(false)
   })
 })
+
+describe('style effects flags', () => {
+  it('effects is a string array when present; liquid-glass declares liquid-refraction', () => {
+    for (const s of builtinStyleThemes) {
+      if (s.style.effects) {
+        expect(Array.isArray(s.style.effects)).toBe(true)
+        for (const e of s.style.effects) expect(typeof e).toBe('string')
+      }
+    }
+    const lg = builtinStyleThemes.find(s => s.id === 'liquid-glass')
+    expect(lg?.style.effects).toContain('liquid-refraction')
+  })
+})

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { importThemeBackup, themeStore } from './themeStore'
+import { isLiquidGlassRunning } from '../lib/liquidGlass'
 
 const THEME_STYLE_EL_ID = 'opencode-theme-vars'
 
@@ -60,5 +61,31 @@ describe('themeStore interface style', () => {
   it('importThemeBackup keeps a valid explicit styleId', () => {
     importThemeBackup({ presetId: 'claude', styleId: 'material' })
     expect(localStorage.getItem('theme-style')).toBe('material')
+  })
+})
+
+describe('liquid glass engine lifecycle', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    themeStore.setPreset('eucalyptus')
+    themeStore.setStyleId('auto')
+  })
+
+  it('starts the engine when the active style declares liquid-refraction', () => {
+    themeStore.setPreset('liquid-glass')
+    expect(isLiquidGlassRunning()).toBe(true)
+  })
+
+  it('stops the engine when switching to a style without the flag', () => {
+    themeStore.setPreset('liquid-glass')
+    expect(isLiquidGlassRunning()).toBe(true)
+    themeStore.setPreset('ocean')
+    expect(isLiquidGlassRunning()).toBe(false)
+  })
+
+  it('stops the engine when styleId is none', () => {
+    themeStore.setPreset('liquid-glass')
+    themeStore.setStyleId('none')
+    expect(isLiquidGlassRunning()).toBe(false)
   })
 })

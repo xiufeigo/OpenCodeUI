@@ -91,6 +91,8 @@ export interface ThemeStyle {
   motion?: { durationFast?: string; durationBase?: string; ease?: string }
   /** 附加 CSS 原文（特效：毛玻璃规则、扫描线等） */
   css?: string
+  /** 需要运行时引擎支持的特效标志（如 'liquid-refraction'） */
+  effects?: string[]
 }
 
 /** 界面风格预设：可叠加在任意色板上的风格包 */
