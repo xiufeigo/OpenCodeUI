@@ -34,6 +34,25 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
   })
 }
 
+if (typeof globalThis.ImageData === 'undefined') {
+  class ImageDataMock {
+    readonly data: Uint8ClampedArray
+    readonly width: number
+    readonly height: number
+
+    constructor(data: Uint8ClampedArray, width: number, height: number) {
+      this.data = data
+      this.width = width
+      this.height = height
+    }
+  }
+
+  Object.defineProperty(globalThis, 'ImageData', {
+    configurable: true,
+    value: ImageDataMock,
+  })
+}
+
 if (typeof HTMLElement !== 'undefined' && typeof HTMLElement.prototype.scrollIntoView !== 'function') {
   HTMLElement.prototype.scrollIntoView = () => {}
 }
