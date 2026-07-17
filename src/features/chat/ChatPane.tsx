@@ -978,7 +978,7 @@ export const ChatPane = memo(function ChatPane({
       <div
         ref={paneRootRef}
         data-chat-pane-root="true"
-        data-lq-surface="chat"
+        data-lq-surface={showCompactShell ? undefined : 'chat'}
         className={
           showCompactShell
             ? `relative h-full flex flex-col overflow-hidden rounded-lg transition-colors duration-200 ${

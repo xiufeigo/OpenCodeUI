@@ -13,9 +13,9 @@ const FAKE_RECT = {
   toJSON: () => ({}),
 } as DOMRect
 
-function createGlassElement(sized = true): HTMLElement {
+function createGlassElement(sized = true, className = 'glass'): HTMLElement {
   const el = document.createElement('div')
-  el.className = 'glass'
+  el.className = className
   if (sized) {
     vi.spyOn(el, 'getBoundingClientRect').mockReturnValue(FAKE_RECT)
   }
@@ -80,5 +80,43 @@ describe('liquid glass engine', () => {
 
   it('stop is safe to call when not running', () => {
     expect(() => stopLiquidGlass()).not.toThrow()
+  })
+
+  it('cleans up the filter when a .glass element is removed from the DOM', async () => {
+    const el = createGlassElement()
+    startLiquidGlass()
+    expect(document.querySelectorAll('svg defs filter').length).toBe(1)
+    el.remove()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(document.querySelectorAll('svg defs filter').length).toBe(0)
+  })
+
+  it('debounced resize rebuild keeps exactly one filter', async () => {
+    let roCallback: (() => void) | null = null
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(cb: () => void) {
+          roCallback = cb
+        }
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    )
+    const el = createGlassElement()
+    applyLiquidRefraction(el)
+    expect(document.querySelectorAll('svg defs filter').length).toBe(1)
+    roCallback!()
+    await new Promise(resolve => setTimeout(resolve, 250))
+    expect(document.querySelectorAll('svg defs filter').length).toBe(1)
+    expect(el.style.getPropertyValue('backdrop-filter')).toContain('url(#liquid-glass-filter-')
+    vi.unstubAllGlobals()
+  })
+
+  it('start picks up .glass-alt elements', () => {
+    const el = createGlassElement(true, 'glass-alt')
+    startLiquidGlass()
+    expect(el.style.getPropertyValue('backdrop-filter')).toContain('url(#liquid-glass-filter-')
   })
 })

@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { importThemeBackup, themeStore } from './themeStore'
-import { isLiquidGlassRunning } from '../lib/liquidGlass'
+import { isLiquidGlassRunning, stopLiquidGlass } from '../lib/liquidGlass'
 
 const THEME_STYLE_EL_ID = 'opencode-theme-vars'
 
@@ -70,6 +70,8 @@ describe('liquid glass engine lifecycle', () => {
     themeStore.setPreset('eucalyptus')
     themeStore.setStyleId('auto')
   })
+
+  afterEach(() => stopLiquidGlass())
 
   it('starts the engine when the active style declares liquid-refraction', () => {
     themeStore.setPreset('liquid-glass')

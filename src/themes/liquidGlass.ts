@@ -210,8 +210,8 @@ export const liquidGlassStyle: ThemeStylePreset = {
   }
 
   :root:root [data-lq-header-fade] {
-    --tw-gradient-from: hsl(var(--bg-100) / 0.72) var(--tw-gradient-from-position);
-    --tw-gradient-to: hsl(var(--bg-100) / 0) var(--tw-gradient-to-position);
+    --tw-gradient-from: hsl(var(--bg-100) / 0.72);
+    --tw-gradient-to: hsl(var(--bg-100) / 0);
   }
 }`,
     effects: ['liquid-refraction'],
