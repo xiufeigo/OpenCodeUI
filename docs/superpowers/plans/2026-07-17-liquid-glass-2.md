@@ -164,17 +164,18 @@ export function generateDisplacementMap(width: number, height: number, radius: n
 
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      const ix = x / w - 0.5
-      const iy = y / h - 0.5
+      // 像素中心采样：保证边缘像素左右/上下对称
+      const ix = (x + 0.5) / w - 0.5
+      const iy = (y + 0.5) / h - 0.5
       const distanceToEdge = roundedRectSDF(ix, iy, halfW, halfH, r)
       // 中心（distance ≤ 0）→ displacement=1 → scaled=1 → 采样原 uv（无变形）
       // 边缘 → displacement→0 → 采样坐标向中心压缩（透镜膨胀）
-      const displacement = smoothStep(0.8, 0, distanceToEdge - SDF_SHIFT)
+      const displacement = smoothStep(EDGE_BAND, 0, distanceToEdge - SDF_SHIFT)
       const scaled = smoothStep(0, 1, displacement)
       const sampleX = ix * scaled + 0.5
       const sampleY = iy * scaled + 0.5
-      const dx = sampleX * w - x
-      const dy = sampleY * h - y
+      const dx = sampleX * w - (x + 0.5)
+      const dy = sampleY * h - (y + 0.5)
       maxScale = Math.max(maxScale, Math.abs(dx), Math.abs(dy))
       raw.push(dx, dy)
     }
