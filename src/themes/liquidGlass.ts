@@ -133,16 +133,35 @@ export const liquidGlassStyle: ThemeStylePreset = {
       xl: '0 12px 40px rgb(0 0 0 / 0.1)',
       float: '0 8px 32px rgb(0 0 0 / 0.12)',
     },
-    css: `.glass {
-  background-color: hsl(var(--bg-000) / 0.62);
-  -webkit-backdrop-filter: blur(28px) saturate(180%);
-  backdrop-filter: blur(28px) saturate(180%);
+    css: `:root:root .glass,
+:root:root .glass-alt {
+  -webkit-backdrop-filter: blur(36px) saturate(200%) brightness(1.05);
+  backdrop-filter: blur(36px) saturate(200%) brightness(1.05);
+  border-color: hsl(var(--always-white) / 0.16);
+  box-shadow:
+    inset 0 1px 0 0 hsl(var(--always-white) / 0.22),
+    inset 0 -1px 0 0 hsl(var(--always-black) / 0.05),
+    0 8px 32px hsl(var(--always-black) / 0.16);
 }
 
-.glass-alt {
-  background-color: hsl(var(--bg-100) / 0.55);
-  -webkit-backdrop-filter: blur(28px) saturate(180%);
-  backdrop-filter: blur(28px) saturate(180%);
+:root:root .glass {
+  background-color: hsl(var(--bg-000) / 0.5);
+  background-image: linear-gradient(
+    135deg,
+    hsl(var(--always-white) / 0.1) 0%,
+    hsl(var(--always-white) / 0.03) 35%,
+    transparent 60%
+  );
+}
+
+:root:root .glass-alt {
+  background-color: hsl(var(--bg-100) / 0.42);
+  background-image: linear-gradient(
+    135deg,
+    hsl(var(--always-white) / 0.09) 0%,
+    hsl(var(--always-white) / 0.02) 35%,
+    transparent 60%
+  );
 }`,
   },
 }

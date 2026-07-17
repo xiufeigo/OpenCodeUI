@@ -108,3 +108,15 @@ describe('builtin style presets', () => {
     }
   })
 })
+
+describe('liquid glass style specificity', () => {
+  it('glass rules use :root:root prefix so they are not masked by the data-glass toggle', () => {
+    const css = builtinStyleThemes.find(s => s.id === 'liquid-glass')?.style.css ?? ''
+    // 与 index.css 中 :root[data-glass] .glass 同特异性，且注入顺序靠后而胜出
+    expect(css).toContain(':root:root .glass')
+    expect(css).toContain(':root:root .glass-alt')
+    // 不允许出现无前缀的裸 glass 选择器（会被 :root[data-glass] 规则遮盖）
+    const bareSelector = /(^|\n)\s*\.glass(-alt)?\s*\{/
+    expect(bareSelector.test(css)).toBe(false)
+  })
+})
