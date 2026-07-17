@@ -11,6 +11,7 @@
 
 import { materialTheme, materialStyle } from './material'
 import { liquidGlassTheme, liquidGlassStyle } from './liquidGlass'
+import { retroTerminalTheme, retroTerminalStyle } from './retroTerminal'
 
 // ============================================
 // Types
@@ -945,6 +946,7 @@ export const builtinThemes: ThemePreset[] = [
   obsidianTheme,
   materialTheme,
   liquidGlassTheme,
+  retroTerminalTheme,
 ]
 
 export function getThemePreset(id: string): ThemePreset | undefined {
@@ -1015,7 +1017,7 @@ export function themeColorsToCSSVars(theme: ThemeColors): string {
 // Interface Style Registry
 // ============================================
 
-export const builtinStyleThemes: ThemeStylePreset[] = [materialStyle, liquidGlassStyle]
+export const builtinStyleThemes: ThemeStylePreset[] = [materialStyle, liquidGlassStyle, retroTerminalStyle]
 
 export function getStylePreset(id: string): ThemeStylePreset | undefined {
   return builtinStyleThemes.find(s => s.id === id)
