@@ -40,3 +40,6 @@ public/material-icons/
 *.njsproj
 *.sln
 *.sw?
+
+# Local signing keys (never commit)
+keys/
