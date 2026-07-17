@@ -195,7 +195,15 @@ jobs:
             cp "$APK_PATH" "$DEST"
           else
             $BT/zipalign -v 4 "$APK_PATH" "${APK_PATH}.aligned"
+            # 先按默认类型(JKS)签名；失败则按 PKCS#12 重试（两种 keystore 均可用作 secrets）
             $BT/apksigner sign \
+              --ks ${{ steps.signing.outputs.ks }} \
+              --ks-key-alias ${{ steps.signing.outputs.alias }} \
+              --ks-pass pass:${{ steps.signing.outputs.pass }} \
+              --key-pass pass:${{ steps.signing.outputs.pass }} \
+              --out "$DEST" "${APK_PATH}.aligned" \
+            || $BT/apksigner sign \
+              --ks-type pkcs12 \
               --ks ${{ steps.signing.outputs.ks }} \
               --ks-key-alias ${{ steps.signing.outputs.alias }} \
               --ks-pass pass:${{ steps.signing.outputs.pass }} \
