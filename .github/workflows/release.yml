@@ -153,6 +153,7 @@ jobs:
       - run: npm ci
 
       - name: Setup Android signing
+        id: signing
         run: |
           cd src-tauri/gen/android
           if [ -n "${{ secrets.ANDROID_KEY_BASE64 }}" ]; then
@@ -160,6 +161,9 @@ jobs:
             echo "password=${{ secrets.ANDROID_KEY_PASSWORD }}" >> keystore.properties
             base64 -d <<< "${{ secrets.ANDROID_KEY_BASE64 }}" > $RUNNER_TEMP/keystore.jks
             echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
+            echo "ks=$RUNNER_TEMP/keystore.jks" >> "$GITHUB_OUTPUT"
+            echo "alias=${{ secrets.ANDROID_KEY_ALIAS }}" >> "$GITHUB_OUTPUT"
+            echo "pass=${{ secrets.ANDROID_KEY_PASSWORD }}" >> "$GITHUB_OUTPUT"
           else
             # 未配置签名 secrets：生成临时 debug 密钥，产出可安装的 APK
             echo "No signing secrets found, generating ad-hoc debug keystore"
@@ -170,6 +174,9 @@ jobs:
             echo "keyAlias=androiddebugkey" > keystore.properties
             echo "password=android" >> keystore.properties
             echo "storeFile=$RUNNER_TEMP/debug.keystore" >> keystore.properties
+            echo "ks=$RUNNER_TEMP/debug.keystore" >> "$GITHUB_OUTPUT"
+            echo "alias=androiddebugkey" >> "$GITHUB_OUTPUT"
+            echo "pass=android" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build and sign APK
@@ -189,10 +196,10 @@ jobs:
           else
             $BT/zipalign -v 4 "$APK_PATH" "${APK_PATH}.aligned"
             $BT/apksigner sign \
-              --ks $RUNNER_TEMP/keystore.jks \
-              --ks-key-alias ${{ secrets.ANDROID_KEY_ALIAS }} \
-              --ks-pass pass:${{ secrets.ANDROID_KEY_PASSWORD }} \
-              --key-pass pass:${{ secrets.ANDROID_KEY_PASSWORD }} \
+              --ks ${{ steps.signing.outputs.ks }} \
+              --ks-key-alias ${{ steps.signing.outputs.alias }} \
+              --ks-pass pass:${{ steps.signing.outputs.pass }} \
+              --key-pass pass:${{ steps.signing.outputs.pass }} \
               --out "$DEST" "${APK_PATH}.aligned"
           fi
 
