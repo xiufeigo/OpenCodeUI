@@ -71,12 +71,40 @@ export interface ThemeColors {
   }
 }
 
+/**
+ * 界面风格：独立于色板的形状/阴影/字体/动效/特效定义。
+ * 所有字段可选；css 为风格激活期间注入的附加 CSS 原文，
+ * 必须基于 CSS 变量编写以便与任意色板叠加。
+ */
+export interface ThemeStyle {
+  /** 圆角覆盖 → --radius-* */
+  radius?: Partial<Record<'xs' | 'sm' | 'md' | 'lg' | 'xl' | '2xl', string>>
+  /** 阴影覆盖 → --shadow-*（完整 box-shadow 声明值） */
+  shadows?: Partial<Record<'sm' | 'md' | 'lg' | 'xl' | 'float', string>>
+  /** 字体栈覆盖 → --font-ui-sans / --font-mono */
+  fonts?: { uiSans?: string; mono?: string }
+  /** 动效 → --motion-duration-fast / --motion-duration-base / --motion-ease */
+  motion?: { durationFast?: string; durationBase?: string; ease?: string }
+  /** 附加 CSS 原文（特效：毛玻璃规则、扫描线等） */
+  css?: string
+}
+
+/** 界面风格预设：可叠加在任意色板上的风格包 */
+export interface ThemeStylePreset {
+  id: string
+  name: string
+  description: string
+  style: ThemeStyle
+}
+
 export interface ThemePreset {
   id: string
   name: string
   description: string
   light: ThemeColors
   dark: ThemeColors
+  /** 配套界面风格 id（styleId 为 'auto' 时生效）；缺省表示无配套风格 */
+  defaultStyleId?: string
 }
 
 // ============================================
@@ -976,4 +1004,57 @@ export function themeColorsToCSSVars(theme: ThemeColors): string {
   }
 
   return lines.join('\n  ')
+}
+
+// ============================================
+// Interface Style Registry
+// ============================================
+
+export const builtinStyleThemes: ThemeStylePreset[] = []
+
+export function getStylePreset(id: string): ThemeStylePreset | undefined {
+  return builtinStyleThemes.find(s => s.id === id)
+}
+
+/**
+ * 将 ThemeStyle 序列化为可注入的 CSS 片段。
+ * 变量部分包在 :root:root 块中（与颜色变量同优先级）；
+ * style.css 原文附加在块之后。无任何内容时返回空字符串。
+ */
+export function themeStyleToCSS(style?: ThemeStyle): string {
+  if (!style) return ''
+  const lines: string[] = []
+
+  if (style.radius) {
+    for (const [key, value] of Object.entries(style.radius)) {
+      if (value) lines.push(`--radius-${key}: ${value};`)
+    }
+  }
+  if (style.shadows) {
+    for (const [key, value] of Object.entries(style.shadows)) {
+      if (value) lines.push(`--shadow-${key}: ${value};`)
+    }
+  }
+  if (style.fonts?.uiSans) lines.push(`--font-ui-sans: ${style.fonts.uiSans};`)
+  if (style.fonts?.mono) lines.push(`--font-mono: ${style.fonts.mono};`)
+  if (style.motion?.durationFast) lines.push(`--motion-duration-fast: ${style.motion.durationFast};`)
+  if (style.motion?.durationBase) lines.push(`--motion-duration-base: ${style.motion.durationBase};`)
+  if (style.motion?.ease) lines.push(`--motion-ease: ${style.motion.ease};`)
+
+  const parts: string[] = []
+  if (lines.length > 0) parts.push(`:root:root {\n  ${lines.join('\n  ')}\n}`)
+  if (style.css?.trim()) parts.push(style.css.trim())
+  return parts.join('\n\n')
+}
+
+/**
+ * 解析实际生效的界面风格 id：
+ * - 'none' → 不应用任何风格
+ * - 'auto' → 跟随色板预设的 defaultStyleId
+ * - 其余   → 显式选择，优先于色板配套（切换色板后保持）
+ */
+export function resolveStyleId(styleId: string, preset?: ThemePreset): string | undefined {
+  if (styleId === 'none') return undefined
+  if (styleId === 'auto') return preset?.defaultStyleId
+  return styleId
 }
