@@ -366,6 +366,7 @@ export const Sidebar = memo(function Sidebar({
     <>
       <div
         ref={sidebarRef}
+        data-lq-surface="sidebar"
         style={{ width: `${layout.sidebar.dockedWidth}px` }}
         className={`
           relative flex flex-col h-full bg-bg-100 overflow-hidden shrink-0 min-w-0

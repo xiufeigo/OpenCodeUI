@@ -162,6 +162,57 @@ export const liquidGlassStyle: ThemeStylePreset = {
     hsl(var(--always-white) / 0.02) 35%,
     transparent 60%
   );
+}
+
+/* 环境渐变底色：accent 色系径向渐变，给悬浮面板提供可折射的背景 */
+:root:root body {
+  background:
+    radial-gradient(1200px 800px at 12% -10%, hsl(var(--accent-main-100) / 0.1), transparent 60%),
+    radial-gradient(1000px 700px at 88% 110%, hsl(var(--accent-secondary-100) / 0.09), transparent 55%),
+    hsl(var(--bg-100));
+}
+
+/* 让环境底色透出：根节点、应用根容器、桌面标题栏透明化 */
+:root:root #root {
+  background: transparent;
+}
+
+:root:root [data-lq-app] {
+  background-color: transparent;
+}
+
+:root:root .desktop-titlebar {
+  background-color: transparent;
+}
+
+/* 桌面端悬浮圆角大框（移动端维持现状） */
+@media (min-width: 768px) {
+  :root:root [data-lq-layout] {
+    padding: 10px;
+    gap: 10px;
+  }
+
+  :root:root [data-lq-column] {
+    gap: 10px;
+  }
+
+  :root:root [data-lq-surface] {
+    border: none;
+    border-radius: var(--radius-2xl);
+    background-color: hsl(var(--bg-100) / 0.72);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    backdrop-filter: blur(24px) saturate(180%);
+    box-shadow: var(--shadow-xl);
+  }
+
+  :root:root [data-lq-header] {
+    background-color: transparent;
+  }
+
+  :root:root [data-lq-header-fade] {
+    --tw-gradient-from: hsl(var(--bg-100) / 0.72) var(--tw-gradient-from-position);
+    --tw-gradient-to: hsl(var(--bg-100) / 0) var(--tw-gradient-to-position);
+  }
 }`,
     effects: ['liquid-refraction'],
   },

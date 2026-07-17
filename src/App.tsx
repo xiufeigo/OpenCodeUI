@@ -831,11 +831,11 @@ function App() {
   const { showCloseDialog, handleCloseDialogConfirm, handleCloseDialogCancel } = useCloseServiceDialog()
 
   return (
-    <div className="relative flex h-full flex-col bg-bg-100 overflow-hidden">
+    <div data-lq-app className="relative flex h-full flex-col bg-bg-100 overflow-hidden">
       <DesktopTitlebar />
       <InternalDragLayer />
       <ChatViewportProvider value={chatViewport}>
-        <div className="relative flex min-h-0 flex-1 overflow-hidden">
+        <div data-lq-layout className="relative flex min-h-0 flex-1 overflow-hidden">
           {isMobilePanelLayout ? (
             <>
               <div
@@ -966,6 +966,7 @@ function App() {
               <div className="flex-1 flex min-w-0 h-full overflow-hidden">
                 <div
                   ref={surfaceRef}
+                  data-lq-column
                   className="flex-1 flex flex-col min-w-0 overflow-hidden"
                   style={{ minWidth: `${CHAT_SURFACE_MIN_WIDTH}px` }}
                 >

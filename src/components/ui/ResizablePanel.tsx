@@ -264,6 +264,7 @@ export const ResizablePanel = memo(function ResizablePanel({
   return (
     <div
       ref={panelRef}
+      data-lq-surface={position}
       style={activeSizeStyle}
       className={`${containerClass} ${desktopLayoutClass} ${transitionClass}`}
     >

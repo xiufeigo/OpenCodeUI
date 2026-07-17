@@ -133,3 +133,13 @@ describe('style effects flags', () => {
     expect(lg?.style.effects).toContain('liquid-refraction')
   })
 })
+
+describe('liquid glass floating layout css', () => {
+  it('declares ambient background, floating surfaces and desktop media query', () => {
+    const css = builtinStyleThemes.find(s => s.id === 'liquid-glass')?.style.css ?? ''
+    expect(css).toContain('radial-gradient')
+    expect(css).toContain('[data-lq-layout]')
+    expect(css).toContain('[data-lq-surface]')
+    expect(css).toContain('@media (min-width: 768px)')
+  })
+})

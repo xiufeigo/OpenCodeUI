@@ -197,6 +197,7 @@ export function Header({
 
   return (
     <div
+      data-lq-header
       className={`mobile-safe-topbar-14 flex justify-between items-center z-20 bg-bg-100 transition-colors duration-200 relative ${isCompact ? 'px-2' : 'px-4'}`}
     >
       <div className="flex items-center gap-2 min-w-0 shrink-1 z-20">
@@ -271,7 +272,10 @@ export function Header({
 
       <ShareDialog isOpen={shareDialogOpen} onClose={() => setShareDialogOpen(false)} />
 
-      <div className="absolute top-full left-0 right-0 h-8 bg-gradient-to-b from-bg-100 to-transparent pointer-events-none z-10" />
+      <div
+        data-lq-header-fade
+        className="absolute top-full left-0 right-0 h-8 bg-gradient-to-b from-bg-100 to-transparent pointer-events-none z-10"
+      />
     </div>
   )
 }
