@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { resolveStyleId, themeStyleToCSS, type ThemePreset } from './index'
+import {
+  builtinStyleThemes,
+  builtinThemes,
+  getStylePreset,
+  resolveStyleId,
+  themeStyleToCSS,
+  type ThemeColors,
+  type ThemePreset,
+} from './index'
 
 describe('themeStyleToCSS', () => {
   it('returns empty string for undefined or empty style', () => {
@@ -53,5 +61,50 @@ describe('resolveStyleId', () => {
 
   it('explicit style wins over the preset default', () => {
     expect(resolveStyleId('retro-terminal', presetWithDefault)).toBe('retro-terminal')
+  })
+})
+
+const HSL_TOKEN = /^\d{1,3} \d{1,3}% \d{1,3}%$/
+
+function expectHslTokens(colors: ThemeColors) {
+  const groups = [colors.background, colors.text, colors.accent, colors.semantic, colors.border]
+  for (const group of groups) {
+    for (const value of Object.values(group)) {
+      expect(value).toMatch(HSL_TOKEN)
+    }
+  }
+  if (colors.special) {
+    for (const value of Object.values(colors.special)) {
+      if (value) expect(value).toMatch(HSL_TOKEN)
+    }
+  }
+}
+
+describe('builtin theme presets', () => {
+  it('every preset has complete light and dark palettes with valid HSL tokens', () => {
+    expect(builtinThemes.length).toBeGreaterThan(0)
+    for (const preset of builtinThemes) {
+      expectHslTokens(preset.light)
+      expectHslTokens(preset.dark)
+    }
+  })
+
+  it('defaultStyleId references a registered style', () => {
+    for (const preset of builtinThemes) {
+      if (preset.defaultStyleId) {
+        expect(getStylePreset(preset.defaultStyleId)).toBeDefined()
+      }
+    }
+  })
+})
+
+describe('builtin style presets', () => {
+  it('has unique ids and non-empty style payloads', () => {
+    const ids = builtinStyleThemes.map(s => s.id)
+    expect(new Set(ids).size).toBe(ids.length)
+    for (const s of builtinStyleThemes) {
+      expect(s.name).toBeTruthy()
+      expect(Object.keys(s.style).length).toBeGreaterThan(0)
+    }
   })
 })

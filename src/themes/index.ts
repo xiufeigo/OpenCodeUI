@@ -9,6 +9,8 @@
  * 颜色格式：HSL 不带 hsl() 包装，如 '210 90% 50%'
  */
 
+import { materialTheme, materialStyle } from './material'
+
 // ============================================
 // Types
 // ============================================
@@ -359,8 +361,8 @@ export const claudeTheme: ThemePreset = {
 const breezeLight: ThemeColors = {
   background: {
     bg000: '210 20% 99%', // 极淡蓝白
-    bg100: '210 15% 96.5%', // 浅灰蓝
-    bg200: '210 12% 93.5%', // 淡灰蓝
+    bg100: '210 15% 97%', // 浅灰蓝
+    bg200: '210 12% 94%', // 淡灰蓝
     bg300: '210 10% 90%', // 中灰蓝
     bg400: '210 8% 86%', // 深灰蓝
   },
@@ -940,6 +942,7 @@ export const builtinThemes: ThemePreset[] = [
   oceanTheme,
   draculaTheme,
   obsidianTheme,
+  materialTheme,
 ]
 
 export function getThemePreset(id: string): ThemePreset | undefined {
@@ -1010,7 +1013,7 @@ export function themeColorsToCSSVars(theme: ThemeColors): string {
 // Interface Style Registry
 // ============================================
 
-export const builtinStyleThemes: ThemeStylePreset[] = []
+export const builtinStyleThemes: ThemeStylePreset[] = [materialStyle]
 
 export function getStylePreset(id: string): ThemeStylePreset | undefined {
   return builtinStyleThemes.find(s => s.id === id)
