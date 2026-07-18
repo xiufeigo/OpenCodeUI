@@ -1,9 +1,11 @@
 /**
- * Liquid Glass 主题 — Codex
+ * Codex 主题（id: liquid-glass）
  *
  * 色板：照搬默认 Eucalyptus，light/dark 两套（保持主题自包含，逐值复制）
- * 风格：白底悬浮聊天卡片 + 磨砂侧栏/顶栏；css 为 .glass/.glass-alt 浮层注入
- * 白底磨砂背景与 backdrop-filter，独立于设置页的毛玻璃开关
+ * 风格：codex 桌面端形态 —— 侧栏/顶栏/右栏/底栏为通边磨砂玻璃（透出桌面），
+ * 仅主聊天窗口是白底圆角卡片（磨砂顶栏 + 白色正文）；全主题无投影，靠发丝边分层。
+ * css 同时为 .glass/.glass-alt 浮层注入白底磨砂背景与 backdrop-filter，
+ * 独立于设置页的毛玻璃开关。
  */
 import type { ThemeColors, ThemePreset, ThemeStylePreset } from './index'
 
@@ -114,7 +116,7 @@ const liquidGlassDark: ThemeColors = {
 export const liquidGlassTheme: ThemePreset = {
   id: 'liquid-glass',
   name: 'Codex',
-  description: 'Default palette, white floating panes and frosted chrome',
+  description: 'Default palette, frosted chrome and a white rounded chat window',
   light: liquidGlassLight,
   dark: liquidGlassDark,
   defaultStyleId: 'liquid-glass',
@@ -123,27 +125,23 @@ export const liquidGlassTheme: ThemePreset = {
 export const liquidGlassStyle: ThemeStylePreset = {
   id: 'liquid-glass',
   name: 'Codex',
-  description: 'Codex-style frosted surfaces and floating panes',
+  description: 'Codex-style frosted chrome, single rounded chat window, no shadows',
   style: {
     radius: { sm: '8px', md: '12px', lg: '16px', xl: '20px', '2xl': '24px' },
     shadows: {
-      sm: '0 1px 2px rgb(0 0 0 / 0.04)',
-      md: '0 4px 16px rgb(0 0 0 / 0.06)',
-      lg: '0 8px 28px rgb(0 0 0 / 0.08)',
-      xl: '0 12px 40px rgb(0 0 0 / 0.1)',
-      float: '0 8px 32px rgb(0 0 0 / 0.12)',
+      sm: 'none',
+      md: 'none',
+      lg: 'none',
+      xl: 'none',
+      float: 'none',
     },
-    css: `/* 输入框等浮层：白底磨砂 */
+    css: `/* 输入框等浮层：白底磨砂，无投影 */
 :root:root .glass,
 :root:root .glass-alt {
   -webkit-backdrop-filter: blur(20px) saturate(160%) brightness(1.03);
   backdrop-filter: blur(20px) saturate(160%) brightness(1.03);
   border-color: hsl(var(--border-300) / 0.6);
-  box-shadow:
-    inset 0 1px 0 0 hsl(var(--always-white) / 0.5),
-    inset 0 -1px 2px 0 hsl(var(--always-black) / 0.08),
-    0 2px 8px hsl(var(--always-black) / 0.05),
-    0 8px 24px hsl(var(--always-black) / 0.08);
+  box-shadow: none;
 }
 
 :root:root .glass {
@@ -159,9 +157,7 @@ export const liquidGlassStyle: ThemeStylePreset = {
   background-color: hsl(var(--bg-000) / 0.85);
   border-color: hsl(var(--border-300) / 0.6);
   border-radius: var(--radius-lg);
-  box-shadow:
-    inset 0 1px 0 0 hsl(var(--always-white) / 0.4),
-    0 1px 4px hsl(var(--always-black) / 0.06);
+  box-shadow: none;
 }
 
 :root:root [data-lq-glass]:hover {
@@ -169,18 +165,15 @@ export const liquidGlassStyle: ThemeStylePreset = {
 }
 
 :root:root [data-lq-glass]:focus-visible {
-  box-shadow:
-    inset 0 1px 0 0 hsl(var(--always-white) / 0.4),
-    0 1px 4px hsl(var(--always-black) / 0.06),
-    0 0 0 1px hsl(var(--border-200));
+  border-color: hsl(var(--accent-main-100) / 0.5);
 }
 
-/* 选中会话项：淡色高亮 */
+/* 选中会话项：codex 侧栏白卡 */
 :root:root [data-lq-selected] {
-  background-color: hsl(var(--accent-main-100) / 0.1);
-  border-color: hsl(var(--accent-main-100) / 0.25);
-  border-radius: var(--radius-lg);
-  box-shadow: 0 1px 4px hsl(var(--always-black) / 0.05);
+  background-color: hsl(var(--bg-000) / 0.9);
+  border-color: hsl(var(--border-200) / 0.8);
+  border-radius: var(--radius-md);
+  box-shadow: none;
 }
 
 /* 环境回退底色（非窗效环境）：淡青绿倾向 */
@@ -207,55 +200,70 @@ export const liquidGlassStyle: ThemeStylePreset = {
   background: transparent;
 }
 
-/* 桌面端悬浮布局（移动端维持现状） */
+/* ===== 桌面端 Codex 布局（移动端维持默认） ===== */
 @media (min-width: 768px) {
-  /* overflow: visible 避免容器硬切悬浮卡片投影 */
-  :root:root [data-lq-layout] {
+  /* 主窗口四周留白，露出磨砂 chrome / 桌面 */
+  :root:root [data-lq-chatwrap] {
     padding: 10px;
-    gap: 10px;
-    overflow: visible;
   }
 
-  :root:root [data-lq-column] {
-    gap: 10px;
-    overflow: visible;
-  }
-
-  /* agent 聊天窗口：白底悬浮卡片（四角全圆） */
+  /* 主 agent 窗口：唯一的圆角卡片，透明容器（磨砂顶栏 + 白色正文），无投影 */
   :root:root [data-lq-surface='chat'] {
     border: 1px solid hsl(var(--border-200) / 0.6);
-    border-radius: var(--radius-2xl);
-    background-color: hsl(var(--bg-000));
-    box-shadow:
-      0 1px 2px hsl(var(--always-black) / 0.04),
-      0 4px 16px hsl(var(--always-black) / 0.06),
-      0 12px 32px hsl(var(--always-black) / 0.05);
+    border-radius: var(--radius-lg);
+    background-color: transparent;
+    box-shadow: none;
   }
 
-  /* 侧栏/右栏/底栏：更透的磨砂悬浮，透出桌面 */
-  :root:root [data-lq-surface]:not([data-lq-surface='chat']) {
-    border: 1px solid hsl(var(--border-200) / 0.6);
-    border-radius: var(--radius-2xl);
-    background-color: hsl(var(--bg-000) / 0.4);
+  /* 顶栏：真磨砂玻璃，透出桌面 */
+  :root:root [data-lq-surface='chat'] [data-lq-header] {
+    background-color: hsl(var(--bg-100) / 0.55);
     -webkit-backdrop-filter: blur(24px) saturate(160%);
     backdrop-filter: blur(24px) saturate(160%);
-    box-shadow:
-      0 2px 8px hsl(var(--always-black) / 0.05),
-      0 12px 32px hsl(var(--always-black) / 0.1);
+    border-bottom: 1px solid hsl(var(--border-200) / 0.6);
   }
 
-  /* 深色模式：发丝边分层，不靠阴影（bg-000 比 bg-100 浅，卡片天然提亮） */
-  :root:root[data-mode='dark'] [data-lq-surface] {
+  /* 聊天正文：白底 */
+  :root:root [data-lq-surface='chat'] [data-lq-chatbody] {
+    background-color: hsl(var(--bg-000));
+  }
+
+  /* 侧栏/右栏/底栏：通边磨砂，无圆角、无投影，仅留发丝边 */
+  :root:root [data-lq-surface='sidebar'],
+  :root:root [data-lq-surface='left'],
+  :root:root [data-lq-surface='right'],
+  :root:root [data-lq-surface='bottom'] {
+    border: 0 solid hsl(var(--border-200) / 0.6);
+    border-radius: 0;
+    background-color: hsl(var(--bg-100) / 0.55);
+    -webkit-backdrop-filter: blur(24px) saturate(160%);
+    backdrop-filter: blur(24px) saturate(160%);
+    box-shadow: none;
+  }
+
+  :root:root [data-lq-surface='sidebar'],
+  :root:root [data-lq-surface='left'] {
+    border-right-width: 1px;
+  }
+
+  :root:root [data-lq-surface='right'] {
+    border-left-width: 1px;
+  }
+
+  :root:root [data-lq-surface='bottom'] {
+    border-top-width: 1px;
+  }
+
+  /* 深色模式：发丝边分层（bg-000 比 bg-100 浅，正文卡片天然提亮） */
+  :root:root[data-mode='dark'] [data-lq-surface='chat'],
+  :root:root[data-mode='dark'] [data-lq-surface='sidebar'],
+  :root:root[data-mode='dark'] [data-lq-surface='left'],
+  :root:root[data-mode='dark'] [data-lq-surface='right'],
+  :root:root[data-mode='dark'] [data-lq-surface='bottom'] {
     border-color: hsl(var(--border-200) / 0.8);
   }
 
-  /* 顶栏：与侧栏同参数磨砂 */
-  :root:root [data-lq-header] {
-    background-color: hsl(var(--bg-000) / 0.4);
-    -webkit-backdrop-filter: blur(24px) saturate(160%);
-    backdrop-filter: blur(24px) saturate(160%);
-  }
-
+  /* 顶栏下渐隐遮罩与正文同色，保持不可见 */
   :root:root [data-lq-header-fade] {
     --tw-gradient-from: hsl(var(--bg-000));
     --tw-gradient-to: hsl(var(--bg-000) / 0);

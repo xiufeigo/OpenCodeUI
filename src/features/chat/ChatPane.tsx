@@ -787,191 +787,191 @@ export const ChatPane = memo(function ChatPane({
   const chatContent = (
     <div className="flex-1 relative overflow-hidden flex flex-col min-h-0">
       {displayMode === 'single' && (
-        <div className="absolute top-0 left-0 right-0 z-20 pointer-events-none">
-          <div className="pointer-events-auto">
-            <Header
-              models={visibleModels}
-              modelsLoading={modelsLoading}
-              selectedModelKey={selectedModelKey}
-              onModelChange={handleModelChange}
-              onOpenSidebar={onOpenSidebar}
-              onToggleRightPanel={onToggleRightPanel}
-              onSplitPane={onSplitPane}
-              isPaneFullscreen={isPaneFullscreen}
-              onTogglePaneFullscreen={onTogglePaneFullscreen}
-              modelSelectorRef={modelSelectorRef}
-            />
-          </div>
+        <div className="relative z-20 shrink-0">
+          <Header
+            models={visibleModels}
+            modelsLoading={modelsLoading}
+            selectedModelKey={selectedModelKey}
+            onModelChange={handleModelChange}
+            onOpenSidebar={onOpenSidebar}
+            onToggleRightPanel={onToggleRightPanel}
+            onSplitPane={onSplitPane}
+            isPaneFullscreen={isPaneFullscreen}
+            onTogglePaneFullscreen={onTogglePaneFullscreen}
+            modelSelectorRef={modelSelectorRef}
+          />
         </div>
       )}
 
-      <div className="absolute inset-0">
-        <InlineToolRequestContext.Provider value={inlineToolRequestCtx}>
-          <ErrorBoundary onOpenSettings={onOpenSettings}>
-            {chatAreaMountKey == null ? (
-              <div className="h-full flex items-center justify-center">
-                <div className="flex flex-col items-center gap-3 text-text-400 session-loading-indicator">
-                  <span className="w-5 h-5 border-2 border-text-400/30 border-t-text-400 rounded-full animate-spin" />
+      <div data-lq-chatbody className="flex-1 relative overflow-hidden flex flex-col min-h-0">
+        <div className="absolute inset-0">
+          <InlineToolRequestContext.Provider value={inlineToolRequestCtx}>
+            <ErrorBoundary onOpenSettings={onOpenSettings}>
+              {chatAreaMountKey == null ? (
+                <div className="h-full flex items-center justify-center">
+                  <div className="flex flex-col items-center gap-3 text-text-400 session-loading-indicator">
+                    <span className="w-5 h-5 border-2 border-text-400/30 border-t-text-400 rounded-full animate-spin" />
+                  </div>
                 </div>
-              </div>
-            ) : (
-              <ChatArea
-                key={chatAreaMountKey}
-                ref={chatAreaRef}
-                messages={renderedMessages}
-                pageRecords={chatPageViewModel.pageRecords}
-                visibleMessages={chatPageViewModel.visibleMessages}
-                forkTargetIdMap={chatPageViewModel.forkTargetIdMap}
-                turnDurationMap={chatPageViewModel.turnDurationMap}
-                turnLatestAssistantIds={chatPageViewModel.turnLatestAssistantIds}
-                sessionId={routeSessionId}
-                isStreaming={isStreaming}
-                allowStreamingLayoutAnimation={false}
-                loadState={renderedLoadState}
-                loadError={loadError}
-                connectionError={connectionError}
-                onOpenSettings={onOpenSettings}
-                hasMoreHistory={hasMoreHistory}
-                onLoadMore={loadMoreHistory}
-                onUndo={handleUndoWithAnimation}
-                onFork={handleForkMessage}
-                canUndo={canUndo}
-                registerMessage={registerMessage}
-                retryStatus={retryStatus}
-                bottomPadding={inputBoxHeight}
-                onVisibleMessageIdsChange={handleVisibleIdsChange}
-                onAtBottomChange={setIsAtBottom}
-              />
-            )}
-          </ErrorBoundary>
-        </InlineToolRequestContext.Provider>
-      </div>
-
-      <OutlineIndex
-        sourceEntries={chatPageViewModel.outlineSourceEntries}
-        ownerByMessageId={chatPageViewModel.outlineOwnerByMessageId}
-        visibleMessageIds={visibleMessageIds}
-        currentHighlightEnabled={outlineCurrentHighlight}
-        onScrollToMessageId={handleOutlineScrollToMessage}
-      />
-
-      <div ref={inputBoxWrapperRef} className="absolute bottom-0 left-0 right-0 z-10 pointer-events-none">
-        {(showCancelHint || (fullAutoHint && !showCancelHint)) && (
-          <div className="absolute bottom-full inset-x-0 flex justify-center pb-2 pointer-events-none z-20">
-            <div className="px-3 py-1.5 glass border border-border-200/60 rounded-lg shadow-lg text-[length:var(--fs-sm)] text-text-300 animate-in fade-in slide-in-from-bottom-2 duration-150">
-              {showCancelHint ? (
-                <Trans
-                  i18nKey="chat:hints.pressEscAgain"
-                  components={{
-                    1: (
-                      <kbd className="mx-0.5 px-1.5 py-0.5 bg-bg-200 border border-border-200 rounded text-[length:var(--fs-xs)] font-mono font-medium text-text-200" />
-                    ),
-                  }}
-                />
               ) : (
-                fullAutoHint
+                <ChatArea
+                  key={chatAreaMountKey}
+                  ref={chatAreaRef}
+                  messages={renderedMessages}
+                  pageRecords={chatPageViewModel.pageRecords}
+                  visibleMessages={chatPageViewModel.visibleMessages}
+                  forkTargetIdMap={chatPageViewModel.forkTargetIdMap}
+                  turnDurationMap={chatPageViewModel.turnDurationMap}
+                  turnLatestAssistantIds={chatPageViewModel.turnLatestAssistantIds}
+                  sessionId={routeSessionId}
+                  isStreaming={isStreaming}
+                  allowStreamingLayoutAnimation={false}
+                  loadState={renderedLoadState}
+                  loadError={loadError}
+                  connectionError={connectionError}
+                  onOpenSettings={onOpenSettings}
+                  hasMoreHistory={hasMoreHistory}
+                  onLoadMore={loadMoreHistory}
+                  onUndo={handleUndoWithAnimation}
+                  onFork={handleForkMessage}
+                  canUndo={canUndo}
+                  registerMessage={registerMessage}
+                  retryStatus={retryStatus}
+                  bottomPadding={inputBoxHeight}
+                  onVisibleMessageIdsChange={handleVisibleIdsChange}
+                  onAtBottomChange={setIsAtBottom}
+                />
               )}
+            </ErrorBoundary>
+          </InlineToolRequestContext.Provider>
+        </div>
+
+        <OutlineIndex
+          sourceEntries={chatPageViewModel.outlineSourceEntries}
+          ownerByMessageId={chatPageViewModel.outlineOwnerByMessageId}
+          visibleMessageIds={visibleMessageIds}
+          currentHighlightEnabled={outlineCurrentHighlight}
+          onScrollToMessageId={handleOutlineScrollToMessage}
+        />
+
+        <div ref={inputBoxWrapperRef} className="absolute bottom-0 left-0 right-0 z-10 pointer-events-none">
+          {(showCancelHint || (fullAutoHint && !showCancelHint)) && (
+            <div className="absolute bottom-full inset-x-0 flex justify-center pb-2 pointer-events-none z-20">
+              <div className="px-3 py-1.5 glass border border-border-200/60 rounded-lg shadow-lg text-[length:var(--fs-sm)] text-text-300 animate-in fade-in slide-in-from-bottom-2 duration-150">
+                {showCancelHint ? (
+                  <Trans
+                    i18nKey="chat:hints.pressEscAgain"
+                    components={{
+                      1: (
+                        <kbd className="mx-0.5 px-1.5 py-0.5 bg-bg-200 border border-border-200 rounded text-[length:var(--fs-xs)] font-mono font-medium text-text-200" />
+                      ),
+                    }}
+                  />
+                ) : (
+                  fullAutoHint
+                )}
+              </div>
             </div>
-          </div>
+          )}
+          <InputBox
+            paneId={paneId}
+            onSend={handleSend}
+            onAbort={handleAbort}
+            onCommand={handleCommand}
+            onNewChat={handleNewSession}
+            disabled={inputDisabled}
+            isStreaming={isStreaming}
+            agents={agents}
+            selectedAgent={selectedAgent}
+            onAgentChange={handleAgentChange}
+            variants={currentModel?.variants ?? []}
+            selectedVariant={selectedVariant}
+            onVariantChange={handleVariantChange}
+            fileCapabilities={
+              currentModel
+                ? {
+                    image: currentModel.supportsImages,
+                    pdf: currentModel.supportsPdf,
+                    audio: currentModel.supportsAudio,
+                    video: currentModel.supportsVideo,
+                  }
+                : undefined
+            }
+            models={visibleModels}
+            selectedModelKey={selectedModelKey}
+            onModelChange={handleModelChange}
+            modelsLoading={modelsLoading}
+            modelSelectorRef={modelSelectorRef}
+            rootPath={effectiveDirectory}
+            sessionId={routeSessionId}
+            revertedText={revertedMessage?.text}
+            revertedAttachments={revertedMessage?.attachments}
+            canRedo={canRedo}
+            revertSteps={redoSteps}
+            onRedo={handleRedoWithAnimation}
+            onRedoAll={handleRedoAll}
+            onClearRevert={clearRevert}
+            registerInputBox={registerInputBox}
+            isAtBottom={isAtBottom}
+            showScrollToBottom={!isAtBottom}
+            onScrollToBottom={() => chatAreaRef.current?.scrollToBottom()}
+            collapsedPermission={
+              !inlineToolRequests && pendingPermissionRequests.length > 0 && permissionCollapsed
+                ? {
+                    label: t('chat:permissionDialog.permission', {
+                      permission: pendingPermissionRequests[0].permission,
+                    }),
+                    queueLength: pendingPermissionRequests.length,
+                    onExpand: () => setPermissionCollapsed(false),
+                  }
+                : undefined
+            }
+            collapsedQuestion={
+              !inlineToolRequests &&
+              pendingPermissionRequests.length === 0 &&
+              pendingQuestionRequests.length > 0 &&
+              questionCollapsed
+                ? {
+                    label: t('chat:questionDialog.title'),
+                    queueLength: pendingQuestionRequests.length,
+                    onExpand: () => setQuestionCollapsed(false),
+                  }
+                : undefined
+            }
+          />
+        </div>
+
+        {!inlineToolRequests && pendingPermissionRequests.length > 0 && (
+          <PermissionDialog
+            request={pendingPermissionRequests[0]}
+            onReply={reply =>
+              handlePermissionReply(
+                pendingPermissionRequests[0].id,
+                reply,
+                effectiveDirectory,
+                pendingPermissionRequests[0].sessionID,
+              )
+            }
+            queueLength={pendingPermissionRequests.length}
+            isReplying={isReplying}
+            currentSessionId={routeSessionId}
+            collapsed={permissionCollapsed}
+            onCollapsedChange={setPermissionCollapsed}
+          />
         )}
-        <InputBox
-          paneId={paneId}
-          onSend={handleSend}
-          onAbort={handleAbort}
-          onCommand={handleCommand}
-          onNewChat={handleNewSession}
-          disabled={inputDisabled}
-          isStreaming={isStreaming}
-          agents={agents}
-          selectedAgent={selectedAgent}
-          onAgentChange={handleAgentChange}
-          variants={currentModel?.variants ?? []}
-          selectedVariant={selectedVariant}
-          onVariantChange={handleVariantChange}
-          fileCapabilities={
-            currentModel
-              ? {
-                  image: currentModel.supportsImages,
-                  pdf: currentModel.supportsPdf,
-                  audio: currentModel.supportsAudio,
-                  video: currentModel.supportsVideo,
-                }
-              : undefined
-          }
-          models={visibleModels}
-          selectedModelKey={selectedModelKey}
-          onModelChange={handleModelChange}
-          modelsLoading={modelsLoading}
-          modelSelectorRef={modelSelectorRef}
-          rootPath={effectiveDirectory}
-          sessionId={routeSessionId}
-          revertedText={revertedMessage?.text}
-          revertedAttachments={revertedMessage?.attachments}
-          canRedo={canRedo}
-          revertSteps={redoSteps}
-          onRedo={handleRedoWithAnimation}
-          onRedoAll={handleRedoAll}
-          onClearRevert={clearRevert}
-          registerInputBox={registerInputBox}
-          isAtBottom={isAtBottom}
-          showScrollToBottom={!isAtBottom}
-          onScrollToBottom={() => chatAreaRef.current?.scrollToBottom()}
-          collapsedPermission={
-            !inlineToolRequests && pendingPermissionRequests.length > 0 && permissionCollapsed
-              ? {
-                  label: t('chat:permissionDialog.permission', {
-                    permission: pendingPermissionRequests[0].permission,
-                  }),
-                  queueLength: pendingPermissionRequests.length,
-                  onExpand: () => setPermissionCollapsed(false),
-                }
-              : undefined
-          }
-          collapsedQuestion={
-            !inlineToolRequests &&
-            pendingPermissionRequests.length === 0 &&
-            pendingQuestionRequests.length > 0 &&
-            questionCollapsed
-              ? {
-                  label: t('chat:questionDialog.title'),
-                  queueLength: pendingQuestionRequests.length,
-                  onExpand: () => setQuestionCollapsed(false),
-                }
-              : undefined
-          }
-        />
+
+        {!inlineToolRequests && pendingPermissionRequests.length === 0 && pendingQuestionRequests.length > 0 && (
+          <QuestionDialog
+            request={pendingQuestionRequests[0]}
+            onReply={answers => handleQuestionReply(pendingQuestionRequests[0].id, answers, effectiveDirectory)}
+            onReject={() => handleQuestionReject(pendingQuestionRequests[0].id, effectiveDirectory)}
+            queueLength={pendingQuestionRequests.length}
+            isReplying={isReplying}
+            collapsed={questionCollapsed}
+            onCollapsedChange={setQuestionCollapsed}
+          />
+        )}
       </div>
-
-      {!inlineToolRequests && pendingPermissionRequests.length > 0 && (
-        <PermissionDialog
-          request={pendingPermissionRequests[0]}
-          onReply={reply =>
-            handlePermissionReply(
-              pendingPermissionRequests[0].id,
-              reply,
-              effectiveDirectory,
-              pendingPermissionRequests[0].sessionID,
-            )
-          }
-          queueLength={pendingPermissionRequests.length}
-          isReplying={isReplying}
-          currentSessionId={routeSessionId}
-          collapsed={permissionCollapsed}
-          onCollapsedChange={setPermissionCollapsed}
-        />
-      )}
-
-      {!inlineToolRequests && pendingPermissionRequests.length === 0 && pendingQuestionRequests.length > 0 && (
-        <QuestionDialog
-          request={pendingQuestionRequests[0]}
-          onReply={answers => handleQuestionReply(pendingQuestionRequests[0].id, answers, effectiveDirectory)}
-          onReject={() => handleQuestionReject(pendingQuestionRequests[0].id, effectiveDirectory)}
-          queueLength={pendingQuestionRequests.length}
-          isReplying={isReplying}
-          collapsed={questionCollapsed}
-          onCollapsedChange={setQuestionCollapsed}
-        />
-      )}
     </div>
   )
 

@@ -886,7 +886,7 @@ export const ChatArea = memo(
             className="h-full overflow-y-auto overflow-x-hidden custom-scrollbar contain-content"
             style={{
               overflowAnchor: 'none',
-              paddingTop: 'calc(5rem + var(--app-safe-top, 0px))',
+              paddingTop: '1rem',
             }}
             onWheel={onWheel}
             onTouchStart={onTouchStart}

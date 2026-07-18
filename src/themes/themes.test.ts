@@ -140,18 +140,27 @@ describe('liquid glass floating layout css', () => {
     expect(lgTheme?.dark).toEqual(eucalyptus?.dark)
   })
 
-  it('declares a white floating chat card, frosted chrome and dark hairline borders', () => {
-    const css = builtinStyleThemes.find(s => s.id === 'liquid-glass')?.style.css ?? ''
+  it('declares a single rounded chat window, flush frosted chrome and no shadows', () => {
+    const lgStyle = builtinStyleThemes.find(s => s.id === 'liquid-glass')
+    const css = lgStyle?.style.css ?? ''
     expect(css).not.toContain('radial-gradient')
-    // 白底聊天卡片
+    // 阴影令牌全部置空
+    for (const value of Object.values(lgStyle?.style.shadows ?? {})) {
+      expect(value).toBe('none')
+    }
+    // 主 agent 窗口：唯一圆角卡片，透明容器无投影
+    expect(css).toContain("[data-lq-surface='chat']")
+    expect(css).toContain('background-color: transparent')
+    expect(css).toContain('box-shadow: none')
+    // 聊天正文白底
+    expect(css).toContain('data-lq-chatbody')
     expect(css).toContain('background-color: hsl(var(--bg-000));')
-    // 磨砂侧栏/顶栏
-    expect(css).toContain('hsl(var(--bg-000) / 0.4)')
+    // 顶栏/侧栏/右栏/底栏：通边磨砂（无圆角）
+    expect(css).toContain('hsl(var(--bg-100) / 0.55)')
+    expect(css).toContain('blur(24px)')
+    expect(css).toContain('border-radius: 0')
     // 白底磨砂浮层
     expect(css).toContain('hsl(var(--bg-000) / 0.8)')
-    expect(css).toContain('blur(24px)')
-    // 悬浮容器不裁切投影
-    expect(css).toContain('overflow: visible')
     // 深色发丝边分层
     expect(css).toContain("data-mode='dark'")
   })
