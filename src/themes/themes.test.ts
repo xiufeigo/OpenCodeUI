@@ -135,13 +135,19 @@ describe('style effects flags', () => {
 })
 
 describe('liquid glass floating layout css', () => {
-  it('declares clear-glass surfaces and desktop media query, without ambient background', () => {
+  it('declares clear-glass surfaces with edge optics and desktop media query', () => {
     const css = builtinStyleThemes.find(s => s.id === 'liquid-glass')?.style.css ?? ''
-    // 环境渐变已撤除（背景保持主题原样）
     expect(css).not.toContain('radial-gradient')
-    // 大面板清透填充 + 16px 模糊
-    expect(css).toContain('hsl(var(--bg-100) / 0.2)')
     expect(css).toContain('blur(16px)')
+    // 锐利镜面高光与暗角
+    expect(css).toContain('inset 0 1px 0 0 hsl(var(--always-white) / 0.5)')
+    expect(css).toContain('inset 0 -2px 6px -2px hsl(var(--always-black) / 0.12)')
+    // 大面板分层阴影
+    expect(css).toContain('0 24px 64px')
+    // 聊天框中性微暗填充
+    expect(css).toContain('hsl(var(--always-black) / 0.04)')
+    // 搜索框/选中框玻璃规则
+    expect(css).toContain('[data-lq-glass]')
     // 悬浮布局保留
     expect(css).toContain('[data-lq-layout]')
     expect(css).toContain('[data-lq-surface]')

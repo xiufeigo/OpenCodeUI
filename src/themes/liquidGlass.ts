@@ -137,15 +137,18 @@ export const liquidGlassStyle: ThemeStylePreset = {
 :root:root .glass-alt {
   -webkit-backdrop-filter: blur(16px) saturate(160%) brightness(1.05);
   backdrop-filter: blur(16px) saturate(160%) brightness(1.05);
-  border-color: hsl(var(--always-white) / 0.16);
+  border-color: hsl(var(--border-300) / 0.6);
   box-shadow:
-    inset 0 1px 0 0 hsl(var(--always-white) / 0.22),
-    inset 0 -1px 0 0 hsl(var(--always-black) / 0.05),
-    0 8px 32px hsl(var(--always-black) / 0.16);
+    inset 0 0 0 0.5px hsl(var(--always-white) / 0.35),
+    inset 0 1px 0 0 hsl(var(--always-white) / 0.5),
+    inset 0 -2px 6px -2px hsl(var(--always-black) / 0.12),
+    0 2px 8px hsl(var(--always-black) / 0.06),
+    0 8px 24px hsl(var(--always-black) / 0.1),
+    0 16px 48px hsl(var(--always-black) / 0.1);
 }
 
 :root:root .glass {
-  background-color: hsl(var(--bg-000) / 0.22);
+  background-color: hsl(var(--always-black) / 0.04);
   background-image: linear-gradient(
     135deg,
     hsl(var(--always-white) / 0.06) 0%,
@@ -162,6 +165,21 @@ export const liquidGlassStyle: ThemeStylePreset = {
     hsl(var(--always-white) / 0.015) 35%,
     transparent 60%
   );
+}
+
+/* 搜索框与选中项：同款玻璃质感（列表项尺度圆角） */
+:root:root [data-lq-glass] {
+  background-color: hsl(var(--always-black) / 0.04);
+  -webkit-backdrop-filter: blur(16px) saturate(160%) brightness(1.05);
+  backdrop-filter: blur(16px) saturate(160%) brightness(1.05);
+  border-color: hsl(var(--border-300) / 0.6);
+  border-radius: var(--radius-lg);
+  box-shadow:
+    inset 0 0 0 0.5px hsl(var(--always-white) / 0.35),
+    inset 0 1px 0 0 hsl(var(--always-white) / 0.5),
+    inset 0 -2px 6px -2px hsl(var(--always-black) / 0.12),
+    0 2px 8px hsl(var(--always-black) / 0.06),
+    0 8px 24px hsl(var(--always-black) / 0.1);
 }
 
 /* 桌面端悬浮圆角大框（移动端维持现状） */
@@ -181,7 +199,13 @@ export const liquidGlassStyle: ThemeStylePreset = {
     background-color: hsl(var(--bg-100) / 0.2);
     -webkit-backdrop-filter: blur(16px) saturate(160%) brightness(1.05);
     backdrop-filter: blur(16px) saturate(160%) brightness(1.05);
-    box-shadow: var(--shadow-xl);
+    box-shadow:
+      inset 0 0 0 0.5px hsl(var(--always-white) / 0.25),
+      inset 0 1px 0 0 hsl(var(--always-white) / 0.4),
+      inset 0 -2px 8px -2px hsl(var(--always-black) / 0.1),
+      0 2px 8px hsl(var(--always-black) / 0.05),
+      0 12px 32px hsl(var(--always-black) / 0.1),
+      0 24px 64px hsl(var(--always-black) / 0.08);
   }
 
   :root:root [data-lq-header] {
