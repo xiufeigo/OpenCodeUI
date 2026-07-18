@@ -133,22 +133,27 @@ describe('style effects flags', () => {
 })
 
 describe('liquid glass floating layout css', () => {
-  it('declares codex-style surfaces, blue frosted glass and window-effect transparency', () => {
+  it('reuses the default eucalyptus palette verbatim', () => {
+    const lgTheme = builtinThemes.find(t => t.id === 'liquid-glass')
+    const eucalyptus = builtinThemes.find(t => t.id === 'eucalyptus')
+    expect(lgTheme?.light).toEqual(eucalyptus?.light)
+    expect(lgTheme?.dark).toEqual(eucalyptus?.dark)
+  })
+
+  it('declares a white floating chat card, frosted chrome and dark hairline borders', () => {
     const css = builtinStyleThemes.find(s => s.id === 'liquid-glass')?.style.css ?? ''
     expect(css).not.toContain('radial-gradient')
-    // 蓝色磨砂输入框
-    expect(css).toContain('hsl(var(--accent-main-100) / 0.16)')
-    expect(css).toContain('blur(20px)')
-    // 白底聊天窗口与淡色侧栏
+    // 白底聊天卡片
     expect(css).toContain('background-color: hsl(var(--bg-000));')
-    expect(css).toContain('hsl(var(--bg-000) / 0.55)')
-    // 搜索白 pill 与选中高亮
-    expect(css).toContain('hsl(var(--bg-000) / 0.85)')
-    expect(css).toContain('[data-lq-selected]')
-    // 窗效透明变体
-    expect(css).toContain('[data-window-effect]')
-    // 悬浮布局保留
-    expect(css).toContain('@media (min-width: 768px)')
+    // 磨砂侧栏/顶栏
+    expect(css).toContain('hsl(var(--bg-000) / 0.4)')
+    // 白底磨砂浮层
+    expect(css).toContain('hsl(var(--bg-000) / 0.8)')
+    expect(css).toContain('blur(24px)')
+    // 悬浮容器不裁切投影
+    expect(css).toContain('overflow: visible')
+    // 深色发丝边分层
+    expect(css).toContain("data-mode='dark'")
   })
 
   it('uses Codex as display name and declares no refraction effect', () => {
