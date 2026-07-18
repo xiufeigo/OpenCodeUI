@@ -1300,7 +1300,7 @@ function InputBoxComponent({
                 isDragging || isInternalFileDragging
                   ? 'border border-accent-main-100 ring-2 ring-accent-main-100/30'
                   : isStreaming
-                    ? 'border border-transparent animate-border-pulse'
+                    ? 'border border-accent-main-100/50 animate-border-pulse'
                     : 'border border-border-200/60'
               }`}
               style={{ maxHeight: inputContainerMaxHeight }}
