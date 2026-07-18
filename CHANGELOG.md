@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.6.33] - 2026-07-18
+
+- fix(sidebar): 修复文件夹模式全局文件夹拖拽排序 (7dbe35c)
+- Revert "perf(input): animate streaming border pulse with opacity" (3f84e2c)
+- feat(sidebar): add global folder to folder-mode session list (fc26be5)
+
 ## [v0.6.32] - 2026-07-18
 
 - fix(chat): inline loading-history indicator into message stream (127ade3)
