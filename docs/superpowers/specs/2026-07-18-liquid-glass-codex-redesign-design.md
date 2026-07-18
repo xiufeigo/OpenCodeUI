@@ -13,6 +13,7 @@
 
 已确认决策：
 
+- **主题显示名改为 Codex**：`liquidGlassTheme.name` 与 `liquidGlassStyle.name` 由 `'Liquid Glass'` 改为 `'Codex'`；内部 id 保持 `liquid-glass` 不变（避免 localStorage/设置备份的数据迁移）
 - **停用折射引擎**（codex 为干净磨砂，无透镜扭曲；引擎代码保留）
 - **做 Tauri 窗效**（Windows acrylic、macOS vibrancy；Linux/Web/Android 回退淡色底）
 - **保留默认过渡动画**（不新增任何动效）
