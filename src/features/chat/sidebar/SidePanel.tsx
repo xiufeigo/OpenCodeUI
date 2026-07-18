@@ -22,9 +22,9 @@ import {
   CheckIcon,
   SpinnerIcon,
 } from '../../../components/Icons'
-import { useDirectory, useSessionStats, useKeybindingLabel, useGitWorkspaceCatalog, useVcsInfo } from '../../../hooks'
+import { useDirectory, useKeybindingLabel, useGitWorkspaceCatalog, useVcsInfo } from '../../../hooks'
 import { useSessionContext } from '../../../contexts/useSessionContext'
-import { useLayoutStore, useMessageStore, childSessionStore } from '../../../store'
+import { useLayoutStore, childSessionStore } from '../../../store'
 import { useBusySessions, useBusyCount } from '../../../store/activeSessionStore'
 import { notificationStore, useNotifications, useUnreadNotificationCount } from '../../../store/notificationStore'
 import { pinnedSessionsStore } from '../../../store/pinnedSessionsStore'
@@ -262,11 +262,6 @@ export function SidePanel({
       projectToggleRef.current?.focus()
     }
   }, [projectsExpanded, showLabels])
-
-  // Session stats
-  const { messages } = useMessageStore()
-  const stats = useSessionStats(contextLimit)
-  const hasMessages = messages.length > 0
 
   // Active sessions
   const busySessions = useBusySessions()
@@ -1381,8 +1376,7 @@ export function SidePanel({
       <SidebarFooter
         showLabels={showLabels}
         connectionState={connectionState?.state || 'disconnected'}
-        stats={stats}
-        hasMessages={hasMessages}
+        contextLimit={contextLimit}
         onOpenSettings={onOpenSettings}
       />
 

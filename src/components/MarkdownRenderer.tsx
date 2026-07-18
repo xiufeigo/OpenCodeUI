@@ -2,7 +2,6 @@ import {
   Fragment,
   memo,
   useCallback,
-  useDeferredValue,
   useEffect,
   useId,
   useLayoutEffect,
@@ -1326,9 +1325,9 @@ const MarkdownDomBlock = memo(function MarkdownDomBlock({
   const rootRef = useRef<HTMLDivElement | null>(null)
   const appliedHtmlRef = useRef<string | null>(null)
   const appliedSrcRef = useRef<string | null>(null)
-  const deferredSrc = useDeferredValue(src)
-  // live 用 deferred 降峰；定稿后立刻用最终 src，避免尾字滞后
-  const renderSrc = isLive ? deferredSrc : src
+  // useSmoothMarkdownStream 上游已做 rAF 平滑，这里不再叠 useDeferredValue：
+  // 双重延迟会让 React 18 concurrent 每帧跑两轮协调（紧急+deferred），流式帧时长翻倍。
+  const renderSrc = src
 
   useEffect(() => {
     const root = rootRef.current

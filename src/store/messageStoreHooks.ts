@@ -15,6 +15,7 @@ import type { MessageStoreSnapshot, SessionStateSnapshot } from './messageStoreT
 // ============================================
 
 let cachedSnapshot: MessageStoreSnapshot | null = null
+let focusedSnapshotDirty = true
 
 function createSnapshot(): MessageStoreSnapshot {
   const sessionId = paneLayoutStore.getFocusedSessionId()
@@ -36,20 +37,41 @@ function createSnapshot(): MessageStoreSnapshot {
   }
 }
 
+function isSameFocusedSnapshot(a: MessageStoreSnapshot, b: MessageStoreSnapshot): boolean {
+  return (
+    a.sessionId === b.sessionId &&
+    a.messages === b.messages &&
+    a.isStreaming === b.isStreaming &&
+    a.revertState === b.revertState &&
+    a.hasMoreHistory === b.hasMoreHistory &&
+    a.sessionDirectory === b.sessionDirectory &&
+    a.sessionTitle === b.sessionTitle &&
+    a.shareUrl === b.shareUrl &&
+    a.canUndo === b.canUndo &&
+    a.canRedo === b.canRedo &&
+    a.redoSteps === b.redoSteps &&
+    a.revertedContent === b.revertedContent &&
+    a.loadState === b.loadState &&
+    a.loadError === b.loadError
+  )
+}
+
 function getSnapshot(): MessageStoreSnapshot {
-  if (cachedSnapshot === null) {
-    cachedSnapshot = createSnapshot()
-  }
+  if (!focusedSnapshotDirty && cachedSnapshot) return cachedSnapshot
+  focusedSnapshotDirty = false
+  const next = createSnapshot()
+  if (cachedSnapshot && isSameFocusedSnapshot(cachedSnapshot, next)) return cachedSnapshot
+  cachedSnapshot = next
   return cachedSnapshot
 }
 
-// 订阅 store 变化，清除缓存
+// 标记脏；真正重建在 getSnapshot，字段全相同时复用旧引用，避免旁路组件空刷
 messageStore.subscribe(() => {
-  cachedSnapshot = null
+  focusedSnapshotDirty = true
 })
 
 paneLayoutStore.subscribe(() => {
-  cachedSnapshot = null
+  focusedSnapshotDirty = true
 })
 
 function subscribeFocusedSnapshot(onStoreChange: () => void): () => void {
@@ -126,6 +148,28 @@ function shallowEqual<T>(a: T, b: T): boolean {
   return true
 }
 
+// 模块级 selector：避免组件内联 () => ({...}) 导致 getSnapshot 身份每帧变化
+const selectSessionId = (state: MessageStoreSnapshot) => state.sessionId
+const selectIsStreaming = (state: MessageStoreSnapshot) => state.isStreaming
+const selectMessages = (state: MessageStoreSnapshot) => state.messages
+const selectHasMessages = (state: MessageStoreSnapshot) => state.messages.length > 0
+const selectHeaderSessionMeta = (state: MessageStoreSnapshot) => ({
+  sessionId: state.sessionId,
+  sessionDirectory: state.sessionDirectory,
+  sessionTitle: state.sessionTitle,
+})
+const selectShareSessionMeta = (state: MessageStoreSnapshot) => ({
+  sessionId: state.sessionId,
+  shareUrl: state.shareUrl,
+  sessionDirectory: state.sessionDirectory,
+})
+const selectUndoRedoState = (state: MessageStoreSnapshot) => ({
+  canUndo: state.canUndo,
+  canRedo: state.canRedo,
+  redoSteps: state.redoSteps,
+})
+const sameMessageArray = (a: Message[], b: Message[]) => a === b
+
 // 缓存：sessionId -> Snapshot
 const sessionSnapshots = new Map<string, SessionStateSnapshot>()
 
@@ -189,29 +233,37 @@ export function useSessionState(sessionId: string | null): SessionStateSnapshot 
 
 /** 只订阅 sessionId */
 export function useCurrentSessionId(): string | null {
-  return useMessageStoreSelector(state => state.sessionId)
+  return useMessageStoreSelector(selectSessionId)
 }
 
 /** 只订阅 isStreaming */
 export function useIsStreaming(): boolean {
-  return useMessageStoreSelector(state => state.isStreaming)
+  return useMessageStoreSelector(selectIsStreaming)
 }
 
 /** 只订阅 messages */
 export function useMessages(): Message[] {
-  return useMessageStoreSelector(
-    state => state.messages,
-    (a, b) => a === b,
-  )
+  return useMessageStoreSelector(selectMessages, sameMessageArray)
+}
+
+/** 当前 focused session 是否已有消息（length 级，流式加字不触发） */
+export function useHasMessages(): boolean {
+  return useMessageStoreSelector(selectHasMessages)
+}
+
+/** Header 用：session 身份与标题，不跟 messages 文本 */
+export function useHeaderSessionMeta() {
+  return useMessageStoreSelector(selectHeaderSessionMeta)
+}
+
+/** Share 用：分享链接相关字段 */
+export function useShareSessionMeta() {
+  return useMessageStoreSelector(selectShareSessionMeta)
 }
 
 /** 只订阅 canUndo/canRedo */
 export function useUndoRedoState() {
-  return useMessageStoreSelector(state => ({
-    canUndo: state.canUndo,
-    canRedo: state.canRedo,
-    redoSteps: state.redoSteps,
-  }))
+  return useMessageStoreSelector(selectUndoRedoState)
 }
 
 // Re-export types for convenience

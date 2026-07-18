@@ -1,5 +1,32 @@
 # Changelog
 
+## [v0.6.32] - 2026-07-18
+
+- fix(chat): inline loading-history indicator into message stream (127ade3)
+- perf(codeblock): remove useDeferredValue for real-time highlighting (e83dac6)
+- perf(markdown): remove redundant useDeferredValue and cache fullText (1f9b228)
+- feat(terminal): long-press repeat and haptic feedback for mobile extra keys (1f5cce2)
+- fix(chat): clamp mention/slash menu below header shadow (2e77064)
+
+## [v0.6.31] - 2026-07-17
+
+- fix(chat): keep retry status above input and re-pin on footer height change (77305b0)
+- fix(sidebar): align folder session loading spinner with list text (84b3660)
+- fix(chat): inherit input dock collapse setting in split panes (d1eef49)
+- perf(chat): pin streaming hot rows in virtual range (bb0781c)
+- perf(chat): reuse stable process timeline items during streaming (1dc8b54)
+- perf(input): animate streaming border pulse with opacity (6283508)
+- perf(chat): narrow message store subscriptions for sidebar chrome (c37c81e)
+- fix(lint): remove useless escape in live markdown suffix regex (47213df)
+- fix(sidebar): harden session fetch after PR #140 (96efa5c)
+- feat(files): reveal local files in system explorer (90588e7)
+- feat(changes): open files from changes context menu (62c7698)
+- fix(sidebar): stabilize session fetch effect to prevent /session request storm (497279f)
+- perf(markdown): append plain live text without full reparse (dc40efe)
+- perf: cut layout thrash on panels, diff measure, and input budget (2ba9641)
+- perf: localize overlay scrollbar scan and scroll updates (dd6578f)
+- perf: narrow Tauri compositing hints to glass layers (0a8adfd)
+
 ## [v0.6.30] - 2026-07-16
 
 - fix(test): hoist serverStore mock for pinned sessions init (16165d5)

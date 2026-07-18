@@ -34,6 +34,7 @@ import {
   buildProcessTimeline,
   buildTurnDurationMap,
   buildTurnLatestAssistantIdSet,
+  reuseProcessTimelineItems,
   type ProcessTimelineItem,
   type StableChatPage,
 } from './chatPageModel'
@@ -67,6 +68,20 @@ function estimateTimelineItemSize(item: ProcessTimelineItem | undefined): number
 
 function sessionCacheKey(sessionId: string, processCollapseEnabled: boolean): string {
   return `${sessionId}:${processCollapseEnabled ? 'process' : 'flat'}`
+}
+
+/** 流式热行 index：末 1～2 行，避免 virtual range 边界卸载正在生成的行 */
+export function getStreamingHotIndexes(count: number, isStreaming: boolean): number[] {
+  if (!isStreaming || count <= 0) return []
+  if (count === 1) return [0]
+  return [count - 2, count - 1]
+}
+
+/** 合并 range 与 pin index（resize pin + 流式热行） */
+export function mergeVirtualRangeIndexes(base: number[], ...pinnedGroups: number[][]): number[] {
+  const pinned = pinnedGroups.flat()
+  if (pinned.length === 0) return base
+  return [...new Set([...pinned, ...base])].sort((a, b) => a - b)
 }
 
 // ─── 接口定义（保持不变） ───────────────────────────────────────
@@ -348,21 +363,33 @@ export const ChatArea = memo(
       const emptyShellGate = useEmptyWorkingShellGate(isStreaming, EMPTY_WORKING_SHELL_EXTRA_DELAY_MS)
 
       // 过程折叠：按 user 回合建时间线；关闭时退回「一行一条消息」
+      // previous 用于 item 级 structural sharing：流式只脏热行，VirtualRow memo 才能命中
+      // 折叠开关切换时不跨模式复用（flat 与 process-shell 的 key 语义不同）
+      const previousTimelineRef = useRef<{
+        processCollapseEnabled: boolean
+        items?: ProcessTimelineItem[]
+      }>({ processCollapseEnabled })
       const timeline = useMemo<ProcessTimelineItem[]>(() => {
-        if (!processCollapseEnabled) {
-          return visibleMessages.map(message => ({
-            kind: 'message' as const,
-            key: message.info.id,
-            message,
-          }))
-        }
-        return buildProcessTimeline(visibleMessages, {
-          turnDurationMap,
-          sessionIsStreaming: isStreaming,
-          messageHasProcess: messageHasProcessContent,
-          messageHasFinal: messageHasFinalContent,
-          isUserEntryReady: emptyShellGate.isReady,
-        })
+        const next = !processCollapseEnabled
+          ? visibleMessages.map(message => ({
+              kind: 'message' as const,
+              key: message.info.id,
+              message,
+            }))
+          : buildProcessTimeline(visibleMessages, {
+              turnDurationMap,
+              sessionIsStreaming: isStreaming,
+              messageHasProcess: messageHasProcessContent,
+              messageHasFinal: messageHasFinalContent,
+              isUserEntryReady: emptyShellGate.isReady,
+            })
+        const previous =
+          previousTimelineRef.current.processCollapseEnabled === processCollapseEnabled
+            ? previousTimelineRef.current.items
+            : undefined
+        const reused = reuseProcessTimelineItems(previous, next)
+        previousTimelineRef.current = { processCollapseEnabled, items: reused }
+        return reused
         // emptyShellGate.version：额外延迟到期后强制重算，挂上 Working 壳
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [processCollapseEnabled, visibleMessages, turnDurationMap, isStreaming, emptyShellGate.version, emptyShellGate.isReady])
@@ -444,6 +471,9 @@ export const ChatArea = memo(
       const resizePinnedRef = useRef<number[]>([])
       const resizePinFrame = useRef<number | undefined>(undefined)
       const resizeAnchorScheduled = useRef(false)
+      /** 流式热行 pin：ref 更新，不碰贴底/SSE 路径 */
+      const hotPinnedRef = useRef<number[]>([])
+      hotPinnedRef.current = getStreamingHotIndexes(timeline.length, isStreaming)
 
       // 冷启动估在底部：有 cache 用 cache 总高，否则 estimate*count + paddingEnd。
       // 不用 MAX_SAFE_INTEGER（单列 range 不会向前扩，只会渲染最后一项）。
@@ -466,7 +496,8 @@ export const ChatArea = memo(
         initialMeasurementsCache: initialCacheRef.current,
         estimateSize: (index) => estimateTimelineItemSize(timeline[index]),
         getItemKey: (i) => timeline[i]?.key ?? `removed:${i}`,
-        paddingEnd: spacerHeight,
+        // 输入框占位放在消息区外（retry/error 之后），避免重试提示被压到输入框下面
+        paddingEnd: 0,
         scrollEndThreshold: 80,
         // 预写 total height，避免浏览器把新 offset clamp 到旧高度（oc 同款）
         scrollToFn: (offset, options, instance) => {
@@ -481,8 +512,7 @@ export const ChatArea = memo(
         directDomUpdatesMode: 'transform',
         rangeExtractor: (range) => {
           const indexes = defaultRangeExtractor({ ...range, overscan: renderOverscan })
-          if (resizePinnedRef.current.length === 0) return indexes
-          return [...new Set([...resizePinnedRef.current, ...indexes])].sort((a, b) => a - b)
+          return mergeVirtualRangeIndexes(indexes, resizePinnedRef.current, hotPinnedRef.current)
         },
       })
 
@@ -537,8 +567,11 @@ export const ChatArea = memo(
               resizeAnchorScheduled.current = false
               if (!shouldAnchorBottom()) return
               if (!(virtualizer as any).isAtEnd?.(80)) return
-              autoMarkAuto(scrollRef.current)
-              virtualizer.scrollToEnd()
+              const el = scrollRef.current
+              if (!el) return
+              autoMarkAuto(el)
+              const max = Math.max(0, el.scrollHeight - el.clientHeight)
+              if (max - el.scrollTop >= 2) el.scrollTop = max
             })
           }
         }
@@ -643,10 +676,13 @@ export const ChatArea = memo(
       }, [autoSetContentRef, virtualizer, computeScrollState])
 
       const pinToBottom = useCallback(() => {
-        if (timeline.length === 0) return
-        autoMarkAuto(scrollRef.current)
-        virtualizer.scrollToEnd()
-      }, [autoMarkAuto, virtualizer, timeline.length])
+        // 必须滚到整页底（含 retry/error + 输入框 spacer），不能只 scrollToEnd 虚拟消息区
+        const el = scrollRef.current
+        if (!el) return
+        autoMarkAuto(el)
+        const max = Math.max(0, el.scrollHeight - el.clientHeight)
+        if (max - el.scrollTop >= 2) el.scrollTop = max
+      }, [autoMarkAuto])
 
       // ── 事件处理 ──
       const onScroll = useCallback(() => {
@@ -705,6 +741,19 @@ export const ChatArea = memo(
         if (!shouldAnchorBottom() || prependLoading.current) return
         pinToBottom()
       }, [timeline.length, pinToBottom])
+
+      // retry/error 出现消失、输入框高度变 → 底部 footer 高度变，贴底时要跟着滚
+      // 否则重试条进出后 scrollTop 停在旧位置，看起来没贴底
+      const footerPinKey = `${retryStatus ? 'r' : ''}|${loadError || connectionError ? 'e' : ''}|${spacerHeight}`
+      useLayoutEffect(() => {
+        if (!shouldAnchorBottom() || prependLoading.current) return
+        pinToBottom()
+        // 展开重试详情等会在下一帧才量完高度
+        const frame = requestAnimationFrame(() => {
+          if (shouldAnchorBottom()) pinToBottom()
+        })
+        return () => cancelAnimationFrame(frame)
+      }, [footerPinKey, pinToBottom])
 
       // 用户返回底部时重新贴底
       const userScrolledInit = useRef(false)
@@ -845,12 +894,10 @@ export const ChatArea = memo(
             onClick={autoHandleInteraction}
           >
             {visibleMessages.length > 0 && isLoadingMore && (
-              <div className="relative h-0 overflow-visible pointer-events-none" aria-hidden="true">
-                <div className="absolute left-0 right-0 top-2 z-10 flex justify-center">
-                  <div className="flex items-center gap-2 rounded-full bg-bg-100/90 px-3 py-1.5 text-text-400 text-[length:var(--fs-sm)] shadow-sm">
-                    <span className="w-3.5 h-3.5 border-2 border-text-400/30 border-t-text-400 rounded-full animate-spin" />
-                    {t('chatArea.loadingHistory')}
-                  </div>
+              <div className="flex justify-center py-3" aria-live="polite">
+                <div className="flex items-center gap-2 text-text-400 text-[length:var(--fs-sm)]">
+                  <span className="w-3.5 h-3.5 border-2 border-text-400/30 border-t-text-400 rounded-full animate-spin" />
+                  {t('chatArea.loadingHistory')}
                 </div>
               </div>
             )}
@@ -881,6 +928,8 @@ export const ChatArea = memo(
               })}
             </div>
 
+            {/* 顺序必须是：消息 → 重试/错误提示 → 输入框占位。
+                旧 Virtuoso Footer 就是这样；换 virtualizer 后 paddingEnd 在前、提示在后，会叠到输入框下。 */}
             {retryStatus && (
               <div className={`w-full ${maxWidthClass} mx-auto ${paddingClass}`}>
                 <div className="flex justify-start">
@@ -909,6 +958,8 @@ export const ChatArea = memo(
                 </div>
               </div>
             )}
+
+            <div style={{ height: spacerHeight }} aria-hidden="true" />
           </div>
         </div>
       )

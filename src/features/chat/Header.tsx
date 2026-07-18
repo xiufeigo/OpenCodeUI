@@ -12,7 +12,7 @@ import {
 import { IconButton } from '../../components/ui'
 import { ModelSelector, type ModelSelectorHandle } from './ModelSelector'
 import { ShareDialog } from './ShareDialog'
-import { messageStore, useMessageStore } from '../../store'
+import { messageStore, useHeaderSessionMeta } from '../../store'
 import { useLayoutStore, layoutStore } from '../../store/layoutStore'
 import { useSessionContext } from '../../contexts/useSessionContext'
 import { updateSession } from '../../api'
@@ -124,7 +124,7 @@ export function Header({
   modelSelectorRef,
 }: HeaderProps) {
   const { t } = useTranslation('chat')
-  const { sessionId, sessionDirectory, sessionTitle: currentSessionTitle } = useMessageStore()
+  const { sessionId, sessionDirectory, sessionTitle: currentSessionTitle } = useHeaderSessionMeta()
   const { rightPanelOpen, bottomPanelOpen } = useLayoutStore()
   const { refresh } = useSessionContext()
   const { currentDirectory } = useDirectory()
@@ -274,6 +274,7 @@ export function Header({
 
       <div
         data-lq-header-fade
+        data-chat-header-shadow
         className="absolute top-full left-0 right-0 h-8 bg-gradient-to-b from-bg-100 to-transparent pointer-events-none z-10"
       />
     </div>

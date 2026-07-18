@@ -931,14 +931,15 @@ body {
 
 /* ============================================
  * Border Pulse Animation (InputBox waiting)
+ * 伪元素描边 + opacity，避免 border-color 每帧 paint
  * ============================================ */
 @keyframes border-pulse {
   0%,
   100% {
-    border-color: hsl(var(--accent-main-100) / 0.5);
+    opacity: 0.55;
   }
   50% {
-    border-color: hsl(var(--accent-main-100) / 0.2);
+    opacity: 0.18;
   }
 }
 
@@ -953,11 +954,28 @@ body {
 }
 
 .animate-border-pulse {
+  border-color: transparent !important;
+}
+
+.animate-border-pulse::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 1px solid hsl(var(--accent-main-100));
+  opacity: 0.55;
   animation: border-pulse 2s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 2;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .animate-border-pulse {
+    border-color: hsl(var(--accent-main-100) / 0.45) !important;
+  }
+
+  .animate-border-pulse::after {
+    content: none;
     animation: none !important;
   }
 }

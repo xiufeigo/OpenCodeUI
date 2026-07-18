@@ -13,8 +13,8 @@ import {
   ShareIcon,
 } from '../../../components/Icons'
 import { CircularProgress } from '../../../components/CircularProgress'
-import { formatTokens, formatCost, useTheme } from '../../../hooks'
-import type { SessionStats } from '../../../hooks'
+import { formatTokens, formatCost, useTheme, useSessionStats } from '../../../hooks'
+import { useHasMessages } from '../../../store'
 
 // 状态指示器 - 圆环 + 右下角状态点
 function StatusIndicator({
@@ -69,14 +69,21 @@ function StatusIndicator({
 export interface SidebarFooterProps {
   showLabels: boolean
   connectionState: string
-  stats: SessionStats
-  hasMessages: boolean
+  contextLimit?: number
   onOpenSettings?: () => void
 }
 
-export function SidebarFooter({ showLabels, connectionState, stats, hasMessages, onOpenSettings }: SidebarFooterProps) {
+export function SidebarFooter({
+  showLabels,
+  connectionState,
+  contextLimit = 200000,
+  onOpenSettings,
+}: SidebarFooterProps) {
   const { t } = useTranslation(['chat', 'common'])
   const { mode: themeMode, setThemeWithAnimation: onThemeChange, isWideMode, toggleWideMode } = useTheme()
+  // 统计与 hasMessages 留在 footer：流式时不让整个 SidePanel 跟着 messages 重渲
+  const hasMessages = useHasMessages()
+  const stats = useSessionStats(contextLimit)
   const [isOpen, setIsOpen] = useState(false)
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0, width: 260, fromBottom: false })
   const [shareDialogOpen, setShareDialogOpen] = useState(false)

@@ -753,6 +753,69 @@ export type ProcessTimelineItem =
       finalMessage?: Message
     }
 
+/** 两行是否可共享同一对象（VirtualRow 靠 item 引用短路） */
+export function sameProcessTimelineItem(a: ProcessTimelineItem, b: ProcessTimelineItem): boolean {
+  if (a === b) return true
+  if (a.kind !== b.kind || a.key !== b.key) return false
+
+  if (a.kind === 'message' && b.kind === 'message') {
+    return a.message === b.message && a.processContentScope === b.processContentScope
+  }
+
+  if (a.kind === 'process-shell' && b.kind === 'process-shell') {
+    if (
+      a.userMessageId !== b.userMessageId ||
+      a.startedAt !== b.startedAt ||
+      a.durationMs !== b.durationMs ||
+      a.isActive !== b.isActive ||
+      a.finalMessage !== b.finalMessage ||
+      a.children.length !== b.children.length
+    ) {
+      return false
+    }
+    for (let i = 0; i < a.children.length; i++) {
+      const left = a.children[i]
+      const right = b.children[i]
+      if (left.message !== right.message || left.processContentScope !== right.processContentScope) {
+        return false
+      }
+    }
+    return true
+  }
+
+  return false
+}
+
+/**
+ * 流式时只脏最后一行：按 key 复用未变 timeline item，让 VirtualRow memo 命中历史行。
+ * 数组本身若完全未变则复用 previous 数组引用。
+ */
+export function reuseProcessTimelineItems(
+  previous: ProcessTimelineItem[] | undefined,
+  next: ProcessTimelineItem[],
+): ProcessTimelineItem[] {
+  if (!previous || previous.length === 0) return next
+  if (previous === next) return previous
+
+  const prevByKey = new Map(previous.map(item => [item.key, item]))
+  let allSame = previous.length === next.length
+  const result = new Array<ProcessTimelineItem>(next.length)
+
+  for (let i = 0; i < next.length; i++) {
+    const item = next[i]
+    const prev = prevByKey.get(item.key)
+    if (prev && sameProcessTimelineItem(prev, item)) {
+      result[i] = prev
+      if (previous[i] !== prev) allSame = false
+    } else {
+      result[i] = item
+      allSame = false
+    }
+  }
+
+  return allSame ? previous : result
+}
+
 function assistantHasLiveWork(message: Message): boolean {
   if (message.info.role !== 'assistant') return false
   if (message.info.time.completed == null || message.isStreaming) return true

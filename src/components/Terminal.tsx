@@ -18,6 +18,7 @@ import { logger } from '../utils/logger'
 import { parsePtyFrame } from '../utils/ptyProtocol'
 import { isTauri } from '../utils/tauri'
 import { copyTextToClipboard, readTextFromClipboard } from '../utils/clipboard'
+import { hapticTap } from '../utils/haptics'
 import { keybindingStore } from '../store/keybindingStore'
 
 const TERMINAL_FONT_FALLBACK =
@@ -219,6 +220,46 @@ function applyStickyModifiers(data: string, sticky: StickyModifiers): string {
   return output
 }
 
+const REPEAT_DELAY = 350
+const REPEAT_INTERVAL = 80
+
+// 长按连续触发：pointerdown 立即触发 + 触觉反馈，持续按住后间隔重复。
+// 释放监听挂 window，确保指针移出按钮也能清理。
+function useRepeatablePress() {
+  const timerRef = useRef<number | null>(null)
+
+  const clear = useCallback(() => {
+    if (timerRef.current !== null) {
+      clearTimeout(timerRef.current)
+      timerRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    window.addEventListener('pointerup', clear)
+    window.addEventListener('pointercancel', clear)
+    return () => {
+      window.removeEventListener('pointerup', clear)
+      window.removeEventListener('pointercancel', clear)
+      clear()
+    }
+  }, [clear])
+
+  return useCallback((action: () => void, repeat: boolean) => {
+    clear()
+    action()
+    hapticTap()
+    if (!repeat) return
+    const schedule = (delay: number) => {
+      timerRef.current = window.setTimeout(() => {
+        action()
+        schedule(REPEAT_INTERVAL)
+      }, delay)
+    }
+    schedule(REPEAT_DELAY)
+  }, [clear])
+}
+
 interface MobileExtraKeysProps {
   onFocusTerminal: () => void
   onSend: (data: string) => void
@@ -228,10 +269,7 @@ interface MobileExtraKeysProps {
 
 function MobileExtraKeys({ onSend, stickyModifiers, onToggleSticky, onFocusTerminal }: MobileExtraKeysProps) {
   const toolbarGridStyle = { gridTemplateColumns: 'repeat(7, minmax(0, 1fr))' } as const
-
-  const handlePointerDown = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
-    e.preventDefault()
-  }, [])
+  const press = useRepeatablePress()
 
   const handleSend = useCallback(
     (data: string) => {
@@ -242,7 +280,7 @@ function MobileExtraKeys({ onSend, stickyModifiers, onToggleSticky, onFocusTermi
   )
 
   const btnBase =
-    'flex h-8 min-w-0 w-full items-center justify-center overflow-hidden whitespace-nowrap rounded-md border px-0 text-[length:var(--fs-xxs)] leading-none font-mono font-semibold tracking-[-0.02em] text-text-200 transition-[background-color,color,border-color,transform] duration-100 select-none active:scale-[0.98]'
+    'flex h-8 min-w-0 w-full items-center justify-center overflow-hidden whitespace-nowrap rounded-md border px-0 text-[length:var(--fs-xxs)] leading-none font-mono font-semibold tracking-[-0.02em] text-text-200 transition-[background-color,color,border-color,transform] duration-100 select-none active:scale-[0.98] touch-none'
   const btnNormal = `${btnBase} border-border-200/20 bg-bg-200/70 active:bg-bg-300/80`
   const btnActive = `${btnBase} border-accent-main-100/45 bg-accent-main-100/18 text-accent-main-100`
 
@@ -264,17 +302,22 @@ function MobileExtraKeys({ onSend, stickyModifiers, onToggleSticky, onFocusTermi
                     type="button"
                     aria-pressed={isActive}
                     className={isActive ? btnActive : btnNormal}
-                    onPointerDown={handlePointerDown}
-                    onClick={() => {
-                      if (key.modifier) {
-                        onToggleSticky(key.modifier)
-                        onFocusTerminal()
+                    onPointerDown={e => {
+                      e.preventDefault()
+                      const { modifier, data } = key
+                      if (modifier) {
+                        // 粘滞修饰键：单次切换，不连发
+                        press(() => {
+                          onToggleSticky(modifier)
+                          onFocusTerminal()
+                        }, false)
                         return
                       }
-                      if (key.data) {
-                        handleSend(key.data)
+                      if (data) {
+                        press(() => handleSend(data), true)
                       }
                     }}
+                    onContextMenu={e => e.preventDefault()}
                   >
                     <span className="block max-w-full overflow-hidden whitespace-nowrap text-center leading-none [text-wrap:nowrap]">
                       {key.label}

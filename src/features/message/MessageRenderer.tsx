@@ -782,11 +782,15 @@ const AssistantMessageView = memo(function AssistantMessageView({
     return ended
   }, [parts])
 
-  // 计算完整文本用于复制
-  const fullText = parts
-    .filter((p): p is TextPart => p.type === 'text' && !p.synthetic)
-    .map(p => p.text)
-    .join('')
+  // 计算完整文本用于复制（缓存：parts 引用未变时复用，避免流式每帧重算字符串拼接）
+  const fullText = useMemo(
+    () =>
+      parts
+        .filter((p): p is TextPart => p.type === 'text' && !p.synthetic)
+        .map(p => p.text)
+        .join(''),
+    [parts],
+  )
   const hasCopyableText = fullText.trim().length > 0
 
   // 检查消息级别错误

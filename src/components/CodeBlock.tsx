@@ -1,4 +1,4 @@
-import { memo, useCallback, useDeferredValue, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { useInputCapabilities } from '../hooks/useInputCapabilities'
 import { useSyntaxHighlight, useStreamingSyntaxHighlight, type HighlightTokens } from '../hooks/useSyntaxHighlight'
 import { themeStore } from '../store/themeStore'
@@ -126,7 +126,7 @@ export const CodeBlock = memo(function CodeBlock({
   const { preferTouchUi } = useInputCapabilities()
   const resolvedWordWrap = wordwrap ?? codeWordWrap
   const isReasoning = variant === 'reasoning'
-  const highlightCode = useDeferredValue(code)
+  const highlightCode = code
 
   // Lazy load highlighting when close to viewport
   const { ref, inView } = useInView({ triggerOnce: true, rootMargin: '200px' })

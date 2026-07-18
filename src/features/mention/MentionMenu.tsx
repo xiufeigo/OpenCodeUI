@@ -73,6 +73,10 @@ export const MentionMenu = forwardRef<MentionMenuHandle, MentionMenuProps>(funct
   // 动态计算菜单最大高度，防止在小屏幕上被 header 遮挡
   useLayoutEffect(() => {
     let frameId: number | null = null
+    let resizeRaf = 0
+    // 阴影元素缓存：菜单开期内 header/阴影不变，避免每次 resize 都 querySelector。
+    // undefined=未查询, null=查询过但未找到, HTMLElement=已找到
+    let shadowEl: HTMLElement | null | undefined = undefined
 
     const calculate = () => {
       const el = menuRef.current
@@ -86,14 +90,30 @@ export const MentionMenu = forwardRef<MentionMenuHandle, MentionMenuProps>(funct
         setDynamicMaxHeight(undefined)
         return
       }
+      if (shadowEl === undefined) {
+        shadowEl =
+          parent.closest<HTMLElement>('[data-chat-pane-root]')?.querySelector<HTMLElement>('[data-chat-header-shadow]') ?? null
+      }
       const parentRect = parent.getBoundingClientRect()
-      // 菜单从父容器顶部向上弹出，可用空间 = 父容器顶部 - header高度(56px) - 安全间距(16px) - marginBottom(8px)
-      const available = parentRect.top - 56 - 16 - 8
+      // 阴影底边 = 菜单顶部不可越过的线（header + 渐变阴影）。
+      // 直接测量阴影元素，不硬编码高度，兼容 --app-safe-top 与未来调整。
+      const ceiling = shadowEl ? shadowEl.getBoundingClientRect().bottom : 0
+      // 可用空间 = 父容器顶部 - 阴影底边 - marginBottom(8px)
+      const available = parentRect.top - ceiling - 8
       if (available > 0 && available < 360) {
         setDynamicMaxHeight(available)
       } else {
         setDynamicMaxHeight(undefined)
       }
+    }
+
+    // rAF 合并同帧多次 resize（移动端键盘弹出/收起会高频触发）
+    const onResize = () => {
+      if (resizeRaf) return
+      resizeRaf = requestAnimationFrame(() => {
+        resizeRaf = 0
+        calculate()
+      })
     }
 
     if (isOpen) {
@@ -103,13 +123,14 @@ export const MentionMenu = forwardRef<MentionMenuHandle, MentionMenuProps>(funct
     }
 
     // 监听 resize（键盘弹出/收起时触发）
-    window.addEventListener('resize', calculate)
+    window.addEventListener('resize', onResize)
     // 也监听 visualViewport 的变化（移动端键盘弹出更可靠）
-    window.visualViewport?.addEventListener('resize', calculate)
+    window.visualViewport?.addEventListener('resize', onResize)
     return () => {
       if (frameId !== null) cancelAnimationFrame(frameId)
-      window.removeEventListener('resize', calculate)
-      window.visualViewport?.removeEventListener('resize', calculate)
+      if (resizeRaf) cancelAnimationFrame(resizeRaf)
+      window.removeEventListener('resize', onResize)
+      window.visualViewport?.removeEventListener('resize', onResize)
     }
   }, [isOpen])
 

@@ -5,7 +5,7 @@ import { PanelContainer } from './PanelContainer'
 import { layoutStore, useLayoutStore, type TerminalTab, type PanelTab } from '../store/layoutStore'
 import { serverStore } from '../store/serverStore'
 import { createPtySession, removePtySession, listPtySessions } from '../api/pty'
-import { useMessageStore } from '../store'
+import { useCurrentSessionId } from '../store'
 import { ResizablePanel } from './ui/ResizablePanel'
 import { logger } from '../utils/logger'
 import { normalizeToForwardSlash, uiErrorHandler } from '../utils'
@@ -36,7 +36,7 @@ function PanelFallback() {
 export const BottomPanel = memo(function BottomPanel({ directory }: BottomPanelProps) {
   const { t } = useTranslation(['components', 'common'])
   const { bottomPanelOpen, bottomPanelHeight } = useLayoutStore()
-  const { sessionId } = useMessageStore()
+  const sessionId = useCurrentSessionId()
   const { interaction, layout } = useChatViewport()
 
   const [isRestoring, setIsRestoring] = useState(false)

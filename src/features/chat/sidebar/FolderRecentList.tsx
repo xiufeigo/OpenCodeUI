@@ -1027,8 +1027,10 @@ function FolderRecentSection({
           {shouldRenderBody && (
             <div onTouchStart={e => e.stopPropagation()}>
               {!hasActivated || (!hasWorkspaceTree && isLoading) ? (
-                <div className="flex items-center px-2 py-1 text-[length:var(--fs-xs)] text-text-400/70">
-                  <SpinnerIcon size={12} className="animate-spin" />
+                // 与 minimal SessionListItem 对齐：状态点占位 + spinner 落在标题文字区
+                <div className="flex items-center gap-2 px-2 py-1.5" aria-busy="true">
+                  <span className="size-5 shrink-0" aria-hidden="true" />
+                  <SpinnerIcon size={12} className="animate-spin text-text-400" />
                 </div>
               ) : hasWorkspaceTree ? (
                 <WorkspaceFolderList

@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { Dialog, Button, IconButton } from '../../components/ui'
 import { LinkIcon, CopyIcon, GlobeIcon, SpinnerIcon, CheckIcon } from '../../components/Icons'
 import { shareSession, unshareSession } from '../../api'
-import { useMessageStore, messageStore } from '../../store'
+import { useShareSessionMeta, messageStore } from '../../store'
 import { apiErrorHandler, clipboardErrorHandler, copyTextToClipboard } from '../../utils'
 
 interface ShareDialogProps {
@@ -13,7 +13,7 @@ interface ShareDialogProps {
 
 export function ShareDialog({ isOpen, onClose }: ShareDialogProps) {
   const { t } = useTranslation(['chat', 'common'])
-  const { sessionId, shareUrl, sessionDirectory } = useMessageStore()
+  const { sessionId, shareUrl, sessionDirectory } = useShareSessionMeta()
   const [loading, setLoading] = useState(false)
   const [copied, setCopied] = useState(false)
   const [error, setError] = useState<string | null>(null)

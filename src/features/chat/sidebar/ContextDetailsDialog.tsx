@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { Dialog } from '../../../components/ui'
 import { CodeBlock } from '../../../components/CodeBlock'
 import { ChevronDownIcon, ChevronUpIcon, CpuIcon, DollarSignIcon } from '../../../components/Icons'
-import { useMessageStore } from '../../../store'
+import { useCurrentSessionId, useMessages } from '../../../store'
 import { useSessionStats, formatTokens, formatCost } from '../../../hooks'
 import type { Message, TokenUsage } from '../../../types/message'
 
@@ -37,7 +37,19 @@ function Stat({ label, value }: { label: string; value: string }) {
 
 export function ContextDetailsDialog({ isOpen, onClose, contextLimit }: ContextDetailsDialogProps) {
   const { t } = useTranslation(['chat', 'common'])
-  const { sessionId, messages } = useMessageStore()
+
+  return (
+    <Dialog isOpen={isOpen} onClose={onClose} title={t('contextDetails.context')} width={900} className="w-full">
+      {/* 关闭时不挂 body，避免 useMessages / stats 在流式时空转 */}
+      {isOpen ? <ContextDetailsBody contextLimit={contextLimit} /> : null}
+    </Dialog>
+  )
+}
+
+function ContextDetailsBody({ contextLimit }: { contextLimit: number }) {
+  const { t } = useTranslation(['chat', 'common'])
+  const sessionId = useCurrentSessionId()
+  const messages = useMessages()
   const stats = useSessionStats(contextLimit)
 
   const [expandedId, setExpandedId] = useState<string | null>(null)
@@ -77,7 +89,7 @@ export function ContextDetailsDialog({ isOpen, onClose, contextLimit }: ContextD
   }, [])
 
   return (
-    <Dialog isOpen={isOpen} onClose={onClose} title={t('contextDetails.context')} width={900} className="w-full">
+    <>
       <div className="flex flex-col gap-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Stat label={t('contextDetails.session')} value={sessionId || '—'} />
@@ -197,6 +209,6 @@ export function ContextDetailsDialog({ isOpen, onClose, contextLimit }: ContextD
           })}
         </div>
       </div>
-    </Dialog>
+    </>
   )
 }

@@ -53,7 +53,9 @@ interface ChatPaneProps {
 }
 
 // ============================================
-// Compact viewport value (constant, never changes)
+// Compact viewport shell for split panes.
+// Layout/presentation stay fixed; enableCollapsedInputDock is inherited from the
+// app viewport so the desktop "collapse input dock" setting still works in split.
 // ============================================
 const PANE_VIEWPORT: ChatViewportValue = {
   presentation: {
@@ -1014,7 +1016,22 @@ export const ChatPane = memo(function ChatPane({
 
   // Always wrap with ChatViewportProvider to keep the React tree structure stable
   // across fullscreen toggles. Only the value changes — compact pane vs full viewport.
-  const viewportValue = showCompactShell ? PANE_VIEWPORT : (outerViewport ?? PANE_VIEWPORT)
+  // Split shell keeps compact presentation, but must inherit the input-dock setting
+  // from the outer viewport (previously hardcoded false, so PC split never collapsed).
+  const viewportValue = useMemo((): ChatViewportValue => {
+    if (!showCompactShell) return outerViewport ?? PANE_VIEWPORT
+    const enableCollapsedInputDock = outerViewport?.interaction.enableCollapsedInputDock ?? false
+    if (enableCollapsedInputDock === PANE_VIEWPORT.interaction.enableCollapsedInputDock) {
+      return PANE_VIEWPORT
+    }
+    return {
+      ...PANE_VIEWPORT,
+      interaction: {
+        ...PANE_VIEWPORT.interaction,
+        enableCollapsedInputDock,
+      },
+    }
+  }, [showCompactShell, outerViewport])
 
   return <ChatViewportProvider value={viewportValue}>{content}</ChatViewportProvider>
 })
