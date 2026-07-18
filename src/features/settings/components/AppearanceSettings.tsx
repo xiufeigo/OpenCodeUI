@@ -582,15 +582,35 @@ export function AppearanceSettings() {
 
       <SettingsSection title={t('appearance.uiStyle')}>
         <p className="text-[length:var(--fs-sm)] text-text-400">{t('appearance.uiStyleDesc')}</p>
-        <SegmentedControl
-          value={styleId}
-          options={[
-            { value: 'auto', label: t('appearance.uiStyleAuto') },
-            { value: 'none', label: t('appearance.uiStyleNone') },
-            ...availableStylePresets.map(s => ({ value: s.id, label: s.name })),
-          ]}
-          onChange={v => setStyleId(v)}
-        />
+        <div className="grid gap-2 sm:grid-cols-2">
+          {[
+            { id: 'auto', name: t('appearance.uiStyleAuto'), description: t('appearance.uiStyleAutoDesc') },
+            { id: 'none', name: t('appearance.uiStyleNone'), description: t('appearance.uiStyleNoneDesc') },
+            ...availableStylePresets,
+          ].map(option => {
+            const isActive = styleId === option.id
+            return (
+              <button
+                key={option.id}
+                onClick={() => setStyleId(option.id)}
+                className={`flex items-start gap-3 p-3 rounded-lg border transition-all text-left w-full
+                  ${
+                    isActive
+                      ? 'border-accent-main-100/60 bg-accent-main-100/5 ring-1 ring-accent-main-100/20'
+                      : 'border-border-200/50 hover:border-border-300 hover:bg-bg-100/50'
+                  }`}
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[length:var(--fs-md)] font-medium text-text-100">{option.name}</span>
+                    {isActive && <CheckIcon size={12} className="text-accent-main-100 shrink-0" />}
+                  </div>
+                  <div className="text-[length:var(--fs-xs)] text-text-400 mt-0.5">{option.description}</div>
+                </div>
+              </button>
+            )
+          })}
+        </div>
       </SettingsSection>
 
       <SettingsSection title={t('appearance.customCss')}>

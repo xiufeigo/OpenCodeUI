@@ -165,6 +165,8 @@
     "uiStyleDesc": "Layer shape, blur, or terminal effects on top of any color theme",
     "uiStyleAuto": "Follow Theme",
     "uiStyleNone": "None",
+    "uiStyleAutoDesc": "Use the style bundled with the color theme",
+    "uiStyleNoneDesc": "Colors only, no extra style effects",
     "customCss": "Custom CSS",
     "customCssDesc": "Override fonts, colors, and any CSS variables. Works with all themes.",
     "customCssHelp": "Override fonts, colors, and styles with custom CSS.",
