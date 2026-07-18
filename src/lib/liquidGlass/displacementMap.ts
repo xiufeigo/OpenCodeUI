@@ -11,12 +11,12 @@
 
 /** 生成分辨率缩放（平滑渐变，低分辨率生成后放大无损） */
 export const DISPLACEMENT_DPI_SCALE = 0.25
-/** 边缘折射带宽（uv 比例，0.12 ≈ 元素短边方向外侧 12%） */
-export const EDGE_BAND = 0.12
+/** 边缘折射带宽（uv 比例，0.16 ≈ 元素短边方向外侧 16%） */
+export const EDGE_BAND = 0.16
 /** SDF 距离偏移：平坦区在 EDGE_BAND 之外再延伸的距离（uv 比例） */
-export const SDF_SHIFT = 0.05
+export const SDF_SHIFT = 0.08
 /** 折射强度放大系数（feDisplacementMap scale 的倍率） */
-export const REFRACTION_STRENGTH = 2
+export const REFRACTION_STRENGTH = 4
 
 export interface DisplacementMap {
   /** RGBA 通道：R=dx、G=dy（0.5 为零点的归一化），B=0、A=255 */
