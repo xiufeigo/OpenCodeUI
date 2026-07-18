@@ -2,10 +2,11 @@
  * Codex 主题（id: liquid-glass）
  *
  * 色板：照搬默认 Eucalyptus，light/dark 两套（保持主题自包含，逐值复制）
- * 风格：codex 桌面端形态 —— 侧栏/右栏/底栏为通边磨砂玻璃（透出壁纸），
- * 主聊天窗口为唯一的白底圆角卡片（白色顶栏 + 白色正文）；整体背景为
- * Windows 11 壁纸（深色模式用暗色版），不依赖系统窗效；全主题无投影，
- * 靠发丝边分层，左右侧栏分割线默认隐藏、hover 显现。
+ * 风格：codex 桌面端形态 —— body::before 固定磨砂层统一模糊壁纸，
+ * 系统标题栏/侧栏/右栏/聊天窗缝隙透明叠加其上；主聊天窗口为唯一的
+ * 白底圆角卡片（白色顶栏 + 白色正文）；整体背景为 Windows 11 壁纸
+ * （深色模式用暗色版），不依赖系统窗效；全主题无投影，靠发丝边分层，
+ * 左右侧栏分割线默认隐藏、hover 显现。
  * css 同时为 .glass/.glass-alt 浮层注入白底磨砂背景与 backdrop-filter，
  * 独立于设置页的毛玻璃开关。
  */
@@ -189,6 +190,18 @@ export const liquidGlassStyle: ThemeStylePreset = {
   background-image: url('${codexWallpaperDark}');
 }
 
+/* 整体磨砂层：统一模糊壁纸，系统标题栏/侧栏/右栏/聊天窗缝隙等 chrome 区域透明叠加其上 */
+:root:root body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-color: hsl(var(--bg-100) / 0.55);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  backdrop-filter: blur(24px) saturate(160%);
+}
+
 :root:root #root {
   background: transparent;
 }
@@ -227,16 +240,14 @@ export const liquidGlassStyle: ThemeStylePreset = {
     background-color: hsl(var(--bg-000));
   }
 
-  /* 侧栏/右栏/底栏：通边磨砂，无圆角、无投影 */
+  /* 侧栏/右栏/底栏：透明叠加在整体磨砂层之上，无圆角、无投影，仅留发丝边 */
   :root:root [data-lq-surface='sidebar'],
   :root:root [data-lq-surface='left'],
   :root:root [data-lq-surface='right'],
   :root:root [data-lq-surface='bottom'] {
     border: 0 solid hsl(var(--border-200) / 0.6);
     border-radius: 0;
-    background-color: hsl(var(--bg-100) / 0.55);
-    -webkit-backdrop-filter: blur(24px) saturate(160%);
-    backdrop-filter: blur(24px) saturate(160%);
+    background-color: transparent;
     box-shadow: none;
   }
 

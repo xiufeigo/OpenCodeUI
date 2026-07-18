@@ -156,9 +156,10 @@ describe('liquid glass floating layout css', () => {
     expect(css).toContain('data-lq-chatbody')
     expect(css).toContain('background-color: hsl(var(--bg-000));')
     expect(css).toMatch(/\[data-lq-header\] \{\s+background-color: hsl\(var\(--bg-000\)\);/)
-    // 侧栏/右栏/底栏：通边磨砂（无圆角）
-    expect(css).toContain('hsl(var(--bg-100) / 0.55)')
-    expect(css).toContain('blur(24px)')
+    // 整体磨砂层：body::before 统一模糊壁纸（覆盖系统标题栏与聊天窗四周缝隙）
+    expect(css).toMatch(/body::before \{[^}]*hsl\(var\(--bg-100\) \/ 0\.55\)/)
+    expect(css).toMatch(/body::before \{[^}]*backdrop-filter: blur\(24px\)/)
+    // 侧栏/右栏/底栏：透明叠加磨砂层（无圆角）
     expect(css).toContain('border-radius: 0')
     // 左右侧栏分割线：默认隐藏，hover 显现
     expect(css).toContain('border-color: transparent')
