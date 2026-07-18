@@ -732,12 +732,28 @@ export function SidePanel({
       const draggedIsGlobal = folderProjects[draggedIdx].id === 'global'
       const targetIsGlobal = folderProjects[targetIdx].id === 'global'
 
-      if (draggedIsGlobal || targetIsGlobal) {
-        // 涉及全局：仅移动全局的位置，普通目录相对顺序不变
-        const insertIdx = draggedIdx < targetIdx ? targetIdx - 1 : targetIdx
-        if (insertIdx !== globalFolderIndex) {
-          setGlobalFolderIndex(insertIdx)
-          localStorage.setItem('opencode-sidebar-global-folder-index', String(insertIdx))
+      if (draggedIsGlobal) {
+        // 全局移到 target 位置：globalFolderIndex 直接等于 targetIdx
+        if (targetIdx !== globalFolderIndex) {
+          setGlobalFolderIndex(targetIdx)
+          localStorage.setItem('opencode-sidebar-global-folder-index', String(targetIdx))
+        }
+        return
+      }
+
+      if (targetIsGlobal) {
+        // 普通目录拖到全局位置 = 交换：全局到普通目录原位，普通目录移到全局旁
+        const adjacentIdx = draggedIdx < targetIdx ? targetIdx - 1 : targetIdx + 1
+        if (draggedIdx !== adjacentIdx) {
+          const draggedReorderPath = folderProjects[draggedIdx].reorderPath
+          const adjacentReorderPath = folderProjects[adjacentIdx].reorderPath
+          if (draggedReorderPath && adjacentReorderPath) {
+            reorderDirectories(draggedReorderPath, adjacentReorderPath)
+          }
+        }
+        if (draggedIdx !== globalFolderIndex) {
+          setGlobalFolderIndex(draggedIdx)
+          localStorage.setItem('opencode-sidebar-global-folder-index', String(draggedIdx))
         }
         return
       }
