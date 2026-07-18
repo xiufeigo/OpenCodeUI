@@ -119,4 +119,13 @@ describe('liquid glass engine', () => {
     startLiquidGlass()
     expect(el.style.getPropertyValue('backdrop-filter')).toContain('url(#liquid-glass-filter-')
   })
+
+  it('start also picks up [data-lq-surface] panels', () => {
+    const el = document.createElement('div')
+    el.setAttribute('data-lq-surface', 'chat')
+    vi.spyOn(el, 'getBoundingClientRect').mockReturnValue(FAKE_RECT)
+    document.body.appendChild(el)
+    startLiquidGlass()
+    expect(el.style.getPropertyValue('backdrop-filter')).toContain('url(#liquid-glass-filter-')
+  })
 })

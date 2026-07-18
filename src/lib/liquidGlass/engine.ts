@@ -10,7 +10,7 @@ import { generateDisplacementMap } from './displacementMap'
 
 const SVG_NS = 'http://www.w3.org/2000/svg'
 const XLINK_NS = 'http://www.w3.org/1999/xlink'
-const GLASS_SELECTOR = '.glass, .glass-alt'
+const GLASS_SELECTOR = '.glass, .glass-alt, [data-lq-surface]'
 const BACKDROP_CHAIN = 'blur(16px) saturate(160%) brightness(1.05)'
 const REBUILD_DEBOUNCE_MS = 150
 const DEFAULT_RADIUS = 12
