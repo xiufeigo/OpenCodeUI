@@ -466,6 +466,7 @@ pub fn run() {
             commands::opencode::stop_opencode_service,
             commands::opencode::get_service_started_by_us,
             commands::opencode::confirm_close_app,
+            commands::window_effects::set_window_effect,
         ]);
 
     // Android: 注册 bridge commands
