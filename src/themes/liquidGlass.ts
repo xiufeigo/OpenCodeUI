@@ -221,6 +221,15 @@ export const liquidGlassStyle: ThemeStylePreset = {
   background-color: transparent;
 }
 
+/* 面板头部动作按钮：白底遮罩，避免融进磨砂背景找不到 */
+:root:root [data-lq-iconbtn] {
+  background-color: hsl(var(--bg-000) / 0.7);
+}
+
+:root:root [data-lq-iconbtn]:hover {
+  background-color: hsl(var(--bg-000) / 0.9);
+}
+
 /* ===== 桌面端 Codex 布局（移动端维持默认） ===== */
 @media (min-width: 768px) {
   /* 主窗口四周留白，露出磨砂 chrome / 壁纸；
@@ -276,6 +285,37 @@ export const liquidGlassStyle: ThemeStylePreset = {
   /* 右栏/底栏面板头部：透明叠加磨砂层 */
   :root:root [data-lq-panelhead] {
     background-color: transparent;
+  }
+
+  /* 亮色模式：侧栏文字加深，提升磨砂底上的可读性（搜索框保留原有色值） */
+  :root:root[data-mode='light'] [data-lq-surface='sidebar'],
+  :root:root[data-mode='light'] [data-lq-surface='left'],
+  :root:root[data-mode='light'] [data-lq-surface='right'] {
+    --text-200: 170 12% 30%;
+    --text-300: 170 10% 42%;
+    --text-400: 170 9% 54%;
+  }
+
+  :root:root[data-mode='light'] [data-lq-glass] {
+    --text-200: 170 10% 40%;
+    --text-300: 170 8% 55%;
+    --text-400: 170 8% 70%;
+  }
+
+  @media (prefers-color-scheme: light) {
+    :root:root:not([data-mode]) [data-lq-surface='sidebar'],
+    :root:root:not([data-mode]) [data-lq-surface='left'],
+    :root:root:not([data-mode]) [data-lq-surface='right'] {
+      --text-200: 170 12% 30%;
+      --text-300: 170 10% 42%;
+      --text-400: 170 9% 54%;
+    }
+
+    :root:root:not([data-mode]) [data-lq-glass] {
+      --text-200: 170 10% 40%;
+      --text-300: 170 8% 55%;
+      --text-400: 170 8% 70%;
+    }
   }
 
   /* 左右侧栏分割线：默认隐藏，鼠标移上时显现 */

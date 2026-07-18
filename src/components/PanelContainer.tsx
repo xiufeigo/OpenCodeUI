@@ -337,6 +337,7 @@ export const PanelContainer = memo(function PanelContainer({
           {onNewTerminal && (
             <button
               ref={addButtonRef}
+              data-lq-iconbtn
               onClick={() => {
                 if (addMenuPos) {
                   setAddMenuPos(null)
@@ -368,6 +369,7 @@ export const PanelContainer = memo(function PanelContainer({
         <div className="flex items-center gap-1 shrink-0 ml-2 border-l border-border-200/30 pl-2">
           <button
             onClick={handleCollapse}
+            data-lq-iconbtn
             className="p-2 text-text-400 hover:text-text-100 hover:bg-bg-200/50 rounded-md transition-colors"
             title={t('terminal.hidePanel')}
           >

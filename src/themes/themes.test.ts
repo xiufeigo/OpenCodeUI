@@ -176,6 +176,10 @@ describe('liquid glass floating layout css', () => {
     expect(css).toContain("data-mode='dark'")
     expect(css).toContain('prefers-color-scheme: dark')
     expect(css).toContain(':not([data-mode])')
+    // 亮色模式侧栏文字加深（搜索框保留原值）；面板按钮白底遮罩
+    expect(css).toContain("data-mode='light'")
+    expect(css).toContain('--text-300: 170 10% 42%;')
+    expect(css).toContain('[data-lq-iconbtn]')
   })
 
   it('uses Codex as display name and declares no refraction effect', () => {
