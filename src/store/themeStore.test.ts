@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { importThemeBackup, themeStore } from './themeStore'
 import { isLiquidGlassRunning, stopLiquidGlass } from '../lib/liquidGlass'
 
@@ -89,5 +89,26 @@ describe('liquid glass engine lifecycle', () => {
     themeStore.setPreset('liquid-glass')
     themeStore.setStyleId('none')
     expect(isLiquidGlassRunning()).toBe(false)
+  })
+})
+
+describe('window effect gating', () => {
+  it('does not set data-window-effect when the invoke fails', async () => {
+    vi.resetModules()
+    vi.doMock('../utils/tauri', async importOriginal => {
+      const mod = await importOriginal<typeof import('../utils/tauri')>()
+      return { ...mod, isTauri: () => true }
+    })
+    vi.doMock('@tauri-apps/api/core', () => ({ invoke: vi.fn().mockRejectedValue(new Error('unsupported')) }))
+
+    const { themeStore: mockedStore } = await import('./themeStore')
+    mockedStore.setPreset('liquid-glass')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(document.documentElement.hasAttribute('data-window-effect')).toBe(false)
+
+    vi.doUnmock('../utils/tauri')
+    vi.doUnmock('@tauri-apps/api/core')
+    vi.resetModules()
   })
 })

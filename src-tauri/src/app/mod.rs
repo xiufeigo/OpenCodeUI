@@ -212,7 +212,7 @@ fn create_hidden_content_window(
     .title("OpenCode")
     .inner_size(800.0, 600.0);
 
-    builder.visible(false).build()
+    builder.visible(false).transparent(true).build()
 }
 
 /// macOS 红绿灯（关闭/最小化/最大化）相对窗口左上角的偏移。

@@ -916,7 +916,7 @@ class ThemeStore {
       }
     })
 
-    // 5. 界面风格特效引擎启停（仅 liquid-glass 风格声明 liquid-refraction）
+    // 5. 界面风格特效引擎启停（当前无风格声明特效（liquid-refraction 已停用）；有声明时按 effects 启停）
     if (style?.effects?.includes('liquid-refraction')) {
       startLiquidGlass()
     } else {

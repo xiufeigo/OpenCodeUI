@@ -123,7 +123,7 @@ export const liquidGlassTheme: ThemePreset = {
 export const liquidGlassStyle: ThemeStylePreset = {
   id: 'liquid-glass',
   name: 'Codex',
-  description: 'Clear glass panels with edge refraction',
+  description: 'Codex-style frosted surfaces and floating panes',
   style: {
     radius: { sm: '8px', md: '12px', lg: '16px', xl: '20px', '2xl': '24px' },
     shadows: {
