@@ -2,12 +2,16 @@
  * Codex 主题（id: liquid-glass）
  *
  * 色板：照搬默认 Eucalyptus，light/dark 两套（保持主题自包含，逐值复制）
- * 风格：codex 桌面端形态 —— 侧栏/顶栏/右栏/底栏为通边磨砂玻璃（透出桌面），
- * 仅主聊天窗口是白底圆角卡片（磨砂顶栏 + 白色正文）；全主题无投影，靠发丝边分层。
+ * 风格：codex 桌面端形态 —— 侧栏/右栏/底栏为通边磨砂玻璃（透出壁纸），
+ * 主聊天窗口为唯一的白底圆角卡片（白色顶栏 + 白色正文）；整体背景为
+ * Windows 11 壁纸（深色模式用暗色版），不依赖系统窗效；全主题无投影，
+ * 靠发丝边分层，左右侧栏分割线默认隐藏、hover 显现。
  * css 同时为 .glass/.glass-alt 浮层注入白底磨砂背景与 backdrop-filter，
  * 独立于设置页的毛玻璃开关。
  */
 import type { ThemeColors, ThemePreset, ThemeStylePreset } from './index'
+import codexWallpaperLight from '../assets/codex-wallpaper-light.jpg'
+import codexWallpaperDark from '../assets/codex-wallpaper-dark.jpg'
 
 const liquidGlassLight: ThemeColors = {
   background: {
@@ -176,11 +180,13 @@ export const liquidGlassStyle: ThemeStylePreset = {
   box-shadow: none;
 }
 
-/* 环境回退底色（非窗效环境）：淡青绿倾向 */
+/* 整体背景：Windows 11 壁纸（深色模式用暗色版）；主聊天窗口保持白底 */
 :root:root body {
-  background:
-    linear-gradient(160deg, hsl(var(--accent-main-100) / 0.08), hsl(var(--bg-100)) 45%),
-    hsl(var(--bg-100));
+  background: url('${codexWallpaperLight}') center / cover no-repeat hsl(var(--bg-100));
+}
+
+:root:root[data-mode='dark'] body {
+  background-image: url('${codexWallpaperDark}');
 }
 
 :root:root #root {
@@ -195,19 +201,14 @@ export const liquidGlassStyle: ThemeStylePreset = {
   background-color: transparent;
 }
 
-/* 窗效开启：透出真实桌面壁纸 */
-:root:root[data-window-effect] body {
-  background: transparent;
-}
-
 /* ===== 桌面端 Codex 布局（移动端维持默认） ===== */
 @media (min-width: 768px) {
-  /* 主窗口四周留白，露出磨砂 chrome / 桌面 */
+  /* 主窗口四周留白，露出磨砂 chrome / 壁纸 */
   :root:root [data-lq-chatwrap] {
     padding: 10px;
   }
 
-  /* 主 agent 窗口：唯一的圆角卡片，透明容器（磨砂顶栏 + 白色正文），无投影 */
+  /* 主 agent 窗口：唯一的圆角卡片，透明容器（白顶栏 + 白正文），无投影 */
   :root:root [data-lq-surface='chat'] {
     border: 1px solid hsl(var(--border-200) / 0.6);
     border-radius: var(--radius-lg);
@@ -215,11 +216,9 @@ export const liquidGlassStyle: ThemeStylePreset = {
     box-shadow: none;
   }
 
-  /* 顶栏：真磨砂玻璃，透出桌面 */
+  /* 顶栏：与正文一致的白色底 */
   :root:root [data-lq-surface='chat'] [data-lq-header] {
-    background-color: hsl(var(--bg-100) / 0.55);
-    -webkit-backdrop-filter: blur(24px) saturate(160%);
-    backdrop-filter: blur(24px) saturate(160%);
+    background-color: hsl(var(--bg-000));
     border-bottom: 1px solid hsl(var(--border-200) / 0.6);
   }
 
@@ -228,7 +227,7 @@ export const liquidGlassStyle: ThemeStylePreset = {
     background-color: hsl(var(--bg-000));
   }
 
-  /* 侧栏/右栏/底栏：通边磨砂，无圆角、无投影，仅留发丝边 */
+  /* 侧栏/右栏/底栏：通边磨砂，无圆角、无投影 */
   :root:root [data-lq-surface='sidebar'],
   :root:root [data-lq-surface='left'],
   :root:root [data-lq-surface='right'],
@@ -254,12 +253,29 @@ export const liquidGlassStyle: ThemeStylePreset = {
     border-top-width: 1px;
   }
 
+  /* 左右侧栏分割线：默认隐藏，鼠标移上时显现 */
+  :root:root [data-lq-surface='sidebar'],
+  :root:root [data-lq-surface='left'],
+  :root:root [data-lq-surface='right'] {
+    border-color: transparent;
+    transition: border-color 160ms ease;
+  }
+
+  :root:root [data-lq-surface='sidebar']:hover,
+  :root:root [data-lq-surface='left']:hover,
+  :root:root [data-lq-surface='right']:hover {
+    border-color: hsl(var(--border-200) / 0.6);
+  }
+
   /* 深色模式：发丝边分层（bg-000 比 bg-100 浅，正文卡片天然提亮） */
   :root:root[data-mode='dark'] [data-lq-surface='chat'],
-  :root:root[data-mode='dark'] [data-lq-surface='sidebar'],
-  :root:root[data-mode='dark'] [data-lq-surface='left'],
-  :root:root[data-mode='dark'] [data-lq-surface='right'],
   :root:root[data-mode='dark'] [data-lq-surface='bottom'] {
+    border-color: hsl(var(--border-200) / 0.8);
+  }
+
+  :root:root[data-mode='dark'] [data-lq-surface='sidebar']:hover,
+  :root:root[data-mode='dark'] [data-lq-surface='left']:hover,
+  :root:root[data-mode='dark'] [data-lq-surface='right']:hover {
     border-color: hsl(var(--border-200) / 0.8);
   }
 

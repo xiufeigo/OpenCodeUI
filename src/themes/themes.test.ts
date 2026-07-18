@@ -152,13 +152,20 @@ describe('liquid glass floating layout css', () => {
     expect(css).toContain("[data-lq-surface='chat']")
     expect(css).toContain('background-color: transparent')
     expect(css).toContain('box-shadow: none')
-    // 聊天正文白底
+    // 聊天正文与顶栏均为白底
     expect(css).toContain('data-lq-chatbody')
     expect(css).toContain('background-color: hsl(var(--bg-000));')
-    // 顶栏/侧栏/右栏/底栏：通边磨砂（无圆角）
+    expect(css).toMatch(/\[data-lq-header\] \{\s+background-color: hsl\(var\(--bg-000\)\);/)
+    // 侧栏/右栏/底栏：通边磨砂（无圆角）
     expect(css).toContain('hsl(var(--bg-100) / 0.55)')
     expect(css).toContain('blur(24px)')
     expect(css).toContain('border-radius: 0')
+    // 左右侧栏分割线：默认隐藏，hover 显现
+    expect(css).toContain('border-color: transparent')
+    expect(css).toContain("[data-lq-surface='sidebar']:hover")
+    // 整体背景：Windows 11 壁纸（亮/暗两张）
+    expect(css).toContain('codex-wallpaper-light')
+    expect(css).toContain('codex-wallpaper-dark')
     // 白底磨砂浮层
     expect(css).toContain('hsl(var(--bg-000) / 0.8)')
     // 深色发丝边分层
