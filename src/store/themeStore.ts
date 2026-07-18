@@ -1041,7 +1041,7 @@ class ThemeStore {
       root.removeAttribute('data-window-effect')
     }
     void import('@tauri-apps/api/core')
-      .then(({ invoke }) => invoke('set_window_effect', { enabled }))
+      .then(({ invoke }) => invoke('set_window_effect', { enabled, dark: this.getResolvedMode() === 'dark' }))
       .then(() => {
         if (enabled) root.setAttribute('data-window-effect', '')
       })
