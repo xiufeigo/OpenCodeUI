@@ -1,7 +1,7 @@
 /**
  * 液态玻璃折射引擎
  *
- * 为 .glass / .glass-alt 元素创建按尺寸生成的 SVG 位移滤镜，
+ * 为 .glass / .glass-alt / [data-lq-surface] 元素创建按尺寸生成的 SVG 位移滤镜，
  * 以内联 backdrop-filter: url(#id) + 磨砂链应用「边缘折射」。
  * 不支持 url() 的浏览器（WebKit/Firefox）视该内联声明为无效，
  * 自动落回风格 css 的磨砂规则，天然降级。
