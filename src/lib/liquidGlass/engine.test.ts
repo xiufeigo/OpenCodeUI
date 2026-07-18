@@ -42,7 +42,7 @@ describe('liquid glass engine', () => {
     const el = createGlassElement()
     const cleanup = applyLiquidRefraction(el)
     expect(el.style.getPropertyValue('backdrop-filter')).toContain('url(#liquid-glass-filter-')
-    expect(el.style.getPropertyValue('backdrop-filter')).toContain('blur(36px)')
+    expect(el.style.getPropertyValue('backdrop-filter')).toContain('blur(16px)')
     cleanup()
     expect(el.style.getPropertyValue('backdrop-filter')).toBe('')
   })

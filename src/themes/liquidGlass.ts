@@ -135,8 +135,8 @@ export const liquidGlassStyle: ThemeStylePreset = {
     },
     css: `:root:root .glass,
 :root:root .glass-alt {
-  -webkit-backdrop-filter: blur(36px) saturate(200%) brightness(1.05);
-  backdrop-filter: blur(36px) saturate(200%) brightness(1.05);
+  -webkit-backdrop-filter: blur(16px) saturate(160%) brightness(1.05);
+  backdrop-filter: blur(16px) saturate(160%) brightness(1.05);
   border-color: hsl(var(--always-white) / 0.16);
   box-shadow:
     inset 0 1px 0 0 hsl(var(--always-white) / 0.22),
@@ -145,44 +145,23 @@ export const liquidGlassStyle: ThemeStylePreset = {
 }
 
 :root:root .glass {
-  background-color: hsl(var(--bg-000) / 0.5);
+  background-color: hsl(var(--bg-000) / 0.22);
   background-image: linear-gradient(
     135deg,
-    hsl(var(--always-white) / 0.1) 0%,
-    hsl(var(--always-white) / 0.03) 35%,
-    transparent 60%
-  );
-}
-
-:root:root .glass-alt {
-  background-color: hsl(var(--bg-100) / 0.42);
-  background-image: linear-gradient(
-    135deg,
-    hsl(var(--always-white) / 0.09) 0%,
+    hsl(var(--always-white) / 0.06) 0%,
     hsl(var(--always-white) / 0.02) 35%,
     transparent 60%
   );
 }
 
-/* 环境渐变底色：accent 色系径向渐变，给悬浮面板提供可折射的背景 */
-:root:root body {
-  background:
-    radial-gradient(1200px 800px at 12% -10%, hsl(var(--accent-main-100) / 0.1), transparent 60%),
-    radial-gradient(1000px 700px at 88% 110%, hsl(var(--accent-secondary-100) / 0.09), transparent 55%),
-    hsl(var(--bg-100));
-}
-
-/* 让环境底色透出：根节点、应用根容器、桌面标题栏透明化 */
-:root:root #root {
-  background: transparent;
-}
-
-:root:root [data-lq-app] {
-  background-color: transparent;
-}
-
-:root:root .desktop-titlebar {
-  background-color: transparent;
+:root:root .glass-alt {
+  background-color: hsl(var(--bg-100) / 0.18);
+  background-image: linear-gradient(
+    135deg,
+    hsl(var(--always-white) / 0.05) 0%,
+    hsl(var(--always-white) / 0.015) 35%,
+    transparent 60%
+  );
 }
 
 /* 桌面端悬浮圆角大框（移动端维持现状） */
@@ -199,9 +178,9 @@ export const liquidGlassStyle: ThemeStylePreset = {
   :root:root [data-lq-surface] {
     border: none;
     border-radius: var(--radius-2xl);
-    background-color: hsl(var(--bg-100) / 0.72);
-    -webkit-backdrop-filter: blur(24px) saturate(180%);
-    backdrop-filter: blur(24px) saturate(180%);
+    background-color: hsl(var(--bg-100) / 0.2);
+    -webkit-backdrop-filter: blur(16px) saturate(160%);
+    backdrop-filter: blur(16px) saturate(160%);
     box-shadow: var(--shadow-xl);
   }
 
@@ -210,7 +189,7 @@ export const liquidGlassStyle: ThemeStylePreset = {
   }
 
   :root:root [data-lq-header-fade] {
-    --tw-gradient-from: hsl(var(--bg-100) / 0.72);
+    --tw-gradient-from: hsl(var(--bg-100) / 0.2);
     --tw-gradient-to: hsl(var(--bg-100) / 0);
   }
 }`,

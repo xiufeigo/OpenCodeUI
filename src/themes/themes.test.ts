@@ -135,9 +135,14 @@ describe('style effects flags', () => {
 })
 
 describe('liquid glass floating layout css', () => {
-  it('declares ambient background, floating surfaces and desktop media query', () => {
+  it('declares clear-glass surfaces and desktop media query, without ambient background', () => {
     const css = builtinStyleThemes.find(s => s.id === 'liquid-glass')?.style.css ?? ''
-    expect(css).toContain('radial-gradient')
+    // 环境渐变已撤除（背景保持主题原样）
+    expect(css).not.toContain('radial-gradient')
+    // 大面板清透填充 + 16px 模糊
+    expect(css).toContain('hsl(var(--bg-100) / 0.2)')
+    expect(css).toContain('blur(16px)')
+    // 悬浮布局保留
     expect(css).toContain('[data-lq-layout]')
     expect(css).toContain('[data-lq-surface]')
     expect(css).toContain('@media (min-width: 768px)')
