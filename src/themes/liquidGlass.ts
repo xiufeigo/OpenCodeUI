@@ -191,6 +191,13 @@ export const liquidGlassStyle: ThemeStylePreset = {
   background-image: url('${codexWallpaperDark}');
 }
 
+/* 跟随系统的深色模式（data-mode 缺省时由媒体查询接管） */
+@media (prefers-color-scheme: dark) {
+  :root:root:not([data-mode]) body {
+    background-image: url('${codexWallpaperDark}');
+  }
+}
+
 /* 整体磨砂层：淡色蒙版叠在预模糊壁纸上形成均匀磨砂。
    不用运行时 backdrop-filter：全屏滤镜会让 Chromium 文字抗锯齿降级，字体发虚 */
 :root:root body::before {
@@ -293,6 +300,20 @@ export const liquidGlassStyle: ThemeStylePreset = {
   :root:root[data-mode='dark'] [data-lq-surface='left']:hover,
   :root:root[data-mode='dark'] [data-lq-surface='right']:hover {
     border-color: hsl(var(--border-200) / 0.8);
+  }
+
+  /* 跟随系统的深色模式（data-mode 缺省时由媒体查询接管） */
+  @media (prefers-color-scheme: dark) {
+    :root:root:not([data-mode]) [data-lq-surface='chat'],
+    :root:root:not([data-mode]) [data-lq-surface='bottom'] {
+      border-color: hsl(var(--border-200) / 0.8);
+    }
+
+    :root:root:not([data-mode]) [data-lq-surface='sidebar']:hover,
+    :root:root:not([data-mode]) [data-lq-surface='left']:hover,
+    :root:root:not([data-mode]) [data-lq-surface='right']:hover {
+      border-color: hsl(var(--border-200) / 0.8);
+    }
   }
 
   /* 顶栏下渐隐遮罩与正文同色，保持不可见 */

@@ -170,8 +170,10 @@ describe('liquid glass floating layout css', () => {
     expect(css).toContain('codex-wallpaper-dark')
     // 白底磨砂浮层
     expect(css).toContain('hsl(var(--bg-000) / 0.8)')
-    // 深色发丝边分层
+    // 深色发丝边分层（含跟随系统的深色模式）
     expect(css).toContain("data-mode='dark'")
+    expect(css).toContain('prefers-color-scheme: dark')
+    expect(css).toContain(':not([data-mode])')
   })
 
   it('uses Codex as display name and declares no refraction effect', () => {
