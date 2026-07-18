@@ -27,7 +27,7 @@ pub fn set_window_effect(window: tauri::Window, enabled: bool) -> Result<(), Str
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        let _ = &window;
+        let _ = (&window, enabled);
         Err("window effects are not supported on this platform".to_string())
     }
 }
