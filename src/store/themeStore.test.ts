@@ -73,19 +73,19 @@ describe('liquid glass engine lifecycle', () => {
 
   afterEach(() => stopLiquidGlass())
 
-  it('starts the engine when the active style declares liquid-refraction', () => {
+  it('does not start the engine for liquid-glass (refraction disabled)', () => {
     themeStore.setPreset('liquid-glass')
-    expect(isLiquidGlassRunning()).toBe(true)
-  })
-
-  it('stops the engine when switching to a style without the flag', () => {
-    themeStore.setPreset('liquid-glass')
-    expect(isLiquidGlassRunning()).toBe(true)
-    themeStore.setPreset('ocean')
     expect(isLiquidGlassRunning()).toBe(false)
   })
 
-  it('stops the engine when styleId is none', () => {
+  it('does not start the engine for other styles either', () => {
+    for (const preset of ['material', 'retro-terminal', 'ocean']) {
+      themeStore.setPreset(preset)
+      expect(isLiquidGlassRunning()).toBe(false)
+    }
+  })
+
+  it('keeps the engine stopped when styleId is none', () => {
     themeStore.setPreset('liquid-glass')
     themeStore.setStyleId('none')
     expect(isLiquidGlassRunning()).toBe(false)

@@ -20,6 +20,7 @@ import {
 } from '../themes'
 import type { ThemePreset, ThemeColors, ThemeStyle } from '../themes'
 import { startLiquidGlass, stopLiquidGlass } from '../lib/liquidGlass'
+import { isTauri } from '../utils/tauri'
 
 // ============================================
 // Color Conversion Utility
@@ -882,10 +883,11 @@ class ThemeStore {
 
     // 2. 注入主题颜色变量 + 界面风格（变量与特效 CSS）
     let style: ThemeStyle | undefined
+    let styleId: string | undefined
     const preset = this.getPreset()
     if (preset) {
       const colors: ThemeColors = resolvedMode === 'dark' ? preset.dark : preset.light
-      const styleId = resolveStyleId(this.state.styleId, preset)
+      styleId = resolveStyleId(this.state.styleId, preset)
       style = styleId ? getStylePreset(styleId)?.style : undefined
       this.injectThemeStyle(colors, style)
     }
@@ -920,6 +922,9 @@ class ThemeStore {
     } else {
       stopLiquidGlass()
     }
+
+    // 6. Tauri 窗效（liquid-glass 风格启用壁纸磨砂）
+    this.applyWindowEffect(styleId)
   }
 
   private injectThemeStyle(colors: ThemeColors, style?: ThemeStyle) {
@@ -1021,6 +1026,28 @@ class ThemeStore {
     } else {
       root.removeAttribute('data-glass')
     }
+  }
+
+  /**
+   * Tauri 桌面窗效：liquid-glass 风格时启用壁纸磨砂（Windows acrylic / macOS vibrancy）。
+   * 启用成功给 <html> 设 data-window-effect 让背景透明（透出真壁纸）；
+   * 禁用/失败时保持淡青绿回退底。非 Tauri 环境（Web/Android）直接跳过。
+   */
+  private applyWindowEffect(styleId: string | undefined) {
+    if (!isTauri()) return
+    const enabled = styleId === 'liquid-glass'
+    const root = document.documentElement
+    if (!enabled) {
+      root.removeAttribute('data-window-effect')
+    }
+    void import('@tauri-apps/api/core')
+      .then(({ invoke }) => invoke('set_window_effect', { enabled }))
+      .then(() => {
+        if (enabled) root.setAttribute('data-window-effect', '')
+      })
+      .catch(() => {
+        // 窗效不可用时静默降级，保持回退底色
+      })
   }
 
   private persistCustomCSSSnippets(customCSSSnippets: CustomCSSSnippet[]) {
