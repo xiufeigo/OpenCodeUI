@@ -123,7 +123,7 @@ export const liquidGlassTheme: ThemePreset = {
 export const liquidGlassStyle: ThemeStylePreset = {
   id: 'liquid-glass',
   name: 'Liquid Glass',
-  description: 'Frosted blur panels with large radii',
+  description: 'Clear glass panels with edge refraction',
   style: {
     radius: { sm: '8px', md: '12px', lg: '16px', xl: '20px', '2xl': '24px' },
     shadows: {
@@ -179,8 +179,8 @@ export const liquidGlassStyle: ThemeStylePreset = {
     border: none;
     border-radius: var(--radius-2xl);
     background-color: hsl(var(--bg-100) / 0.2);
-    -webkit-backdrop-filter: blur(16px) saturate(160%);
-    backdrop-filter: blur(16px) saturate(160%);
+    -webkit-backdrop-filter: blur(16px) saturate(160%) brightness(1.05);
+    backdrop-filter: blur(16px) saturate(160%) brightness(1.05);
     box-shadow: var(--shadow-xl);
   }
 
