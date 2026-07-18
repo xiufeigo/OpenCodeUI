@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { DISPLACEMENT_DPI_SCALE, generateDisplacementMap } from './displacementMap'
+import {
+  DISPLACEMENT_DPI_SCALE,
+  EDGE_BAND,
+  REFRACTION_STRENGTH,
+  SDF_SHIFT,
+  generateDisplacementMap,
+} from './displacementMap'
 
 const W = 400
 const H = 200
@@ -52,5 +58,13 @@ describe('generateDisplacementMap', () => {
     const b = readRaw(map, Math.floor(mw / 2), mh - 2)
     expect(t.dy).toBeGreaterThan(0.5)
     expect(b.dy).toBeLessThan(-0.5)
+  })
+})
+
+describe('refraction tuning constants', () => {
+  it('pins the visual tuning knobs', () => {
+    expect(REFRACTION_STRENGTH).toBe(4)
+    expect(EDGE_BAND).toBe(0.16)
+    expect(SDF_SHIFT).toBe(0.08)
   })
 })

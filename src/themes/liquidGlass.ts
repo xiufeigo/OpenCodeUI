@@ -182,6 +182,20 @@ export const liquidGlassStyle: ThemeStylePreset = {
     0 8px 24px hsl(var(--always-black) / 0.1);
 }
 
+:root:root [data-lq-glass]:hover {
+  background-color: hsl(var(--always-black) / 0.06);
+}
+
+:root:root [data-lq-glass]:focus-visible {
+  box-shadow:
+    inset 0 0 0 0.5px hsl(var(--always-white) / 0.35),
+    inset 0 1px 0 0 hsl(var(--always-white) / 0.5),
+    inset 0 -2px 6px -2px hsl(var(--always-black) / 0.12),
+    0 2px 8px hsl(var(--always-black) / 0.06),
+    0 8px 24px hsl(var(--always-black) / 0.1),
+    0 0 0 1px hsl(var(--border-200));
+}
+
 /* 桌面端悬浮圆角大框（移动端维持现状） */
 @media (min-width: 768px) {
   :root:root [data-lq-layout] {

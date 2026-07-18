@@ -152,5 +152,6 @@ describe('liquid glass floating layout css', () => {
     expect(css).toContain('[data-lq-layout]')
     expect(css).toContain('[data-lq-surface]')
     expect(css).toContain('@media (min-width: 768px)')
+    expect(css).toContain('[data-lq-glass]:focus-visible')
   })
 })
