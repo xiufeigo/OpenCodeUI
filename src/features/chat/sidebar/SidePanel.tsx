@@ -1124,6 +1124,7 @@ export function SidePanel({
             <input
               type="text"
               name="sidebar-chat-search"
+              data-lq-glass
               value={search}
               onChange={e => setSearch(e.target.value)}
               placeholder={t('sidebar.searchChats')}
