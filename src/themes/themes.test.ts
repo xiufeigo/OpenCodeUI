@@ -168,6 +168,8 @@ describe('liquid glass floating layout css', () => {
     // 整体背景：Windows 11 壁纸（亮/暗两张）
     expect(css).toContain('codex-wallpaper-light')
     expect(css).toContain('codex-wallpaper-dark')
+    // 主窗口顶部为安卓平板状态栏让位（--app-safe-top 桌面端为 0）
+    expect(css).toContain('padding-top: calc(10px + var(--app-safe-top, 0px));')
     // 白底磨砂浮层
     expect(css).toContain('hsl(var(--bg-000) / 0.8)')
     // 深色发丝边分层（含跟随系统的深色模式）

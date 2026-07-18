@@ -223,9 +223,11 @@ export const liquidGlassStyle: ThemeStylePreset = {
 
 /* ===== 桌面端 Codex 布局（移动端维持默认） ===== */
 @media (min-width: 768px) {
-  /* 主窗口四周留白，露出磨砂 chrome / 壁纸 */
+  /* 主窗口四周留白，露出磨砂 chrome / 壁纸；
+     顶部额外叠加 --app-safe-top：安卓平板上为状态栏让位（桌面端为 0，不影响） */
   :root:root [data-lq-chatwrap] {
     padding: 10px;
+    padding-top: calc(10px + var(--app-safe-top, 0px));
   }
 
   /* 主 agent 窗口：唯一的圆角卡片，透明容器（白顶栏 + 白正文），无投影 */
