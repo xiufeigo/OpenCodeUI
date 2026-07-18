@@ -1,7 +1,7 @@
 /**
  * 液态玻璃折射引擎
  *
- * 为 .glass / .glass-alt / [data-lq-surface] 元素创建按尺寸生成的 SVG 位移滤镜，
+ * 为 .glass / .glass-alt / [data-lq-surface] / [data-lq-glass] 元素创建按尺寸生成的 SVG 位移滤镜，
  * 以内联 backdrop-filter: url(#id) + 磨砂链应用「边缘折射」。
  * 不支持 url() 的浏览器（WebKit/Firefox）视该内联声明为无效，
  * 自动落回风格 css 的磨砂规则，天然降级。
@@ -10,7 +10,7 @@ import { generateDisplacementMap } from './displacementMap'
 
 const SVG_NS = 'http://www.w3.org/2000/svg'
 const XLINK_NS = 'http://www.w3.org/1999/xlink'
-const GLASS_SELECTOR = '.glass, .glass-alt, [data-lq-surface]'
+const GLASS_SELECTOR = '.glass, .glass-alt, [data-lq-surface], [data-lq-glass]'
 const BACKDROP_CHAIN = 'blur(16px) saturate(160%) brightness(1.05)'
 const REBUILD_DEBOUNCE_MS = 150
 const DEFAULT_RADIUS = 12
@@ -150,9 +150,24 @@ export function startLiquidGlass(): void {
             if (el === node || node.contains(el)) cleanupEntry(el, entry)
           }
         })
+        if (mutation.type === 'attributes' && mutation.target instanceof HTMLElement) {
+          const target = mutation.target
+          if (target.matches(GLASS_SELECTOR)) {
+            applyLiquidRefraction(target)
+          } else {
+            const entry = applied.get(target)
+            if (entry) cleanupEntry(target, entry)
+          }
+          continue
+        }
       }
     })
-    mutationObserver.observe(document.body, { childList: true, subtree: true })
+    mutationObserver.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'data-lq-surface', 'data-lq-glass'],
+    })
   }
 }
 

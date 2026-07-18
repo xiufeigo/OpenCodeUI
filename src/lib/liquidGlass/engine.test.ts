@@ -120,6 +120,22 @@ describe('liquid glass engine', () => {
     expect(el.style.getPropertyValue('backdrop-filter')).toContain('url(#liquid-glass-filter-')
   })
 
+  it('picks up elements that gain a hook attribute dynamically, and cleans up on removal', async () => {
+    const el = document.createElement('div')
+    vi.spyOn(el, 'getBoundingClientRect').mockReturnValue(FAKE_RECT)
+    document.body.appendChild(el)
+    startLiquidGlass()
+    expect(el.style.getPropertyValue('backdrop-filter')).toBe('')
+
+    el.setAttribute('data-lq-glass', '')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(el.style.getPropertyValue('backdrop-filter')).toContain('url(#liquid-glass-filter-')
+
+    el.removeAttribute('data-lq-glass')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(el.style.getPropertyValue('backdrop-filter')).toBe('')
+  })
+
   it('start also picks up [data-lq-surface] panels', () => {
     const el = document.createElement('div')
     el.setAttribute('data-lq-surface', 'chat')
