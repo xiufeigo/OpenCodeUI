@@ -5,6 +5,7 @@ import {
   FolderIcon,
   FolderOpenIcon,
   GitBranchIcon,
+  GlobeIcon,
   GripVerticalIcon,
   PinIcon,
   SpinnerIcon,
@@ -153,7 +154,7 @@ function getInitialExpandedProjectIds(projects: FolderRecentProject[], currentDi
 
   const currentProject = currentDirectory
     ? projects.find(project => isSameDirectory(project.worktree, currentDirectory))
-    : undefined
+    : projects.find(project => project.id === 'global')
 
   return [currentProject?.id || projects[0].id]
 }
@@ -163,9 +164,11 @@ function areProjectIdListsEqual(left: string[], right: string[]) {
 }
 
 function getCurrentProjectId(projects: FolderRecentProject[], currentDirectory?: string) {
-  return currentDirectory
-    ? projects.find(project => isSameDirectory(project.worktree, currentDirectory))?.id
-    : undefined
+  if (!currentDirectory) {
+    const globalProject = projects.find(project => project.id === 'global')
+    return globalProject?.id
+  }
+  return projects.find(project => isSameDirectory(project.worktree, currentDirectory))?.id
 }
 
 function reconcileExpandedProjectIds(prev: string[], projects: FolderRecentProject[], currentDirectory?: string) {
@@ -472,7 +475,7 @@ export function FolderRecentList({
       const draggedProject = projectById.get(draggedId)
       const targetProject = projectById.get(targetId)
       if (!draggedProject?.canReorder || !targetProject?.canReorder) return
-      onReorderProject(draggedProject.worktree, targetProject.worktree)
+      onReorderProject(draggedProject.id, targetProject.id)
     },
     onDragActivated: handleDragActivated,
     onDragFinished: handleDragFinished,
@@ -908,7 +911,14 @@ function FolderRecentSection({
     sectionKind === 'workspace'
       ? (vcsInfo?.branch ?? (isBranchLoading ? '...' : workspaceFallbackName))
       : project.name || workspaceFallbackName
-  const FolderDisplayIcon = sectionKind === 'workspace' ? GitBranchIcon : isExpanded ? FolderOpenIcon : FolderIcon
+  const FolderDisplayIcon =
+    project.id === 'global'
+      ? GlobeIcon
+      : sectionKind === 'workspace'
+        ? GitBranchIcon
+        : isExpanded
+          ? FolderOpenIcon
+          : FolderIcon
 
   // 展开时：文件夹与首条 session 可拼成连续选中块
   const firstVisibleSessionChecked =

@@ -137,6 +137,11 @@ export function SidePanel({
     useGitWorkspaceCatalog(catalogDirectories)
   const { vcsInfo: currentDirectoryVcsInfo, isLoading: isCurrentDirectoryVcsLoading } = useVcsInfo(currentDirectory)
   const { sidebarFolderRecents, sidebarShowChildSessions } = useLayoutStore()
+  const [globalFolderIndex, setGlobalFolderIndex] = useState<number>(() => {
+    const saved = localStorage.getItem('opencode-sidebar-global-folder-index')
+    const parsed = saved ? Number.parseInt(saved, 10) : 0
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
+  })
   const normalizedCurrentDirectory = useMemo(
     () => (currentDirectory ? normalizeToForwardSlash(currentDirectory) : undefined),
     [currentDirectory],
@@ -610,6 +615,11 @@ export function SidePanel({
     t,
   ])
 
+  const globalFolderProject = useMemo<ProjectItem>(
+    () => ({ id: 'global', worktree: '', name: t('sidebar.global'), canReorder: true }),
+    [t],
+  )
+
   const folderProjects = useMemo<ProjectItem[]>(() => {
     const list = [...folderProjectGroups]
 
@@ -617,8 +627,9 @@ export function SidePanel({
       list.push({ ...currentProject, canReorder: false })
     }
 
-    return list
-  }, [folderProjectGroups, currentDirectory, currentProject])
+    const insertAt = Math.min(Math.max(globalFolderIndex, 0), list.length)
+    return [...list.slice(0, insertAt), globalFolderProject, ...list.slice(insertAt)]
+  }, [folderProjectGroups, currentDirectory, currentProject, globalFolderProject, globalFolderIndex])
   const canShowFolderRecents = sidebarFolderRecents && !search && folderProjects.length > 0
 
   const workspaceDirectoriesByProjectId = useMemo(() => {
@@ -674,6 +685,11 @@ export function SidePanel({
 
   const handleSelectFolderProject = useCallback(
     (project: ProjectItem) => {
+      if (!project.worktree) {
+        if (!currentDirectory) return
+        setCurrentDirectory(undefined)
+        return
+      }
       if (currentDirectory && isSameDirectory(currentDirectory, project.worktree)) return
       setCurrentDirectory(project.worktree)
     },
@@ -708,15 +724,30 @@ export function SidePanel({
   )
 
   const handleReorderProjectGroup = useCallback(
-    (draggedPath: string, targetPath: string) => {
-      const draggedProject = folderProjects.find(project => isSameDirectory(project.id, draggedPath))
-      const targetProject = folderProjects.find(project => isSameDirectory(project.id, targetPath))
-      const draggedReorderPath = draggedProject?.reorderPath
-      const targetReorderPath = targetProject?.reorderPath
+    (draggedId: string, targetId: string) => {
+      const draggedIdx = folderProjects.findIndex(project => project.id === draggedId)
+      const targetIdx = folderProjects.findIndex(project => project.id === targetId)
+      if (draggedIdx === -1 || targetIdx === -1 || draggedIdx === targetIdx) return
+
+      const draggedIsGlobal = folderProjects[draggedIdx].id === 'global'
+      const targetIsGlobal = folderProjects[targetIdx].id === 'global'
+
+      if (draggedIsGlobal || targetIsGlobal) {
+        // 涉及全局：仅移动全局的位置，普通目录相对顺序不变
+        const insertIdx = draggedIdx < targetIdx ? targetIdx - 1 : targetIdx
+        if (insertIdx !== globalFolderIndex) {
+          setGlobalFolderIndex(insertIdx)
+          localStorage.setItem('opencode-sidebar-global-folder-index', String(insertIdx))
+        }
+        return
+      }
+
+      const draggedReorderPath = folderProjects[draggedIdx].reorderPath
+      const targetReorderPath = folderProjects[targetIdx].reorderPath
       if (!draggedReorderPath || !targetReorderPath) return
       reorderDirectories(draggedReorderPath, targetReorderPath)
     },
-    [folderProjects, reorderDirectories],
+    [folderProjects, reorderDirectories, globalFolderIndex],
   )
 
   const handleSelect = useCallback(
