@@ -113,7 +113,7 @@ const liquidGlassDark: ThemeColors = {
 
 export const liquidGlassTheme: ThemePreset = {
   id: 'liquid-glass',
-  name: 'Liquid Glass',
+  name: 'Codex',
   description: 'Translucent frosted surfaces, airy blue tones',
   light: liquidGlassLight,
   dark: liquidGlassDark,
@@ -122,7 +122,7 @@ export const liquidGlassTheme: ThemePreset = {
 
 export const liquidGlassStyle: ThemeStylePreset = {
   id: 'liquid-glass',
-  name: 'Liquid Glass',
+  name: 'Codex',
   description: 'Clear glass panels with edge refraction',
   style: {
     radius: { sm: '8px', md: '12px', lg: '16px', xl: '20px', '2xl': '24px' },
@@ -133,10 +133,11 @@ export const liquidGlassStyle: ThemeStylePreset = {
       xl: '0 12px 40px rgb(0 0 0 / 0.1)',
       float: '0 8px 32px rgb(0 0 0 / 0.12)',
     },
-    css: `:root:root .glass,
+    css: `/* 输入框等浮层：蓝色磨砂液态玻璃 */
+:root:root .glass,
 :root:root .glass-alt {
-  -webkit-backdrop-filter: blur(16px) saturate(160%) brightness(1.05);
-  backdrop-filter: blur(16px) saturate(160%) brightness(1.05);
+  -webkit-backdrop-filter: blur(20px) saturate(160%) brightness(1.05);
+  backdrop-filter: blur(20px) saturate(160%) brightness(1.05);
   border-color: hsl(var(--border-300) / 0.6);
   box-shadow:
     inset 0 0 0 0.5px hsl(var(--always-white) / 0.35),
@@ -148,7 +149,7 @@ export const liquidGlassStyle: ThemeStylePreset = {
 }
 
 :root:root .glass {
-  background-color: hsl(var(--always-black) / 0.04);
+  background-color: hsl(var(--accent-main-100) / 0.16);
   background-image: linear-gradient(
     135deg,
     hsl(var(--always-white) / 0.06) 0%,
@@ -158,7 +159,7 @@ export const liquidGlassStyle: ThemeStylePreset = {
 }
 
 :root:root .glass-alt {
-  background-color: hsl(var(--bg-100) / 0.18);
+  background-color: hsl(var(--accent-main-100) / 0.12);
   background-image: linear-gradient(
     135deg,
     hsl(var(--always-white) / 0.05) 0%,
@@ -167,36 +168,60 @@ export const liquidGlassStyle: ThemeStylePreset = {
   );
 }
 
-/* 搜索框与选中项：同款玻璃质感（列表项尺度圆角） */
+/* 搜索框：codex 式白色 pill */
 :root:root [data-lq-glass] {
-  background-color: hsl(var(--always-black) / 0.04);
-  -webkit-backdrop-filter: blur(16px) saturate(160%) brightness(1.05);
-  backdrop-filter: blur(16px) saturate(160%) brightness(1.05);
+  background-color: hsl(var(--bg-000) / 0.85);
   border-color: hsl(var(--border-300) / 0.6);
   border-radius: var(--radius-lg);
   box-shadow:
-    inset 0 0 0 0.5px hsl(var(--always-white) / 0.35),
-    inset 0 1px 0 0 hsl(var(--always-white) / 0.5),
-    inset 0 -2px 6px -2px hsl(var(--always-black) / 0.12),
-    0 2px 8px hsl(var(--always-black) / 0.06),
-    0 8px 24px hsl(var(--always-black) / 0.1);
+    inset 0 1px 0 0 hsl(var(--always-white) / 0.4),
+    0 1px 4px hsl(var(--always-black) / 0.06);
 }
 
 :root:root [data-lq-glass]:hover {
-  background-color: hsl(var(--always-black) / 0.06);
+  background-color: hsl(var(--bg-000) / 0.92);
 }
 
 :root:root [data-lq-glass]:focus-visible {
   box-shadow:
-    inset 0 0 0 0.5px hsl(var(--always-white) / 0.35),
-    inset 0 1px 0 0 hsl(var(--always-white) / 0.5),
-    inset 0 -2px 6px -2px hsl(var(--always-black) / 0.12),
-    0 2px 8px hsl(var(--always-black) / 0.06),
-    0 8px 24px hsl(var(--always-black) / 0.1),
+    inset 0 1px 0 0 hsl(var(--always-white) / 0.4),
+    0 1px 4px hsl(var(--always-black) / 0.06),
     0 0 0 1px hsl(var(--border-200));
 }
 
-/* 桌面端悬浮圆角大框（移动端维持现状） */
+/* 选中会话项：淡色高亮 */
+:root:root [data-lq-selected] {
+  background-color: hsl(var(--accent-main-100) / 0.1);
+  border-color: hsl(var(--accent-main-100) / 0.25);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 1px 4px hsl(var(--always-black) / 0.05);
+}
+
+/* 环境回退底色（非窗效环境）：淡青绿倾向 */
+:root:root body {
+  background:
+    linear-gradient(160deg, hsl(var(--accent-main-100) / 0.08), hsl(var(--bg-100)) 45%),
+    hsl(var(--bg-100));
+}
+
+:root:root #root {
+  background: transparent;
+}
+
+:root:root [data-lq-app] {
+  background-color: transparent;
+}
+
+:root:root .desktop-titlebar {
+  background-color: transparent;
+}
+
+/* 窗效开启：透出真实桌面壁纸 */
+:root:root[data-window-effect] body {
+  background: transparent;
+}
+
+/* 桌面端悬浮布局（移动端维持现状） */
 @media (min-width: 768px) {
   :root:root [data-lq-layout] {
     padding: 10px;
@@ -207,19 +232,27 @@ export const liquidGlassStyle: ThemeStylePreset = {
     gap: 10px;
   }
 
-  :root:root [data-lq-surface] {
+  /* agent 聊天窗口：白底悬浮卡片（四角全圆） */
+  :root:root [data-lq-surface='chat'] {
     border: none;
     border-radius: var(--radius-2xl);
-    background-color: hsl(var(--bg-100) / 0.2);
-    -webkit-backdrop-filter: blur(16px) saturate(160%) brightness(1.05);
-    backdrop-filter: blur(16px) saturate(160%) brightness(1.05);
+    background-color: hsl(var(--bg-000));
     box-shadow:
-      inset 0 0 0 0.5px hsl(var(--always-white) / 0.25),
-      inset 0 1px 0 0 hsl(var(--always-white) / 0.4),
-      inset 0 -2px 8px -2px hsl(var(--always-black) / 0.1),
       0 2px 8px hsl(var(--always-black) / 0.05),
       0 12px 32px hsl(var(--always-black) / 0.1),
       0 24px 64px hsl(var(--always-black) / 0.08);
+  }
+
+  /* 侧栏/右侧/底部面板：淡色半透明悬浮 */
+  :root:root [data-lq-surface]:not([data-lq-surface='chat']) {
+    border: none;
+    border-radius: var(--radius-2xl);
+    background-color: hsl(var(--bg-000) / 0.55);
+    -webkit-backdrop-filter: blur(16px) saturate(150%);
+    backdrop-filter: blur(16px) saturate(150%);
+    box-shadow:
+      0 2px 8px hsl(var(--always-black) / 0.05),
+      0 12px 32px hsl(var(--always-black) / 0.1);
   }
 
   :root:root [data-lq-header] {
@@ -227,10 +260,9 @@ export const liquidGlassStyle: ThemeStylePreset = {
   }
 
   :root:root [data-lq-header-fade] {
-    --tw-gradient-from: hsl(var(--bg-100) / 0.2);
-    --tw-gradient-to: hsl(var(--bg-100) / 0);
+    --tw-gradient-from: hsl(var(--bg-000));
+    --tw-gradient-to: hsl(var(--bg-000) / 0);
   }
 }`,
-    effects: ['liquid-refraction'],
   },
 }

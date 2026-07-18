@@ -122,36 +122,40 @@ describe('liquid glass style specificity', () => {
 })
 
 describe('style effects flags', () => {
-  it('effects is a string array when present; liquid-glass declares liquid-refraction', () => {
+  it('effects is a string array when present', () => {
     for (const s of builtinStyleThemes) {
       if (s.style.effects) {
         expect(Array.isArray(s.style.effects)).toBe(true)
         for (const e of s.style.effects) expect(typeof e).toBe('string')
       }
     }
-    const lg = builtinStyleThemes.find(s => s.id === 'liquid-glass')
-    expect(lg?.style.effects).toContain('liquid-refraction')
   })
 })
 
 describe('liquid glass floating layout css', () => {
-  it('declares clear-glass surfaces with edge optics and desktop media query', () => {
+  it('declares codex-style surfaces, blue frosted glass and window-effect transparency', () => {
     const css = builtinStyleThemes.find(s => s.id === 'liquid-glass')?.style.css ?? ''
     expect(css).not.toContain('radial-gradient')
-    expect(css).toContain('blur(16px)')
-    // 锐利镜面高光与暗角
-    expect(css).toContain('inset 0 1px 0 0 hsl(var(--always-white) / 0.5)')
-    expect(css).toContain('inset 0 -2px 6px -2px hsl(var(--always-black) / 0.12)')
-    // 大面板分层阴影
-    expect(css).toContain('0 24px 64px')
-    // 聊天框中性微暗填充
-    expect(css).toContain('hsl(var(--always-black) / 0.04)')
-    // 搜索框/选中框玻璃规则
-    expect(css).toContain('[data-lq-glass]')
+    // 蓝色磨砂输入框
+    expect(css).toContain('hsl(var(--accent-main-100) / 0.16)')
+    expect(css).toContain('blur(20px)')
+    // 白底聊天窗口与淡色侧栏
+    expect(css).toContain('background-color: hsl(var(--bg-000));')
+    expect(css).toContain('hsl(var(--bg-000) / 0.55)')
+    // 搜索白 pill 与选中高亮
+    expect(css).toContain('hsl(var(--bg-000) / 0.85)')
+    expect(css).toContain('[data-lq-selected]')
+    // 窗效透明变体
+    expect(css).toContain('[data-window-effect]')
     // 悬浮布局保留
-    expect(css).toContain('[data-lq-layout]')
-    expect(css).toContain('[data-lq-surface]')
     expect(css).toContain('@media (min-width: 768px)')
-    expect(css).toContain('[data-lq-glass]:focus-visible')
+  })
+
+  it('uses Codex as display name and declares no refraction effect', () => {
+    const lgTheme = builtinThemes.find(t => t.id === 'liquid-glass')
+    const lgStyle = builtinStyleThemes.find(s => s.id === 'liquid-glass')
+    expect(lgTheme?.name).toBe('Codex')
+    expect(lgStyle?.name).toBe('Codex')
+    expect(lgStyle?.style.effects ?? []).not.toContain('liquid-refraction')
   })
 })
