@@ -66,10 +66,12 @@ class MainActivity : TauriActivity() {
       cachedInsetsJs = """
         (function() {
           var s = document.documentElement.style;
-          s.setProperty('--safe-area-inset-top', '${topInsetCssPx}px');
-          s.setProperty('--safe-area-inset-bottom', '0px');
-          s.setProperty('--safe-area-inset-left', '0px');
-          s.setProperty('--safe-area-inset-right', '0px');
+          if (s.getPropertyValue('--safe-area-inset-top') !== '${topInsetCssPx}px') {
+            s.setProperty('--safe-area-inset-top', '${topInsetCssPx}px');
+            s.setProperty('--safe-area-inset-bottom', '0px');
+            s.setProperty('--safe-area-inset-left', '0px');
+            s.setProperty('--safe-area-inset-right', '0px');
+          }
         })();
       """.trimIndent()
 
@@ -110,6 +112,8 @@ class MainActivity : TauriActivity() {
 
   private fun syncSystemBars(rootView: View) {
     val webView = cachedWebView ?: findWebView(rootView) ?: return
+    // 页面内导航/重载会丢失 document 上注入的 insets，随同步周期重新注入（带等值守卫，稳态无 DOM 写入）
+    cachedInsetsJs?.let { webView.evaluateJavascript(it, null) }
     // 在 JS 端用 Canvas 2D 将 getComputedStyle 返回的任意格式颜色
     // 统一转为 #rrggbb hex，避免不同 WebView 版本返回不同格式
     // (rgb 逗号/空格分隔, color(srgb ...), oklch(...) 等)
