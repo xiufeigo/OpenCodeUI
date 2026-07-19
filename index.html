@@ -9,6 +9,14 @@
     />
     <title>OpenCode</title>
 
+    <!-- 安卓 WebView 整页重载后，于首绘前同步恢复状态栏安全区高度（值由 MainActivity 注入时写入 localStorage），避免布局先上移再被拖回 -->
+    <script>
+      try {
+        var cachedSafeAreaTop = localStorage.getItem('__opencode_safe_area_top')
+        if (cachedSafeAreaTop) document.documentElement.style.setProperty('--safe-area-inset-top', cachedSafeAreaTop)
+      } catch (e) {}
+    </script>
+
     <!-- PWA -->
     <link rel="manifest" href="/manifest.json" />
     <meta name="theme-color" content="#262524" />

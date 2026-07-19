@@ -71,6 +71,7 @@ class MainActivity : TauriActivity() {
             s.setProperty('--safe-area-inset-bottom', '0px');
             s.setProperty('--safe-area-inset-left', '0px');
             s.setProperty('--safe-area-inset-right', '0px');
+            try { localStorage.setItem('__opencode_safe_area_top', '${topInsetCssPx}px'); } catch (e) {}
           }
         })();
       """.trimIndent()
