@@ -92,6 +92,28 @@ describe('chat-owned terminals', () => {
     expect(layoutStore.getTerminalTabs().map(tab => tab.id)).toEqual(['pty-b'])
   })
 
+  it('does not overwrite a live connection with an older running PTY response', async () => {
+    add(a, 'pty-a')
+    const pending = deferred<{ id: string; status: string }>()
+    api.get.mockReturnValue(pending.promise)
+    const { result } = renderHook(() => useSessionTerminals(a))
+    act(() => layoutStore.updateTerminalTab('pty-a', { status: 'connected' }, terminalScopeKey(a)))
+    await act(async () => pending.resolve({ id: 'pty-a', status: 'running' }))
+    await waitFor(() => expect(result.current.isRestoring).toBe(false))
+    expect(layoutStore.getState().panelTabs.find(tab => tab.id === 'pty-a')?.status).toBe('connected')
+  })
+
+  it('marks a previously connected terminal exited when the server confirms it ended', async () => {
+    add(a, 'pty-a')
+    const pending = deferred<{ id: string; status: string }>()
+    api.get.mockReturnValue(pending.promise)
+    const { result } = renderHook(() => useSessionTerminals(a))
+    act(() => layoutStore.updateTerminalTab('pty-a', { status: 'connected' }, terminalScopeKey(a)))
+    await act(async () => pending.resolve({ id: 'pty-a', status: 'exited' }))
+    await waitFor(() => expect(result.current.isRestoring).toBe(false))
+    expect(layoutStore.getState().panelTabs.find(tab => tab.id === 'pty-a')?.status).toBe('exited')
+  })
+
   it('records a late create under the originating chat, without injecting it into the focused chat', async () => {
     const late = deferred<{ id: string; title: string }>()
     api.create.mockReturnValue(late.promise)

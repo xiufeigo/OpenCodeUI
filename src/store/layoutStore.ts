@@ -71,6 +71,9 @@ function buildTerminalPanelTab(
   position: PanelPosition,
   existing?: PanelTab,
 ): PanelTab & { type: 'terminal'; ptyId: string } {
+  // A running PTY does not describe its client's connection. Keep the live transport state.
+  const sameOwner = existing?.serverId === tab.serverId && existing?.directory === tab.directory
+  const status = tab.status === 'connecting' && sameOwner ? (existing?.status ?? tab.status) : tab.status
   return {
     id: tab.id,
     type: 'terminal',
@@ -87,7 +90,7 @@ function buildTerminalPanelTab(
     cursor: existing?.cursor ?? tab.cursor,
     rows: existing?.rows ?? tab.rows,
     cols: existing?.cols ?? tab.cols,
-    status: tab.status,
+    status,
   }
 }
 
