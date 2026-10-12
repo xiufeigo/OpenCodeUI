@@ -84,7 +84,6 @@ jobs:
             find "$BUNDLE_DIR/dmg" -name "*.dmg" -exec cp {} release-artifacts/ \; 2>/dev/null || true
           elif [[ "${{ matrix.os }}" == "linux" ]]; then
             find "$BUNDLE_DIR/deb" -name "*.deb" -exec cp {} release-artifacts/ \; 2>/dev/null || true
-            find "$BUNDLE_DIR/appimage" -name "*.AppImage" -exec cp {} release-artifacts/ \; 2>/dev/null || true
           fi
 
           echo "Artifacts:"
@@ -233,7 +232,7 @@ jobs:
             BODY="No changelog entry found for ${TAG}."
           fi
           echo "$BODY" > /tmp/release-body.md
-          printf '\n---\n\n**Desktop:** Windows (.exe), macOS (.dmg), Linux (.deb, .AppImage)\n**Mobile:** Android (.apk) — arm64, armeabi-v7a\n' >> /tmp/release-body.md
+          printf '\n---\n\n**Desktop:** Windows (.exe), macOS (.dmg), Linux (.deb)\n**Mobile:** Android (.apk) — arm64, armeabi-v7a\n' >> /tmp/release-body.md
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
