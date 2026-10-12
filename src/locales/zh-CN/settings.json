@@ -155,6 +155,8 @@
     "approvePendingOnFullAutoDesc": "开启后，底部自动放行切到本次会话或全部会话时，会把已经等待的权限也用 once 放行",
     "queueFollowupMessages": "后续消息排队",
     "queueFollowupMessagesDesc": "当前会话还在忙时，把新消息先放进队列，等这一轮结束后自动发送",
+    "queueDeliveryChipVisible": "输入框显示插队/排队切换",
+    "queueDeliveryChipVisibleDesc": "会话忙碌时输入框右下角的「插队 / 排队」切换按钮；隐藏后按上面的默认投递方式发送",
     "sidebarRecents": "侧边栏最近记录",
     "sidebarRecentsDesc": "最近对话的可选文件夹视图",
     "folderStyleRecents": "文件夹式最近记录",
@@ -472,7 +474,7 @@
     "runningExternal": "运行中（外部）",
     "notRunning": "未运行",
     "envVars": "环境变量",
-    "envVarsDesc": "传递给 opencode serve 进程（如 HTTPS_PROXY、API 密钥）",
+    "envVarsDesc": "传递给 opencode serve 进程（如 HTTPS_PROXY、API 密钥、OPENCODE_PASSWORD 服务密码）。系统环境中已设置的 OPENCODE_PASSWORD / OPENCODE_SERVER_PASSWORD 也会被自动识别并使用",
     "keyPlaceholder": "KEY",
     "valuePlaceholder": "值"
   },

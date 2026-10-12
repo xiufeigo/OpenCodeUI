@@ -18,14 +18,14 @@ import {
   updateConsumerSessionId,
   hasOtherConsumerForSession,
 } from '../hooks'
-import { usePermissions, usePermissionHandler, useMessageAnimation, useDirectory, useSessionContext } from '../hooks'
+import { usePermissions, usePermissionHandler, useMessageAnimation, useDirectory, useSessionContext, useAgents } from '../hooks'
 import { useNotification } from './useNotification'
 import { notificationEventSettingsStore } from '../store/notificationEventSettingsStore'
+import { notificationStore } from '../store/notificationStore'
 import {
   sendMessageAsync,
   getSessionMessages,
   abortSession,
-  getSelectableAgents,
   getPendingPermissions,
   getPendingForms,
   prefetchCommands,
@@ -42,7 +42,6 @@ import {
   type ApiFormInfo,
   type ApiPermissionRequest,
   type ApiSession,
-  type ApiAgent,
   type Attachment,
   type Model,
 } from '../api'
@@ -149,7 +148,6 @@ export function useChatSession({
   const [queueMutation, setQueueMutation] = useState<QueueMutation | null>(null)
 
   // Agents
-  const [agents, setAgents] = useState<ApiAgent[]>([])
   const [selectedAgent, setSelectedAgentRaw] = useState<string>(
     () => serverStorage.get(`${STORAGE_KEY_SELECTED_AGENT}:${paneId}`) || '',
   )
@@ -191,6 +189,10 @@ export function useChatSession({
     () => (routeSessionId ? sessionKeyToServerId(routeSessionId) : activeServerId),
     [routeSessionId, activeServerId],
   )
+
+  // agents 目录：共享 store（按 server+directory 缓存，多 pane 不重复拉取）；
+  // 健康度兜底与事件刷新由 useGlobalEvents 统一驱动（对齐官方 location store）
+  const { agents, refetch: refetchAgents } = useAgents(currentDirectory, paneServerId)
 
   const handleMissingRouteSession = useCallback(
     (missingSessionId: string) => {
@@ -479,6 +481,7 @@ export function useChatSession({
   // SSE 事件回调（permission / question / scroll / idle / error / reconnect）
   // 每个 pane 都注册自己的 consumer，由 App 顶层统一建立 SSE 连接
   // ============================================
+
   const sseCallbacks = useMemo(
     () => ({
       onPermissionAsked: (request: import('../api').ApiPermissionRequest) => {
@@ -580,9 +583,7 @@ export function useChatSession({
         }
         refetchModels().catch(() => {})
         // 重新获取 agents 列表（切换后端时 currentDirectory 可能没变，useEffect 不会触发）
-        getSelectableAgents(currentDirectory, paneServerId)
-          .then(setAgents)
-          .catch(() => {})
+        refetchAgents().catch(() => {})
       },
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- refs and stable functions
@@ -601,6 +602,7 @@ export function useChatSession({
       loadSession,
       refreshPendingRequests,
       refetchModels,
+      refetchAgents,
     ],
   )
 
@@ -635,13 +637,6 @@ export function useChatSession({
   const handleVisibleMessageIdsChange = useCallback((_ids: string[]) => {
     // No-op: parts are always in memory now
   }, [])
-
-  // Load agents
-  useEffect(() => {
-    getSelectableAgents(currentDirectory, paneServerId)
-      .then(setAgents)
-      .catch(err => handleError('fetch agents', err))
-  }, [currentDirectory, paneServerId])
 
   // Preload @ root directory and / commands for current session directory
   useEffect(() => {
@@ -842,10 +837,9 @@ export function useChatSession({
         // 「上一轮已收工」误判成最新 Working 再展开，造成一闪。
         // streaming 在 send 成功后、或 SSE 推到 assistant 时再打开。
         const admittedSessionId = sessionId
-        try {
-          // 同会话发送串行化（官方 sendAdmission）：等待上一次 POST 落定，
-          // 避免 switchModel/switchAgent/prompt 与另一次发送交错
-          await sendAdmission(admittedSessionId, () =>
+        // 发送载荷提取成函数：失败后要按原样幂等重试一次
+        const postAdmission = () =>
+          sendAdmission(admittedSessionId, () =>
             sendMessageAsync(
               {
                 sessionId: admittedSessionId,
@@ -861,14 +855,26 @@ export function useChatSession({
               paneServerId,
             ),
           )
-        } catch (error) {
-          // 官方同款回滚守卫（data.ts:1578-1583）：只撤本次乐观插入、且
-          // 服务端尚未确认的行；回声已到达的行属于服务端状态，绝不能撤
-          if (fresh && outboxTryRollback(messageId)) {
-            messageStore.removeMessage(sessionId, messageId)
-            if (input.delivery) inboxStore.removeItem(sessionId, messageId)
+        try {
+          // 同会话发送串行化（官方 sendAdmission）：等待上一次 POST 落定，
+          // 避免 switchModel/switchAgent/prompt 与另一次发送交错
+          await postAdmission()
+        } catch {
+          // 幂等自动重试一次（官方 composer submit.ts 同款）：消息 ID 由
+          // 客户端铸造、服务端按 ID 幂等入场，同 payload 重试不会重复。
+          // 覆盖「请求已到服务端、响应在断网中丢失」的假象失败——不重试
+          // 直接回滚会把服务端已收到的消息撤掉，用户重发后变成重复消息。
+          try {
+            await postAdmission()
+          } catch (error) {
+            // 官方同款回滚守卫（data.ts:1578-1583）：只撤本次乐观插入、且
+            // 服务端尚未确认的行；回声已到达的行属于服务端状态，绝不能撤
+            if (fresh && outboxTryRollback(messageId)) {
+              messageStore.removeMessage(sessionId, messageId)
+              if (input.delivery) inboxStore.removeItem(sessionId, messageId)
+            }
+            throw error
           }
-          throw error
         }
 
         messageStore.setStreaming(sessionId, true)
@@ -899,6 +905,16 @@ export function useChatSession({
         return true
       } catch (error) {
         handleError('send message', error)
+        // 用户可见反馈（修复「吞消息」无感知问题）：乐观气泡被回滚后
+        // 必须有明确提示，否则用户看到的就是"消息发了又消失"。
+        // 输入框草稿本就在失败时保留，用户可直接重发。
+        notificationStore.push(
+          'error',
+          i18n.t('chat:inputArea.sendFailed'),
+          error instanceof Error && error.message ? error.message : i18n.t('chat:inputArea.sendFailedHint'),
+          sessionId ?? '',
+          input.directory,
+        )
         if (sessionId) {
           if (rollbackSnapshot) {
             messageStore.restoreSendRollback(sessionId, rollbackSnapshot)

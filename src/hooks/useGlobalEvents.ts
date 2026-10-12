@@ -29,7 +29,8 @@ import {
   getSessionMessage,
 } from '../api'
 import { createSessionPlaceholder } from '../utils/sessionPlaceholder'
-import { refreshModels } from './useModels'
+import { refreshModels, ensureModelsFresh } from './useModels'
+import { ensureServerAgentsFresh, refreshServerAgents } from './useAgents'
 import type { EventCallbacks } from '../types/api/event'
 import { replyPermission } from '../api/permission'
 import { outboxConfirm } from '../api/sendAdmission'
@@ -874,6 +875,17 @@ export function useGlobalEvents(directories?: string[]) {
         onModelUpdated: () => {
           void refreshModels(serverId)
         },
+        // agent / config 目录变更（官方：sync.tsx:255 收到后 refetch bootstrap）。
+        // config 可能改模型/agent 定义，两边都刷。agents 是共享 store
+        // （useAgents，按 server+directory 缓存），整服务器刷新即可，
+        // 所有 pane 通过 store 订阅自动更新。
+        onAgentUpdated: () => {
+          refreshServerAgents(serverId)
+        },
+        onConfigUpdated: () => {
+          void refreshModels(serverId)
+          refreshServerAgents(serverId)
+        },
 
         // ---- 执行生命周期 ----
         //
@@ -991,6 +1003,13 @@ export function useGlobalEvents(directories?: string[]) {
           // 时钟校准不走这里：以前把本地时钟 Date.now() 当"服务器时间"校准，
           // 偏移恒为 0，是伪校准。真实校准在事件分发层用事件自带的 created
           // 完成（api/events.ts → serverStore.calibrateFromServerTimestamp）。
+          //
+          // 首次连接（App 启动先于服务器就绪时预取必失败）与重连都会到这里：
+          // 模型/agent 目录不健康就补拉，否则输入框的模型/agent/思考等级
+          // 会一直空着，只能手动刷新。官方同款：每次 server.connected 都
+          // refetch bootstrap（server-sync/connection.ts）。
+          ensureModelsFresh(serverId)
+          ensureServerAgentsFresh(serverId)
         },
 
         // ============================================

@@ -141,6 +141,13 @@ vi.mock('../hooks', () => ({
     animateRedo: vi.fn(),
   }),
   useDirectory: () => ({ currentDirectory: '/workspace/demo' }),
+  // agents 现在来自共享 store（useAgents）；测试中给固定列表
+  useAgents: () => ({
+    agents: [{ name: 'build', mode: 'primary', hidden: false }],
+    isLoading: false,
+    error: null,
+    refetch: vi.fn(() => Promise.resolve()),
+  }),
   useSessionContext: () => ({
     createSession: createSessionMock,
     sessions: [],
@@ -177,6 +184,7 @@ vi.mock('../api', () => ({
   cancelInboxItem: vi.fn(() => Promise.resolve()),
   steerInboxItem: vi.fn(() => Promise.resolve()),
   extractUserMessageContent: vi.fn(),
+  subscribeToServerConnectionState: vi.fn(() => () => {}),
 }))
 
 vi.mock('../utils', () => ({
