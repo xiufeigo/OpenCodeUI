@@ -358,7 +358,9 @@ npm run release:prepare -- 0.2.0
 
 ## 桌面应用
 
-从 [Releases](https://github.com/lehhair/OpenCodeUI/releases) 下载安装包，或本地构建：
+从 [Releases](https://github.com/xiufeigo/OpenCodeUI/releases) 下载安装包，或本地构建：
+
+Android 正式包使用本 Fork 的固定签名，配置见 [Android 签名与打包](docs/android-signing.md)。
 
 ```bash
 npm install

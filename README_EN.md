@@ -307,7 +307,9 @@ After it finishes, follow the printed `git commit`, `git tag`, and `git push` st
 
 ## Desktop App
 
-Download the installer from [Releases](https://github.com/lehhair/OpenCodeUI/releases), or build locally:
+Download the installer from [Releases](https://github.com/xiufeigo/OpenCodeUI/releases), or build locally:
+
+Android release builds use this fork's signing key. See [Android signing and builds](docs/android-signing.md).
 
 ```bash
 npm install

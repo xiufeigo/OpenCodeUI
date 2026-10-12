@@ -159,41 +159,42 @@ jobs:
       - run: npm ci
 
       - name: Setup Android signing
+        shell: bash
+        env:
+          ANDROID_KEY_BASE64: ${{ secrets.ANDROID_KEY_BASE64 }}
         run: |
-          cd src-tauri/gen/android
-          echo "keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}" > keystore.properties
-          echo "password=${{ secrets.ANDROID_KEY_PASSWORD }}" >> keystore.properties
-          base64 -d <<< "${{ secrets.ANDROID_KEY_BASE64 }}" > $RUNNER_TEMP/keystore.jks
-          echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
+          : "${ANDROID_KEY_BASE64:?Missing ANDROID_KEY_BASE64 secret}"
+          umask 077
+          printf '%s' "$ANDROID_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/opencodeui-release.p12"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/opencodeui-release.p12" >> "$GITHUB_ENV"
 
       - name: Build and sign APK
+        shell: bash
         run: |
-          VERSION=${{ github.ref_name }}
-          BT="$ANDROID_HOME/build-tools/$(ls $ANDROID_HOME/build-tools/ | tail -1)"
-
-          npx tauri android build --apk --target ${{ matrix.target }}
-
-          SIGNED_APK=$(find src-tauri/gen/android/app/build/outputs/apk -path '*/release/*-signed*' -name '*.apk' -type f 2>/dev/null | head -1)
-          RELEASE_APK=$(find src-tauri/gen/android/app/build/outputs/apk -path '*/release/*.apk' -name '*.apk' -type f 2>/dev/null | head -1)
-          APK_PATH="${SIGNED_APK:-$RELEASE_APK}"
-          DEST="OpenCodeUI-${VERSION}-android-${{ matrix.label }}.apk"
-
-          if $BT/apksigner verify "$APK_PATH" 2>/dev/null; then
-            cp "$APK_PATH" "$DEST"
-          else
-            $BT/zipalign -v 4 "$APK_PATH" "${APK_PATH}.aligned"
-            $BT/apksigner sign \
-              --ks $RUNNER_TEMP/keystore.jks \
-              --ks-key-alias ${{ secrets.ANDROID_KEY_ALIAS }} \
-              --ks-pass pass:${{ secrets.ANDROID_KEY_PASSWORD }} \
-              --key-pass pass:${{ secrets.ANDROID_KEY_PASSWORD }} \
-              --out "$DEST" "${APK_PATH}.aligned"
+          BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools/" | sort -V | tail -1)"
+          npm run android:build -- --target "$ANDROID_TARGET"
+          mapfile -t APKS < <(find src-tauri/gen/android/app/build/outputs/apk -path '*/release/*.apk' -type f)
+          if [[ ${#APKS[@]} -ne 1 ]]; then
+            echo "Expected one release APK, found ${#APKS[@]}" >&2
+            exit 1
           fi
-
+          APK_PATH="${APKS[0]}"
+          "$BT/apksigner" verify --verbose --print-certs "$APK_PATH" | tee "$RUNNER_TEMP/apk-certificate.txt"
+          EXPECTED=$(tr -d '\r\n' < src-tauri/gen/android/release-signing.sha256)
+          ACTUAL=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/apk-certificate.txt")
+          if [[ "$ACTUAL" != "$EXPECTED" ]]; then
+            echo "APK signing certificate does not match this fork's release key" >&2
+            exit 1
+          fi
           mkdir -p release-artifacts
-          mv "$DEST" release-artifacts/
+          cp "$APK_PATH" "release-artifacts/OpenCodeUI-${RELEASE_VERSION}-android-${ANDROID_LABEL}.apk"
         env:
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/29.0.14206865
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_TARGET: ${{ matrix.target }}
+          ANDROID_LABEL: ${{ matrix.label }}
+          RELEASE_VERSION: ${{ github.ref_name }}
 
       - uses: actions/upload-artifact@v7
         with:
