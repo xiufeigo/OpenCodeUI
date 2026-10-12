@@ -16,6 +16,7 @@ import { useTranslation } from 'react-i18next'
 import { useServerStore } from '../../../hooks/useServerStore'
 import { serverStore } from '../../../store/serverStore'
 import { multiServerStore } from '../../../store/multiServerStore'
+import { reorderSubscribedServers } from './serverOrdering'
 import { subscribeToServerConnectionState, getServerConnectionInfo, type ConnectionInfo } from '../../../api/events'
 import { ExpandableSection } from '../../../components/ui'
 import { GripVerticalIcon } from '../../../components/Icons'
@@ -87,6 +88,7 @@ const ServerFolderGroup = memo(function ServerFolderGroup({
   isExpanded,
   onToggleExpanded,
   isDragged,
+  canDrag,
   registerRef,
   onDragStart,
   onTouchDragStart,
@@ -104,6 +106,7 @@ const ServerFolderGroup = memo(function ServerFolderGroup({
   isExpanded: boolean
   onToggleExpanded: () => void
   isDragged: boolean
+  canDrag: boolean
   registerRef: (el: HTMLDivElement | null) => void
   onDragStart: (e: React.PointerEvent) => void
   onTouchDragStart: (e: React.TouchEvent) => void
@@ -178,7 +181,7 @@ const ServerFolderGroup = memo(function ServerFolderGroup({
   return (
     <div
       ref={registerRef}
-      onTouchStart={onTouchDragStart}
+      onTouchStart={canDrag ? onTouchDragStart : undefined}
       onTouchMove={onTouchMove}
       onTouchEnd={onTouchEnd}
       className={`relative transition-all duration-150 group/folder ${
@@ -226,14 +229,16 @@ const ServerFolderGroup = memo(function ServerFolderGroup({
           </span>
         </button>
         {/* 拖拽把手 — 与文件夹行完全一致（服务器拖拽排序） */}
-        <span
-          data-drag-handle
-          onPointerDown={onDragStart}
-          className="shrink-0 flex items-center justify-center w-0 group-hover/folder:w-5 overflow-hidden cursor-grab active:cursor-grabbing text-text-500 opacity-0 group-hover/folder:opacity-60 hover:!opacity-100 transition-all duration-150 touch-none"
-          title={t('sidebar.dragToReorder', { defaultValue: 'Drag to reorder' })}
-        >
-          <GripVerticalIcon size={12} />
-        </span>
+        {canDrag && (
+          <span
+            data-drag-handle
+            onPointerDown={onDragStart}
+            className="shrink-0 flex items-center justify-center w-0 group-hover/folder:w-5 overflow-hidden cursor-grab active:cursor-grabbing text-text-500 opacity-0 group-hover/folder:opacity-60 hover:!opacity-100 transition-all duration-150 touch-none"
+            title={t('sidebar.dragToReorder', { defaultValue: 'Drag to reorder' })}
+          >
+            <GripVerticalIcon size={12} />
+          </span>
+        )}
       </div>
 
       {/* 展开内容：文件夹缩进在服务器节点下（内容自然展开，随外层滚动） */}
@@ -320,17 +325,16 @@ export function MultiServerFolderList({
     registerRef,
   } = useReorderableList({
     ids: serverIds,
-    canDrag: () => true,
+    canDrag: id => multiServerStore.isSubscribed(id),
     onCommit: (draggedId, targetId) => {
-      const current = multiServerStore.getSubscribedServerIds()
-      const next = [...current]
-      const from = next.indexOf(draggedId)
-      const to = next.indexOf(targetId)
-      if (from !== -1 && to !== -1) {
-        next.splice(from, 1)
-        next.splice(to, 0, draggedId)
-        multiServerStore.setSubscribedServerIds(next)
-      }
+      multiServerStore.setSubscribedServerIds(
+        reorderSubscribedServers({
+          subscribedIds: multiServerStore.getSubscribedServerIds(),
+          visibleIds: serverIds,
+          draggedId,
+          targetId,
+        }),
+      )
     },
     onDragActivated: handleDragActivated,
     onDragFinished: handleDragFinished,
@@ -377,6 +381,7 @@ export function MultiServerFolderList({
           isExpanded={expandedServerIds.includes(serverId)}
           onToggleExpanded={makeToggleExpanded(serverId)}
           isDragged={draggedId === serverId}
+          canDrag={multiServerStore.isSubscribed(serverId)}
           registerRef={makeRegisterRef(serverId)}
           onDragStart={makeDragStart(serverId)}
           onTouchDragStart={makeTouchDragStart(serverId)}

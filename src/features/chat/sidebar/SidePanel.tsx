@@ -4,8 +4,8 @@ import { SessionList } from '../../sessions'
 import { FolderRecentList } from './FolderRecentList'
 import { MultiServerFolderList } from './MultiServerFolderList'
 import { SearchResults } from './SearchResults'
-import { useMultiServerStore, multiServerStore } from '../../../store/multiServerStore'
-import { useServerStore } from '../../../hooks/useServerStore'
+import { multiServerStore } from '../../../store/multiServerStore'
+import { useSidebarServerScope } from './useSidebarServerScope'
 import { getProjectGroupIdentity } from './projectGrouping'
 import { ConfirmDialog } from '../../../components/ui/ConfirmDialog'
 import { ActiveSessionItem } from './ActiveSessionItem'
@@ -117,13 +117,8 @@ export function SidePanel({
     reorderDirectories,
     recentProjects,
   } = useDirectory()
-  // 多服务器订阅模式配置
-  const multiServerConfig = useMultiServerStore()
+  const { multiServerConfig, activeServer, serverIds } = useSidebarServerScope()
   // 多服务器模式：Git/路径信息跟随「焦点服务器」（焦点缺省 = 活动服务器）
-  // servers 快照同时喂给下方 subscribedServerIds 的过滤：WSL 服务器就绪注册
-  // （upsert）只更新 serverStore，订阅白名单本身不变，漏了它 memo 会停留在
-  // 「服务器还不存在」的旧过滤结果上，侧边栏永远缺 WSL 分组
-  const { activeServer, servers: registryServers } = useServerStore()
   const catalogServerId = multiServerConfig.enabled
     ? (multiServerConfig.focusedServerId ?? activeServer?.id)
     : undefined
@@ -138,10 +133,6 @@ export function SidePanel({
     getStorageVersion,
     getStorageVersion,
   )
-  const subscribedServerIds = useMemo(() => {
-    // 白名单精确生效：只展示用户在设置里勾选的服务器（且已注册进 serverStore）
-    return multiServerConfig.subscribedServerIds.filter(id => registryServers.some(s => s.id === id))
-  }, [multiServerConfig.subscribedServerIds, registryServers])
   // 多服务器列表按复合 key（serverId::sessionId）比较，避免跨服务器同名 session 串高亮
   const multiServerSelectedSessionKey = selectedSessionId
   const [globalFolderIndex, setGlobalFolderIndex] = useState<number>(() => {
@@ -1168,7 +1159,7 @@ export function SidePanel({
             <div className="relative p-1 pt-1.5">
               <div className="pointer-events-none absolute inset-x-3 top-0 h-px bg-border-200/30" />
               {/* 多服务器模式：当前「焦点服务器」— 与项目项同款样式（图标位=状态点） */}
-              {multiServerConfig.enabled && subscribedServerIds.length > 0 && (
+              {multiServerConfig.enabled && serverIds.length > 0 && (
                 <div className="group mb-1 flex w-full items-center gap-2 rounded-md bg-bg-200/40 px-2 py-1.5">
                   <span className="relative w-5 h-5 flex items-center justify-center shrink-0">
                     <span className="h-2 w-2 rounded-full bg-success-100" />
@@ -1368,16 +1359,18 @@ export function SidePanel({
               className={`flex-1 overflow-hidden ${isEditMode ? 'select-none' : ''}`}
             >
               {multiServerConfig.enabled ? (
-                subscribedServerIds.length > 0 ? (
+                serverIds.length > 0 ? (
                   search ? (
                     <SearchResults
+                      serverIds={serverIds}
+                      showServerHeaders={multiServerConfig.enabled}
                       search={search}
                       selectedSessionId={multiServerSelectedSessionKey}
                       onSelectSession={handleSelectMultiServer}
                     />
                   ) : (
                     <MultiServerFolderList
-                      serverIds={subscribedServerIds}
+                      serverIds={serverIds}
                       selectedSessionId={multiServerSelectedSessionKey}
                       currentDirectory={currentDirectory}
                       onSelectSession={handleSelectMultiServer}
@@ -1403,6 +1396,8 @@ export function SidePanel({
                 search ? (
                   /* 文件夹模式 + 搜索：文件夹 + session 一起搜（单服务器：无服务器组头） */
                   <SearchResults
+                    serverIds={serverIds}
+                    showServerHeaders={multiServerConfig.enabled}
                     search={search}
                     selectedSessionId={selectedSessionId}
                     onSelectSession={handleSelect}

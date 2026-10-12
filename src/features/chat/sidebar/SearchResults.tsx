@@ -2,11 +2,11 @@
 // SearchResults - 侧栏全局搜索结果（多服务器模式）
 //
 // 搜索范围：服务器节点 + 文件夹（工作区）+ session
-//   - 服务器 / 文件夹：本地即时过滤（白名单服务器 + 每服务器 saved-directories）
+//   - 服务器 / 文件夹：本地即时过滤（侧栏可见服务器 + 每服务器 saved-directories）
 //   - session：per-server API 搜索（getSessions({search}, serverId)，防抖 300ms）
 //
 // 结果按「服务器 → 文件夹 → session」三级分组展示，与浏览视图结构一致。
-// 单服务器模式不启用本组件（保持原有 SessionList 搜索行为不变）。
+// 文件夹模式和多服务器模式共用侧栏提供的服务器范围。
 // ============================================
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
@@ -15,7 +15,7 @@ import { getSessions, type ApiSession } from '../../../api'
 import { makeSessionKey } from '../../../utils/sessionKey'
 import { sessionDisplayTitle } from '../../../utils/sessionTitle'
 import { serverStore } from '../../../store/serverStore'
-import { multiServerStore, useMultiServerStore } from '../../../store/multiServerStore'
+import { multiServerStore } from '../../../store/multiServerStore'
 import { useDirectory } from '../../../contexts/useDirectory'
 import { readServerWorkspaces } from '../../../utils/serverWorkspaces'
 import { getStorageVersion, subscribePerServerStorageVersion } from '../../../utils/perServerStorage'
@@ -255,30 +255,21 @@ function ServerSearchGroup({
 }
 
 interface SearchResultsProps {
+  serverIds: string[]
+  showServerHeaders: boolean
   search: string
   selectedSessionId: string | null
   onSelectSession: (session: ApiSession & { serverId?: string }) => void
 }
 
-export function SearchResults({ search, selectedSessionId, onSelectSession }: SearchResultsProps) {
+export function SearchResults({
+  serverIds,
+  showServerHeaders,
+  search,
+  selectedSessionId,
+  onSelectSession,
+}: SearchResultsProps) {
   const { t } = useTranslation(['chat', 'common'])
-
-  // 活动服务器（响应式：单服务器模式切服务器后刷新）
-  const activeServerId = useSyncExternalStore(
-    cb => serverStore.subscribe(cb),
-    () => serverStore.getActiveServerId(),
-    () => serverStore.getActiveServerId(),
-  )
-  // 响应式订阅多服务器配置：白名单增删 / 拖拽重排 / 开关切换都会重算服务器集合
-  const multiServerConfig = useMultiServerStore()
-
-  // 多服务器模式：白名单服务器（过滤已删除的）；单服务器：活动服务器
-  const serverIds = useMemo(() => {
-    if (multiServerConfig.enabled) {
-      return multiServerConfig.subscribedServerIds.filter(id => serverStore.getServers().some(s => s.id === id))
-    }
-    return [activeServerId]
-  }, [multiServerConfig, activeServerId])
 
   if (splitTerms(search).length === 0) return null
 
@@ -294,7 +285,7 @@ export function SearchResults({ search, selectedSessionId, onSelectSession }: Se
           search={search}
           selectedSessionId={selectedSessionId}
           onSelectSession={onSelectSession}
-          showHeader={multiServerConfig.enabled}
+          showHeader={showServerHeaders}
         />
       ))}
       <div className="px-2 py-3 text-center text-[length:var(--fs-xs)] text-text-400/70">

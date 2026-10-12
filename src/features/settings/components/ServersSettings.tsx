@@ -570,11 +570,11 @@ export function ServersSettings() {
           description={
             multiServerConfig.enabled
               ? t('servers.subscribedCountHint', {
-                  defaultValue: '{{count}} servers subscribed. Use the plug icon on each server to join/leave the whitelist.',
+                  defaultValue: '{{count}} servers subscribed. The current server is always shown; use the plug icon to keep other servers in the sidebar.',
                   count: subscribedCount,
                 })
               : t('servers.multiServerModeOffHint', {
-                  defaultValue: 'Only the servers you subscribe to appear in the sidebar session list.',
+                  defaultValue: 'When enabled, the sidebar shows the current server and any other servers you subscribe to.',
                 })
           }
         >

@@ -14,15 +14,17 @@ export function useInView(options: IntersectionObserverInit & { triggerOnce?: bo
     if (!element) return
 
     const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting) {
-          setInView(true)
-          if (triggerOnce) {
-            setHasTriggered(true)
-            observer.unobserve(element)
-          }
-        } else {
-          if (!triggerOnce) {
+      entries => {
+        // 展开动画可能将离开/进入通知合并在一批；once 记住任一次进入，否则采用最终状态。
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            setInView(true)
+            if (triggerOnce) {
+              setHasTriggered(true)
+              observer.unobserve(element)
+              break
+            }
+          } else if (!triggerOnce) {
             setInView(false)
           }
         }
