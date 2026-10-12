@@ -2,11 +2,11 @@ import { useState, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '../../../components/ui/Button'
 import { TrashIcon, WifiIcon, WifiOffIcon, SpinnerIcon, StopIcon } from '../../../components/Icons'
-import { useServerStore, useIsMobile } from '../../../hooks'
+import { useServerStore } from '../../../hooks'
 import { API_BASE_URL } from '../../../constants'
 import { LOCAL_SERVER_ID } from '../../../store/serverStore'
 import { serviceStore, useServiceStore } from '../../../store/serviceStore'
-import { isTauri } from '../../../utils/tauri'
+import { isTauriDesktop } from '../../../utils/tauri'
 import { apiErrorHandler } from '../../../utils'
 import { applyLocalServiceUrl } from '../../../utils/localServiceUrl'
 import { settingsFieldClass, Toggle, SettingRow, SettingField, SettingsSection } from './SettingsUI'
@@ -21,7 +21,6 @@ interface StartOpencodeServiceResult {
 
 export function ServiceSettings() {
   const { t } = useTranslation(['settings', 'common'])
-  const isMobile = useIsMobile()
   const {
     autoStart: autoStartService,
     binaryPath,
@@ -33,7 +32,7 @@ export function ServiceSettings() {
   } = useServiceStore()
   const { servers } = useServerStore()
   const localServer = servers.find(server => server.id === LOCAL_SERVER_ID)
-  const isTauriDesktop = isTauri() && !isMobile
+  const supportsLocalService = isTauriDesktop()
 
   // 本地编辑状态（debounce 保存）
   const [localBinaryPath, setLocalBinaryPath] = useState(binaryPath)
@@ -74,11 +73,11 @@ export function ServiceSettings() {
 
   // 打开设置页时自动检测一次服务状态
   useEffect(() => {
-    if (!isTauriDesktop) return
+    if (!supportsLocalService) return
     handleCheckService()
     handleDetectBinary()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isTauriDesktop])
+  }, [supportsLocalService])
 
   const handleAutoStartToggle = () => {
     serviceStore.setAutoStart(!autoStartService)
@@ -189,7 +188,7 @@ export function ServiceSettings() {
     }
   }
 
-  if (!isTauriDesktop) {
+  if (!supportsLocalService) {
     return (
       <SettingsSection title={t('service.localService')} description={t('service.desktopOnlyDesc')}>
         <div className="text-[length:var(--fs-xs)] text-text-300 leading-relaxed">{t('service.webModeDesc')}</div>

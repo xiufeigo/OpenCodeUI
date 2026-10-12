@@ -3,7 +3,7 @@
 // ============================================
 
 import { API_BASE_URL } from '../constants'
-import { isTauri } from '../utils/tauri'
+import { isTauri, isTauriMobile } from '../utils/tauri'
 
 // Tauri plugin-http fetch 缓存（避免重复 dynamic import）
 let _tauriFetch: typeof globalThis.fetch | null = null
@@ -140,6 +140,16 @@ const DEFAULT_SERVER_KEY = 'opencode-default-server'
 export const WSL_SERVER_PREFIX = 'wsl:'
 export const LOCAL_SERVER_ID = 'local'
 
+/** 原生移动端只连接用户配置的服务器；桌面和 Web 保留默认本机入口。 */
+function platformServers(servers: ServerConfig[]): ServerConfig[] {
+  const mobile = isTauriMobile()
+  const available = servers.filter(server =>
+    !server.id.startsWith(WSL_SERVER_PREFIX) && (!mobile || server.id !== LOCAL_SERVER_ID),
+  )
+  if (available.length > 0 || mobile) return available
+  return [{ id: LOCAL_SERVER_ID, name: 'Local', url: API_BASE_URL, isDefault: true }]
+}
+
 function isSameServerAuth(a: ServerAuth | undefined, b: ServerAuth | undefined): boolean {
   return a?.username === b?.username && a?.password === b?.password
 }
@@ -196,21 +206,11 @@ class ServerStore {
       const stored = localStorage.getItem(STORAGE_KEY)
       if (stored) {
         this.servers = (JSON.parse(stored) as ServerConfig[]).filter(
-          server => typeof server?.id === 'string' && !server.id.startsWith(WSL_SERVER_PREFIX),
+          server => typeof server?.id === 'string',
         )
       }
 
-      // 如果没有服务器，添加默认的本地服务器
-      if (this.servers.length === 0) {
-        this.servers = [
-          {
-            id: this.DEFAULT_SERVER_ID,
-            name: 'Local',
-            url: API_BASE_URL,
-            isDefault: true,
-          },
-        ]
-      }
+      this.servers = platformServers(this.servers)
 
       // 加载默认服务器偏好。wsl: 前缀同样合法——该服务器此刻可能尚未注册，
       // 由 wslStore 在就绪后接入
@@ -234,17 +234,16 @@ class ServerStore {
         // 默认选中第一个
         this.activeServerId = this.servers[0]?.id ?? null
       }
-    } catch {
+      if (isTauriMobile()) {
+        // 清理旧版本自动生成的 local 条目及其选中状态，刷新后也不会恢复。
+        this.saveToStorage()
+        if (defaultPref && !this.defaultServerId) localStorage.removeItem(DEFAULT_SERVER_KEY)
+      }
+    } catch (error) {
+      console.error('Failed to load server settings:', error)
       // 初始化默认值
-      this.servers = [
-        {
-          id: this.DEFAULT_SERVER_ID,
-          name: 'Local',
-          url: API_BASE_URL,
-          isDefault: true,
-        },
-      ]
-      this.activeServerId = this.DEFAULT_SERVER_ID
+      this.servers = platformServers([])
+      this.activeServerId = this.servers[0]?.id ?? null
       this.bootIntentServerId = null
       this.defaultServerId = null
     }
@@ -261,6 +260,9 @@ class ServerStore {
         // activeId 即便是 wsl: 前缀也照写——它是下次启动的「启动意图」，loadFromStorage 依赖它
         sessionStorage.setItem(ACTIVE_SERVER_KEY, this.activeServerId)
         localStorage.setItem(ACTIVE_SERVER_KEY, this.activeServerId)
+      } else {
+        sessionStorage.removeItem(ACTIVE_SERVER_KEY)
+        localStorage.removeItem(ACTIVE_SERVER_KEY)
       }
     } catch {
       // ignore
@@ -349,7 +351,8 @@ class ServerStore {
    */
   getServerBaseUrl(serverId: string): string {
     const server = this.servers.find(s => s.id === serverId)
-    return server ? this.withRuntimeServerUrl(server).url : API_BASE_URL
+    if (!server) throw new Error(`Server no longer exists: ${serverId}`)
+    return this.withRuntimeServerUrl(server).url
   }
 
   /**
@@ -361,15 +364,16 @@ class ServerStore {
   }
 
   isActiveLocalServer(): boolean {
-    return this.getActiveServerId() === this.DEFAULT_SERVER_ID
+    return this.activeServerId === this.DEFAULT_SERVER_ID
   }
 
   /**
    * 获取当前活动服务器 ID（用于 per-server storage 等场景）
-   * 返回 'local' 作为默认值，保证永远有值
+   * 调用方需要活动服务器；配置页面用 getActiveServer() 表达尚未配置的状态。
    */
   getActiveServerId(): string {
-    return this.activeServerId ?? this.DEFAULT_SERVER_ID
+    if (!this.activeServerId) throw new Error('No active OpenCode server is selected')
+    return this.activeServerId
   }
 
   /**
@@ -377,7 +381,8 @@ class ServerStore {
    */
   getActiveBaseUrl(): string {
     const server = this.getActiveServer()
-    return server?.url ?? API_BASE_URL
+    if (!server) throw new Error('No active OpenCode server is selected')
+    return server.url
   }
 
   /**
@@ -411,7 +416,8 @@ class ServerStore {
   }
 
   getActiveCalibratedNow(): number | undefined {
-    const calibration = this.clockCalibrationMap.get(this.getActiveServerId())
+    if (!this.activeServerId) return undefined
+    const calibration = this.clockCalibrationMap.get(this.activeServerId)
     if (!calibration) return undefined
     return calibration.serverTimestamp + (performance.now() - calibration.calibratedAtMonotonic)
   }
@@ -469,8 +475,11 @@ class ServerStore {
       url: config.url.replace(/\/+$/, ''), // 移除尾部斜杠
     }
     this.servers.push(server)
+    const becomesActive = this.activeServerId === null
+    if (becomesActive) this.activeServerId = id
     this.saveToStorage()
     this.notify()
+    if (becomesActive) this.notifyServerChange(id, 'server-switch')
     return server
   }
 
@@ -588,9 +597,9 @@ class ServerStore {
 
     // 被删的是 active：SSE 等消费方还挂在死掉/被删的服务器上（WSL sidecar 退出是典型场景），
     // 必须通知它们跟着切到回退目标，否则连接永远指向死地址。
-    // local 是 isDefault 永不可删，回退目标恒存在；getActiveServerId() 对 null 兜底为 'local'
-    if (wasActive) {
-      this.notifyServerChange(this.getActiveServerId(), 'server-switch')
+    // 无回退目标时订阅方退出工作区，不建立虚构的本机连接。
+    if (wasActive && this.activeServerId) {
+      this.notifyServerChange(this.activeServerId, 'server-switch')
     }
 
     return true
@@ -821,16 +830,7 @@ function normalizeServerBackup(raw: unknown): ServerSettingsBackup {
         }))
     : []
 
-  const normalizedServers = servers.length
-    ? servers
-    : [
-        {
-          id: 'local',
-          name: 'Local',
-          url: API_BASE_URL,
-          isDefault: true,
-        },
-      ]
+  const normalizedServers = platformServers(servers)
 
   const activeServerId =
     typeof parsed?.activeServerId === 'string' && normalizedServers.some(server => server.id === parsed.activeServerId)
@@ -863,7 +863,7 @@ export function exportServerSettingsBackup(): ServerSettingsBackup {
         ...server,
         auth: server.auth ? { ...server.auth } : undefined,
       })),
-    activeServerId: serverStore.getActiveServerId(),
+    activeServerId: serverStore.getActiveServer()?.id ?? null,
     defaultServerId: serverStore.getDefaultServerId(),
   }
 }

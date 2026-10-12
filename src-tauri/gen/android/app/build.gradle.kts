@@ -13,13 +13,10 @@ val tauriProperties = Properties().apply {
     }
 }
 
-// 读取签名配置（CI 环境通过 keystore.properties 注入）
-val keystoreProperties = Properties().apply {
-    val propFile = file("keystore.properties")
-    if (propFile.exists()) {
-        propFile.inputStream().use { load(it) }
-    }
-}
+// Local builds and CI inject the same credentials; release builds must be signed.
+val releaseStoreFile = providers.environmentVariable("ANDROID_KEYSTORE_PATH").orNull
+val releaseKeyAlias = providers.environmentVariable("ANDROID_KEY_ALIAS").orNull
+val releasePassword = providers.environmentVariable("ANDROID_KEY_PASSWORD").orNull
 
 android {
     compileSdk = 36
@@ -34,13 +31,10 @@ android {
     }
     signingConfigs {
         create("release") {
-            val ksFile = keystoreProperties.getProperty("storeFile")
-            if (ksFile != null) {
-                storeFile = file(ksFile)
-                storePassword = keystoreProperties.getProperty("password")
-                keyAlias = keystoreProperties.getProperty("keyAlias")
-                keyPassword = keystoreProperties.getProperty("password")
-            }
+            storeFile = releaseStoreFile?.let { file(it) }
+            storePassword = releasePassword
+            keyAlias = releaseKeyAlias
+            keyPassword = releasePassword
         }
     }
     buildTypes {
@@ -59,10 +53,7 @@ android {
         getByName("release") {
             manifestPlaceholders["usesCleartextTraffic"] = "true"
             isMinifyEnabled = true
-            val ksFile = keystoreProperties.getProperty("storeFile")
-            if (ksFile != null) {
-                signingConfig = signingConfigs.getByName("release")
-            }
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }
                     .plus(getDefaultProguardFile("proguard-android-optimize.txt"))

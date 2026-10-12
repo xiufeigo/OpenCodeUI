@@ -1,6 +1,6 @@
 {
   "name": "opencodeui",
-  "version": "0.7.4",
+  "version": "1.0.1",
   "description": "A third-party web frontend for OpenCode",
   "license": "GPL-3.0-only",
   "type": "module",
@@ -20,6 +20,7 @@
     "check": "npm run format:check && npm run lint && npm run test:run && npm run build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "android:build": "node scripts/build-android.mjs",
     "postinstall": "node scripts/copy-material-icons.mjs"
   },
   "dependencies": {

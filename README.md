@@ -348,17 +348,21 @@ GitHub Actions 的 `Build Validation` workflow 会在 PR 和 `main` 分支 push 
 
 ### 发版准备
 
+本 Fork 从 `v1.0.0` 开始：修复递增末位（如 `1.0.1`），功能变化递增中间位并将末位归零（如 `1.1.0`），大更新递增首位并将其余两位归零（如 `2.0.0`）。上游版本号不作为本 Fork 的发布版本号。
+
 正式发版时，优先使用下面这条命令，它会先跑完整校验，再执行版本号和 changelog 更新：
 
 ```bash
-npm run release:prepare -- 0.2.0
+npm run release:prepare -- 1.0.1
 ```
 
 命令完成后，再按提示执行 `git commit`、`git tag` 和 `git push`。
 
 ## 桌面应用
 
-从 [Releases](https://github.com/lehhair/OpenCodeUI/releases) 下载安装包，或本地构建：
+从 [Releases](https://github.com/xiufeigo/OpenCodeUI/releases) 下载安装包，或本地构建：
+
+Android 正式包使用本 Fork 的固定签名，配置见 [Android 签名与打包](docs/android-signing.md)。
 
 ```bash
 npm install

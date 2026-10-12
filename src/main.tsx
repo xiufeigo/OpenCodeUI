@@ -4,8 +4,7 @@ import 'katex/dist/katex.min.css'
 import './index.css'
 import './i18n'
 import { initOverlayScrollbars } from './lib/overlayScrollbar'
-import App from './App.tsx'
-import { DirectoryProvider, FullscreenProvider, SessionProvider } from './contexts'
+import { AppRoot } from './AppRoot'
 import { themeStore } from './store/themeStore'
 import { affectsBoundServer } from './store/serverChangeScope'
 import { serverStore } from './store/serverStore'
@@ -18,6 +17,7 @@ import { resetPathModeCache } from './utils/directoryUtils'
 import { isTauri, isTauriMobile } from './utils/tauri'
 import { apiErrorHandler, globalErrorHandler } from './utils/errorHandling'
 import { applyLocalServiceUrl } from './utils/localServiceUrl'
+import { configureNativeShell } from './utils/nativeShell'
 
 // Polyfill: randomUUID 在非 HTTPS 环境可能缺失（如局域网 HTTP）
 // 统一补齐，避免业务层 scattered fallback。
@@ -96,24 +96,8 @@ interface StartOpencodeServiceResult {
   started: boolean
   startedByUs: boolean
   url?: string | null
-  /** v2 服务端自动生成的随机密码（未显式配置 OPENCODE_SERVER_PASSWORD 时强制生成） */
+  /** 连接用密码：服务端随机生成（未显式配置时）或来自 OPENCODE_PASSWORD / OPENCODE_SERVER_PASSWORD 环境变量 */
   serverPassword?: string | null
-}
-
-function configureNativeShell() {
-  if (!isNativeTauri) return
-
-  // 添加 CSS class 用于 safe-area 适配
-  document.documentElement.classList.add('tauri-app')
-
-  // 确保 viewport meta 包含 viewport-fit=cover（用于状态栏沉浸式）
-  const viewportMeta = document.querySelector('meta[name="viewport"]')
-  if (!viewportMeta) return
-
-  const content = viewportMeta.getAttribute('content') || ''
-  if (!content.includes('viewport-fit=cover')) {
-    viewportMeta.setAttribute('content', content + ', viewport-fit=cover')
-  }
 }
 
 async function initializeNativeDesktopService() {
@@ -157,7 +141,8 @@ async function initializeNativeDesktopService() {
   }
 }
 
-configureNativeShell()
+const disposeNativeShell = configureNativeShell()
+import.meta.hot?.dispose(() => disposeNativeShell?.())
 
 // 全局错误处理 - 防止未捕获错误导致页面刷新
 window.addEventListener('error', event => {
@@ -174,13 +159,7 @@ function bootstrap() {
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
       <Suspense fallback={null}>
-        <DirectoryProvider>
-          <SessionProvider>
-            <FullscreenProvider>
-              <App />
-            </FullscreenProvider>
-          </SessionProvider>
-        </DirectoryProvider>
+        <AppRoot />
       </Suspense>
     </StrictMode>,
   )
@@ -191,7 +170,7 @@ function startApp() {
 
   void initializeNativeDesktopService()
 
-  if (isNativeTauri) {
+  if (isNativeTauri && serverStore.getActiveServer()) {
     void getSDKClientAsync().catch(err => apiErrorHandler('initialize sdk client', err))
   }
 }

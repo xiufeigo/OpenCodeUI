@@ -18,6 +18,7 @@ export { useDisclosureScrollLock } from './useDisclosureScrollLock'
 export { useCompositorExpand } from './useCompositorExpand'
 export { useBackClose } from './useBackClose'
 export { useModelSelection } from './useModelSelection'
+export { useAgents, refreshAgents, ensureAgentsFresh, ensureServerAgentsFresh, refreshServerAgents } from './useAgents'
 export { useChatSession } from './useChatSession'
 export { usePathMode } from './usePathMode'
 export { useSessionStats, formatTokens, formatCost } from './useSessionStats'
@@ -37,8 +38,6 @@ export type { SessionStats } from './useSessionStats'
 export type { FileTreeNode, UseFileExplorerOptions, UseFileExplorerResult } from './useFileExplorer'
 export { useVcsInfo } from './useVcsInfo'
 export type { UseVcsInfoResult } from './useVcsInfo'
-export { useGitWorkspaceCatalog, requestGitWorkspaceCatalogRefresh } from './useGitWorkspaceCatalog'
-export type { GitWorkspaceCatalog, GitWorkspaceMeta } from './useGitWorkspaceCatalog'
 
 // Re-export from contexts
 export {

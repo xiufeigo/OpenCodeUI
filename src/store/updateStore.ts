@@ -32,10 +32,12 @@ export interface UpdateSettingsBackup {
 
 type Subscriber = () => void
 
-const STORAGE_KEY = 'opencode:update-check'
+const RELEASE_REPOSITORY = 'xiufeigo/OpenCodeUI'
+const STORAGE_KEY = `opencode:update-check:${RELEASE_REPOSITORY}`
 const CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000
-export const RELEASES_API_URL = 'https://api.github.com/repos/lehhair/OpenCodeUI/releases/latest'
-export const RELEASES_PAGE_URL = 'https://github.com/lehhair/OpenCodeUI/releases/latest'
+export const RELEASES_API_URL = `https://api.github.com/repos/${RELEASE_REPOSITORY}/releases/latest`
+const RELEASES_BASE_URL = `https://github.com/${RELEASE_REPOSITORY}/releases`
+export const RELEASES_PAGE_URL = `${RELEASES_BASE_URL}/latest`
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
@@ -73,6 +75,31 @@ export function shouldShowUpdateToast(state: UpdateState): boolean {
   return true
 }
 
+function readPersistedState(raw: unknown): PersistedUpdateState {
+  const empty = { latestRelease: null, lastCheckedAt: null, dismissedVersion: null }
+  if (!isPlainObject(raw) || !isPlainObject(raw.latestRelease)) return empty
+  const release = raw.latestRelease
+  if (
+    typeof release.version !== 'string' ||
+    typeof release.tagName !== 'string' ||
+    typeof release.url !== 'string' ||
+    !release.url.startsWith(`${RELEASES_BASE_URL}/`)
+  ) {
+    return empty
+  }
+  return {
+    latestRelease: {
+      version: release.version,
+      tagName: release.tagName,
+      url: release.url,
+      publishedAt: typeof release.publishedAt === 'string' ? release.publishedAt : null,
+      name: typeof release.name === 'string' ? release.name : null,
+    },
+    lastCheckedAt: typeof raw.lastCheckedAt === 'number' ? raw.lastCheckedAt : null,
+    dismissedVersion: typeof raw.dismissedVersion === 'string' ? raw.dismissedVersion : null,
+  }
+}
+
 function loadPersistedState(): PersistedUpdateState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -80,12 +107,7 @@ function loadPersistedState(): PersistedUpdateState {
       return { latestRelease: null, lastCheckedAt: null, dismissedVersion: null }
     }
 
-    const parsed = JSON.parse(raw) as PersistedUpdateState
-    return {
-      latestRelease: parsed?.latestRelease ?? null,
-      lastCheckedAt: typeof parsed?.lastCheckedAt === 'number' ? parsed.lastCheckedAt : null,
-      dismissedVersion: typeof parsed?.dismissedVersion === 'string' ? parsed.dismissedVersion : null,
-    }
+    return readPersistedState(JSON.parse(raw))
   } catch {
     return { latestRelease: null, lastCheckedAt: null, dismissedVersion: null }
   }
@@ -114,6 +136,9 @@ function parseRelease(payload: unknown): UpdateRelease {
 
   if (!tagName) {
     throw new Error('Missing release tag')
+  }
+  if (!htmlUrl.startsWith(`${RELEASES_BASE_URL}/`)) {
+    throw new Error('Release URL does not belong to the configured repository')
   }
 
   return {
@@ -255,16 +280,7 @@ export function exportUpdateSettingsBackup(): UpdateSettingsBackup {
 }
 
 export function importUpdateSettingsBackup(raw: unknown): void {
-  const parsed = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : undefined
-  const payload: PersistedUpdateState = {
-    latestRelease:
-      parsed?.latestRelease && typeof parsed.latestRelease === 'object'
-        ? (parsed.latestRelease as UpdateRelease)
-        : null,
-    lastCheckedAt: typeof parsed?.lastCheckedAt === 'number' ? parsed.lastCheckedAt : null,
-    dismissedVersion: typeof parsed?.dismissedVersion === 'string' ? parsed.dismissedVersion : null,
-  }
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(payload))
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(readPersistedState(raw)))
 }
 
 export function useUpdateStore(): UpdateState {

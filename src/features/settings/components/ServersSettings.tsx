@@ -1,17 +1,19 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '../../../components/ui/Button'
 import { ConfirmDialog } from '../../../components/ui/ConfirmDialog'
 import { DropdownMenu } from '../../../components/ui/DropdownMenu'
 import { MenuItem } from '../../../components/ui/MenuItem'
 import { TrashIcon, KeyIcon, PencilIcon, RetryIcon, PlugIcon, CircleIcon } from '../../../components/Icons'
-import { useServerStore, useRouter } from '../../../hooks'
-import { messageStore } from '../../../store'
+import { useServerStore } from '../../../hooks'
+import { useServerSelection } from '../../../hooks/useServerSelection'
 import { useMultiServerStore, multiServerStore } from '../../../store/multiServerStore'
 import { useWslStore } from '../../../store/wslStore'
 import { settingsFieldClass, SettingsSection, SettingRow, Toggle } from './SettingsUI'
 import { ServerHealthButton } from './ServerHealthButton'
-import type { ServerConfig, ServerHealth } from '../../../store/serverStore'
+import { serverStore, type ServerConfig, type ServerHealth } from '../../../store/serverStore'
+import { paneLayoutStore } from '../../../store/paneLayoutStore'
+import { sessionKeyToServerId } from '../../../utils/sessionKey'
 import { isTauri, getDesktopPlatform } from '../../../utils/tauri'
 import { wslApi } from '../../../api/wsl'
 import { DialogAddWslServer } from '../../wsl/components/DialogAddWslServer'
@@ -510,12 +512,11 @@ export function ServersSettings() {
     addServer,
     removeServer,
     updateServer,
-    setActiveServer,
     checkHealth,
     checkAllHealth,
     getHealth,
   } = useServerStore()
-  const { navigateHome, sessionId: routeSessionId } = useRouter()
+  const handleSelectServer = useServerSelection()
   const orderedServers = useMemo(() => {
     if (!activeServer) return servers
     const active = servers.find(s => s.id === activeServer.id)
@@ -554,23 +555,6 @@ export function ServersSettings() {
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [addMenuOpen])
-
-  // 切换服务器：设置 active + 清理当前 session + 导航回首页
-  const handleSelectServer = useCallback(
-    (id: string) => {
-      if (activeServer?.id === id) return // 没变，不做事
-
-      // 清理当前 session 的 store 状态
-      if (routeSessionId) {
-        messageStore.clearSession(routeSessionId)
-      }
-
-      setActiveServer(id) // 内部触发 serverChangeListeners → reconnectSSE()
-      navigateHome()
-      void checkHealth(id)
-    },
-    [activeServer?.id, checkHealth, routeSessionId, setActiveServer, navigateHome],
-  )
 
   return (
     <>
@@ -683,13 +667,19 @@ export function ServersSettings() {
                 multiServerEnabled={multiServerConfig.enabled}
                 onSelect={() => handleSelectServer(s.id)}
                 onDelete={() => {
+                  const sessions = paneLayoutStore.allLeaves()
+                    .map(leaf => leaf.sessionId)
+                    .filter((id): id is string => !!id && sessionKeyToServerId(id) === s.id)
                   // 删除服务器时同步移出多服务器白名单（避免残留订阅连到已删地址）
                   if (multiServerStore.isSubscribed(s.id)) {
                     multiServerStore.setSubscribedServerIds(
                       multiServerStore.getSubscribedServerIds().filter(id => id !== s.id),
                     )
                   }
-                  removeServer(s.id)
+                  if (!removeServer(s.id)) return
+                  sessions.forEach(id => paneLayoutStore.clearSession(id))
+                  const nextServer = serverStore.getActiveServer()
+                  if (activeServer?.id === s.id && nextServer) handleSelectServer(nextServer.id)
                 }}
                 onEdit={updates => {
                   const auth = updates.password
@@ -724,7 +714,8 @@ export function ServersSettings() {
               const auth = pass ? { username: user || 'opencode', password: pass } : undefined
               const s = addServer({ name: n, url: u, auth })
               setAddingServer(false)
-              void checkHealth(s.id)
+              if (!activeServer) handleSelectServer(s.id)
+              else void checkHealth(s.id)
             }}
             onCancel={() => setAddingServer(false)}
           />

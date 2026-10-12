@@ -4,18 +4,19 @@
 // ============================================
 
 import { useEffect, useRef, memo, useState, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SerializeAddon } from '@xterm/addon-serialize'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
-import { getPtyConnectUrl, updatePtySession } from '../api/pty'
+import { getPtyConnectUrl, getPtySession, isPtyNotFoundError, updatePtySession } from '../api/pty'
 import { useTheme } from '../hooks'
 import { layoutStore, useLayoutStore } from '../store/layoutStore'
 import { useInputCapabilities } from '../hooks/useInputCapabilities'
 import { logger } from '../utils/logger'
-import { parsePtyFrame } from '../utils/ptyProtocol'
+import { createTerminalCheckpoint } from '../utils/terminalCheckpoint'
 import { isTauri } from '../utils/tauri'
 import { copyTextToClipboard, readTextFromClipboard } from '../utils/clipboard'
 import { hapticTap } from '../utils/haptics'
@@ -210,7 +211,12 @@ function isNativePasteShortcut(event: KeyboardEvent) {
 function canReadClipboardText() {
   // Ctrl/Cmd+V uses ClipboardEvent.clipboardData, but smart right-click paste must actively call
   // navigator.clipboard.readText(), which browsers only expose in secure contexts.
-  return typeof window !== 'undefined' && window.isSecureContext && typeof navigator !== 'undefined' && !!navigator.clipboard?.readText
+  return (
+    typeof window !== 'undefined' &&
+    window.isSecureContext &&
+    typeof navigator !== 'undefined' &&
+    !!navigator.clipboard?.readText
+  )
 }
 
 function applyStickyModifiers(data: string, sticky: StickyModifiers): string {
@@ -245,19 +251,22 @@ function useRepeatablePress() {
     }
   }, [clear])
 
-  return useCallback((action: () => void, repeat: boolean) => {
-    clear()
-    action()
-    hapticTap()
-    if (!repeat) return
-    const schedule = (delay: number) => {
-      timerRef.current = window.setTimeout(() => {
-        action()
-        schedule(REPEAT_INTERVAL)
-      }, delay)
-    }
-    schedule(REPEAT_DELAY)
-  }, [clear])
+  return useCallback(
+    (action: () => void, repeat: boolean) => {
+      clear()
+      action()
+      hapticTap()
+      if (!repeat) return
+      const schedule = (delay: number) => {
+        timerRef.current = window.setTimeout(() => {
+          action()
+          schedule(REPEAT_INTERVAL)
+        }, delay)
+      }
+      schedule(REPEAT_DELAY)
+    },
+    [clear],
+  )
 }
 
 interface MobileExtraKeysProps {
@@ -343,9 +352,20 @@ interface TerminalProps {
   /** 数据所属服务器（缺省用活动服务器） */
   serverId?: string
   isActive: boolean
+  terminalScopeKey?: string
 }
 
-export const Terminal = memo(function Terminal({ ptyId, directory, serverId, isActive }: TerminalProps) {
+export const Terminal = memo(function Terminal({
+  ptyId,
+  directory,
+  serverId,
+  isActive,
+  terminalScopeKey,
+}: TerminalProps) {
+  const { t } = useTranslation('components')
+  const [snapshotError, setSnapshotError] = useState<string | null>(null)
+  const [remoteExited, setRemoteExited] = useState(false)
+  const [replayGap, setReplayGap] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const terminalDirectoryRef = useRef(directory)
   const [isTouchScrolling, setIsTouchScrolling] = useState(false)
@@ -353,7 +373,6 @@ export const Terminal = memo(function Terminal({ ptyId, directory, serverId, isA
   const terminalRef = useRef<XTerm | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
   const stickyModifiersRef = useRef<StickyModifiers>(createStickyModifiers())
-  const cursorRef = useRef(0)
   const transportSendRef = useRef<((data: string) => void) | null>(null)
   const transportDisconnectRef = useRef<(() => void) | null>(null)
   const resizeTimeoutRef = useRef<number | null>(null)
@@ -428,9 +447,9 @@ export const Terminal = memo(function Terminal({ ptyId, directory, serverId, isA
     // the render closure. This breaks the infinite cycle:
     //   old terminal cleanup → updateTerminalSnapshot → notify →
     //   re-render → effect deps changed → cleanup → notify → ...
-    const freshTab = layoutStore.getState().panelTabs.find(
-      t => t.id === ptyId && t.type === 'terminal',
-    )
+    const freshTab = layoutStore
+      .getState()
+      .panelTabs.find(t => t.id === ptyId && t.terminalScopeKey === terminalScopeKey && t.type === 'terminal')
     const effectBuffer = typeof freshTab?.buffer === 'string' ? freshTab.buffer : ''
     const effectScrollY = typeof freshTab?.scrollY === 'number' ? freshTab.scrollY : undefined
     const effectCursor =
@@ -449,7 +468,9 @@ export const Terminal = memo(function Terminal({ ptyId, directory, serverId, isA
     const restoreSize = effectBuffer && effectCols && effectRows ? { cols: effectCols, rows: effectRows } : undefined
 
     mountedRef.current = true
-    cursorRef.current = effectCursor
+    let disposed = false
+    let restored = !effectBuffer
+    setRemoteExited(freshTab?.status === 'exited')
     let ws: WebSocket | null = null
     let wsConnectTimeout: number | null = null
     let disposeData: { dispose: () => void } | null = null
@@ -531,7 +552,7 @@ export const Terminal = memo(function Terminal({ ptyId, directory, serverId, isA
         event.preventDefault()
         void readTextFromClipboard()
           .then(text => {
-            if (!text || !mountedRef.current) return
+            if (!text || disposed) return
             sendTerminalData(text)
           })
           .catch(() => {})
@@ -583,7 +604,7 @@ export const Terminal = memo(function Terminal({ ptyId, directory, serverId, isA
       event.preventDefault()
       void readTextFromClipboard()
         .then(text => {
-          if (!text || !mountedRef.current) return
+          if (!text || disposed) return
           sendTerminalData(text)
           terminal.focus()
         })
@@ -605,6 +626,32 @@ export const Terminal = memo(function Terminal({ ptyId, directory, serverId, isA
     terminalRef.current = terminal
     fitAddonRef.current = fitAddon
 
+    const checkpoint = createTerminalCheckpoint({
+      cursor: effectCursor,
+      write: (data, callback) => terminal.write(data, callback),
+      read: () => ({
+        buffer: serializeAddon.serialize(),
+        scrollY: terminal.buffer.active.viewportY,
+        rows: terminal.rows,
+        cols: terminal.cols,
+      }),
+      save: snapshot => layoutStore.updateTerminalSnapshot(ptyId, snapshot, terminalScopeKey),
+      isReady: () => restored,
+      onReplayGap: () => {
+        if (!disposed) setReplayGap(true)
+      },
+      onError: error => {
+        if (error) logger.error('[Terminal] Checkpoint failed:', ptyId, error)
+        if (!disposed) setSnapshotError(error ? String(error) : null)
+      },
+    })
+    const flushCheckpoint = () => checkpoint.flush(true)
+    const handleVisibility = () => {
+      if (document.visibilityState === 'hidden') flushCheckpoint()
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    window.addEventListener('pagehide', flushCheckpoint)
+
     // 连接 WebSocket（带自动重连）
     let reconnectTimer: number | null = null
     let reconnectAttempt = 0
@@ -620,12 +667,19 @@ export const Terminal = memo(function Terminal({ ptyId, directory, serverId, isA
 
     const handleConnected = () => {
       logger.log(useNativePtyBridge ? '[Terminal/Tauri] Connected:' : '[Terminal] WebSocket connected:', ptyId)
-      if (!mountedRef.current) return
+      if (disposed) return
       reconnectAttempt = 0
-      layoutStore.updateTerminalTab(ptyId, { status: 'connected' })
+      layoutStore.updateTerminalTab(ptyId, { status: 'connected' }, terminalScopeKey)
       const { cols, rows } = terminal
       logger.log('[Terminal] Sending size:', cols, 'x', rows)
-      updatePtySession(ptyId, { size: { cols, rows } }, terminalDirectory, serverId).catch(() => {})
+      updatePtySession(ptyId, { size: { cols, rows } }, terminalDirectory, serverId).catch(error =>
+        logger.warn('[Terminal] Resize failed:', error),
+      )
+    }
+
+    const markExited = () => {
+      setRemoteExited(true)
+      layoutStore.updateTerminalTab(ptyId, { status: 'exited' }, terminalScopeKey)
     }
 
     const handleDisconnected = ({ code, reason }: { code?: number; reason?: string }) => {
@@ -636,30 +690,31 @@ export const Terminal = memo(function Terminal({ ptyId, directory, serverId, isA
         reason,
       )
       resetTransport()
-      if (!mountedRef.current) return
-      layoutStore.updateTerminalTab(ptyId, { status: 'disconnected' })
+      if (disposed) return
+      layoutStore.updateTerminalTab(ptyId, { status: 'disconnected' }, terminalScopeKey)
 
-      if (intentionalClose || code === 1000) {
-        terminal.write('\r\n\x1b[90m[Connection closed]\x1b[0m\r\n')
+      if (intentionalClose) return
+      if (code === 4404) {
+        markExited()
         return
       }
 
+      if (reconnectTimer !== null) return
       reconnectAttempt++
       const delay = Math.min(BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempt - 1), MAX_RECONNECT_DELAY)
       terminal.write(`\r\n\x1b[90m[Disconnected, reconnecting in ${(delay / 1000).toFixed(0)}s...]\x1b[0m\r\n`)
       reconnectTimer = window.setTimeout(() => {
         reconnectTimer = null
-        if (mountedRef.current) {
+        if (!disposed) {
           connectTransport()
         }
       }, delay)
     }
 
-    const connectTransport = () => {
-      if (!mountedRef.current) return
+    const openTransport = (cursor: number) => {
+      if (disposed) return
 
       fitAddon.fit()
-      const cursor = cursorRef.current
 
       if (useNativePtyBridge) {
         logger.log(
@@ -676,15 +731,7 @@ export const Terminal = memo(function Terminal({ ptyId, directory, serverId, isA
               serverId,
               onConnected: handleConnected,
               onMessage: chunk => {
-                if (!mountedRef.current) return
-                const frame = parsePtyFrame(chunk)
-                if (!frame) return
-                if (frame.kind === 'control') {
-                  cursorRef.current = frame.cursor
-                  return
-                }
-                terminal.write(frame.data)
-                cursorRef.current += frame.data.length
+                if (!disposed) checkpoint.accept(chunk)
               },
               onDisconnected: handleDisconnected,
               onError: message => {
@@ -694,7 +741,7 @@ export const Terminal = memo(function Terminal({ ptyId, directory, serverId, isA
           )
           .then(connection => {
             if (!connection) return
-            if (!mountedRef.current) {
+            if (disposed) {
               connection.close()
               return
             }
@@ -710,8 +757,12 @@ export const Terminal = memo(function Terminal({ ptyId, directory, serverId, isA
         // v2 的 WS 连接需要先异步换取一次性 ticket（见 api/pty.getPtyConnectUrl）
         void getPtyConnectUrl(ptyId, terminalDirectory, { cursor }, serverId)
           .then(wsUrl => {
-            if (!mountedRef.current) return
-            logger.log('[Terminal] Connecting to:', wsUrl, reconnectAttempt > 0 ? `(reconnect #${reconnectAttempt})` : '')
+            if (disposed) return
+            logger.log(
+              '[Terminal] Connecting PTY:',
+              ptyId,
+              reconnectAttempt > 0 ? `(reconnect #${reconnectAttempt})` : '',
+            )
             ws = new WebSocket(wsUrl)
             ws.binaryType = 'arraybuffer'
             transportSendRef.current = data => {
@@ -724,15 +775,7 @@ export const Terminal = memo(function Terminal({ ptyId, directory, serverId, isA
             ws.onopen = handleConnected
 
             ws.onmessage = event => {
-              if (!mountedRef.current) return
-              const frame = parsePtyFrame(event.data as string | ArrayBuffer)
-              if (!frame) return
-              if (frame.kind === 'control') {
-                cursorRef.current = frame.cursor
-                return
-              }
-              terminal.write(frame.data)
-              cursorRef.current += frame.data.length
+              if (!disposed) checkpoint.accept(event.data as string | ArrayBuffer)
             }
 
             ws.onclose = e => {
@@ -757,13 +800,44 @@ export const Terminal = memo(function Terminal({ ptyId, directory, serverId, isA
       })
     }
 
+    let connecting = false
+    const connectTransport = () => {
+      if (disposed || connecting) return
+      connecting = true
+      checkpoint.drain(cursor => {
+        void getPtySession(ptyId, terminalDirectory, serverId)
+          .then(pty => {
+            if (disposed) return
+            if (pty.status === 'exited') {
+              markExited()
+              return
+            }
+            openTransport(cursor)
+          })
+          .catch(error => {
+            if (disposed) return
+            if (isPtyNotFoundError(error)) {
+              markExited()
+              return
+            }
+            logger.error('[Terminal] Cannot reconnect:', ptyId, error)
+            handleDisconnected({ reason: String(error) })
+          })
+          .finally(() => {
+            connecting = false
+          })
+      })
+    }
+
     const scheduleInitialConnect = () => {
+      if (freshTab?.status === 'exited') return
       wsConnectTimeout = requestAnimationFrame(connectTransport) as unknown as number
     }
 
     if (effectBuffer) {
       terminal.write(effectBuffer, () => {
-        if (!mountedRef.current) return
+        if (disposed) return
+        restored = true
         if (effectScrollY !== undefined) {
           terminal.scrollToLine(effectScrollY)
         }
@@ -774,12 +848,16 @@ export const Terminal = memo(function Terminal({ ptyId, directory, serverId, isA
     }
 
     disposeTitle = terminal.onTitleChange(title => {
-      if (!mountedRef.current) return
-      layoutStore.updateTerminalShellTitle(ptyId, title, manualTerminalTitlesRef.current)
+      if (disposed) return
+      layoutStore.updateTerminalShellTitle(ptyId, title, manualTerminalTitlesRef.current, terminalScopeKey)
     })
 
     return () => {
+      checkpoint.dispose()
+      disposed = true
       mountedRef.current = false
+      document.removeEventListener('visibilitychange', handleVisibility)
+      window.removeEventListener('pagehide', flushCheckpoint)
       intentionalClose = true
       if (wsConnectTimeout) {
         cancelAnimationFrame(wsConnectTimeout)
@@ -791,18 +869,6 @@ export const Terminal = memo(function Terminal({ ptyId, directory, serverId, isA
       if (resizeTimeoutRef.current) {
         clearTimeout(resizeTimeoutRef.current)
         resizeTimeoutRef.current = null
-      }
-
-      try {
-        layoutStore.updateTerminalSnapshot(ptyId, {
-          buffer: serializeAddon.serialize(),
-          scrollY: terminal.buffer.active.viewportY,
-          cursor: cursorRef.current,
-          rows: terminal.rows,
-          cols: terminal.cols,
-        })
-      } catch {
-        // ignore snapshot persistence failures
       }
 
       transportDisconnectRef.current?.()
@@ -821,7 +887,7 @@ export const Terminal = memo(function Terminal({ ptyId, directory, serverId, isA
       terminalRef.current = null
       fitAddonRef.current = null
     }
-  }, [ptyId, hasBeenActive, clearStickyModifiers, sendTerminalData, preferTouchUi, serverId])
+  }, [ptyId, hasBeenActive, clearStickyModifiers, sendTerminalData, preferTouchUi, serverId, terminalScopeKey])
 
   useEffect(() => {
     const container = containerRef.current
@@ -935,7 +1001,9 @@ export const Terminal = memo(function Terminal({ ptyId, directory, serverId, isA
         if (fitAddonRef.current && terminalRef.current && !isPanelResizingRef.current) {
           fitAddonRef.current.fit()
           const { cols, rows } = terminalRef.current
-          updatePtySession(ptyId, { size: { cols, rows } }, terminalDirectoryRef.current).catch(() => {})
+          updatePtySession(ptyId, { size: { cols, rows } }, terminalDirectoryRef.current, serverId).catch(error =>
+            logger.warn('[Terminal] Resize failed:', error),
+          )
         }
       }, 16)
     }
@@ -962,7 +1030,7 @@ export const Terminal = memo(function Terminal({ ptyId, directory, serverId, isA
         resizeTimeoutRef.current = null
       }
     }
-  }, [isActive, ptyId])
+  }, [isActive, ptyId, serverId])
 
   // 主题变化时更新
   useEffect(() => {
@@ -1014,14 +1082,16 @@ export const Terminal = memo(function Terminal({ ptyId, directory, serverId, isA
           if (!fitAddonRef.current || !terminalRef.current) return
           fitAddonRef.current.fit()
           const { cols, rows } = terminalRef.current
-          updatePtySession(ptyId, { size: { cols, rows } }, terminalDirectoryRef.current).catch(() => {})
+          updatePtySession(ptyId, { size: { cols, rows } }, terminalDirectoryRef.current, serverId).catch(error =>
+            logger.warn('[Terminal] Resize failed:', error),
+          )
         })
       }
     }
 
     window.addEventListener('panel-resize-end', handlePanelResizeEnd)
     return () => window.removeEventListener('panel-resize-end', handlePanelResizeEnd)
-  }, [isActive, ptyId])
+  }, [isActive, ptyId, serverId])
 
   return (
     <>
@@ -1065,7 +1135,7 @@ export const Terminal = memo(function Terminal({ ptyId, directory, serverId, isA
         }
       `}</style>
       <div
-        className={`${preferTouchUi ? 'flex flex-col' : ''} h-full w-full`}
+        className="flex flex-col h-full w-full"
         style={{
           visibility: isActive ? 'visible' : 'hidden',
           position: isActive ? 'relative' : 'absolute',
@@ -1073,9 +1143,24 @@ export const Terminal = memo(function Terminal({ ptyId, directory, serverId, isA
           inset: isActive ? undefined : 0,
         }}
       >
+        {replayGap && (
+          <div role="status" className="shrink-0 px-3 py-2 text-text-300 text-[length:var(--fs-sm)]">
+            {t('terminal.replayGap')}
+          </div>
+        )}
+        {remoteExited && (
+          <div role="status" className="shrink-0 px-3 py-2 text-text-300 text-[length:var(--fs-sm)]">
+            {t('terminal.remoteExited')}
+          </div>
+        )}
+        {snapshotError && (
+          <div role="alert" className="shrink-0 px-3 py-2 text-text-300 text-[length:var(--fs-sm)]">
+            {t('terminal.snapshotFailed')}: {snapshotError}
+          </div>
+        )}
         <div
           ref={containerRef}
-          className={`${preferTouchUi ? 'flex-1 min-h-0' : 'h-full'} w-full bg-bg-100 ${preferTouchUi ? 'no-scrollbar' : ''} ${preferTouchUi ? (isTouchScrolling ? 'scrollbar-active' : 'scrollbar-idle') : ''}`}
+          className={`flex-1 min-h-0 w-full bg-bg-100 ${preferTouchUi ? 'no-scrollbar' : ''} ${preferTouchUi ? (isTouchScrolling ? 'scrollbar-active' : 'scrollbar-idle') : ''}`}
           style={{
             padding: preferTouchUi ? '0' : '4px 0 0 4px',
             touchAction: touchCapable ? 'pan-y' : 'auto',

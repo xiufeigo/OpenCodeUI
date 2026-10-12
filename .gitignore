@@ -19,6 +19,13 @@ yarn.lock
 .env.local
 .env.*.local
 
+# Android signing credentials (public certificate fingerprints may be committed)
+*.jks
+*.keystore
+*.p12
+keystore.properties
+signing.json
+
 # Docker
 workspace/
 

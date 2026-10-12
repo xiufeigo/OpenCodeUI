@@ -42,6 +42,37 @@ function createAbortError(message: string) {
   return new DOMException(message, 'AbortError')
 }
 
+// ============================================
+// 请求超时（headers 超时）
+//
+// fetch 自身没有任何超时：TCP 半开 / 代理黑洞 / 主机休眠时，等待响应头
+// 可以挂到 OS 放弃 TCP 重传（几分钟）。挂起的 prompt POST 会堵死
+// sendAdmission 的会话串行链，输入框永久锁死——「消息发不出去」的主因。
+//
+// 这里只给「等待响应头」设超时（官方 request-queue 同款 60s）：
+// fetch 的 Promise 在响应头到达时即 resolve，之后 body 流式读取不受限，
+// 因此 SSE 长连接也可以安全套用（仍显式豁免，交给 events.ts 的看门狗）。
+// ============================================
+
+const DEFAULT_HEADERS_TIMEOUT_MS = 60_000
+/** worktree create 要跑 git 操作，官方给了 10 分钟预算 */
+const LONG_REQUEST_TIMEOUT_MS = 10 * 60_000
+
+function headersTimeoutMs(url: string): number | null {
+  // SSE 事件流：生命周期由 events.ts 的看门狗/重连循环管理
+  if (url.includes('/api/event')) return null
+  // session.wait 是长轮询，响应头要等会话空闲才返回
+  if (url.includes('/wait')) return null
+  if (url.includes('/worktree')) return LONG_REQUEST_TIMEOUT_MS
+  return DEFAULT_HEADERS_TIMEOUT_MS
+}
+
+function requestUrl(input: RequestInfo | URL): string {
+  if (typeof input === 'string') return input
+  if (input instanceof URL) return input.href
+  return input.url
+}
+
 async function trackedFetch(
   input: RequestInfo | URL,
   init: RequestInit | undefined,
@@ -59,16 +90,34 @@ async function trackedFetch(
 
   _apiRequestControllers.add(controller)
 
+  const timeoutMs = headersTimeoutMs(requestUrl(input))
+  let timeoutTimer: ReturnType<typeof setTimeout> | null = null
+
   try {
     if (generation !== _apiRequestGeneration) {
       throw createAbortError('Stale API request')
     }
 
-    return await getFetchImpl()(input, {
+    const fetchPromise = getFetchImpl()(input, {
       ...init,
       signal: controller.signal,
     })
+    if (timeoutMs === null) {
+      return await fetchPromise
+    }
+
+    return await Promise.race([
+      fetchPromise,
+      new Promise<never>((_, reject) => {
+        timeoutTimer = setTimeout(() => {
+          const error = new DOMException(`Request timed out after ${timeoutMs}ms`, 'TimeoutError')
+          controller.abort(error)
+          reject(error)
+        }, timeoutMs)
+      }),
+    ])
   } finally {
+    if (timeoutTimer) clearTimeout(timeoutTimer)
     externalSignal?.removeEventListener('abort', abortFromExternal)
     _apiRequestControllers.delete(controller)
   }
@@ -77,6 +126,12 @@ async function trackedFetch(
 /**
  * 中断所有在途请求（服务器端点变化时调用）。
  * 通过递增代次让旧请求在起飞前就失败，避免响应乱序落库。
+ *
+ * 注意必须同时清空客户端缓存：缓存 client 的 generation 是建实例时的
+ * 快照，不清缓存的话它永远落后于新代次，之后每个请求都会抛
+ * 'Stale API request'——一次 abort 就把缓存 client 永久毒化。
+ * 清缓存后：旧引用仍然失效（代次检查保留，防乱序），
+ * 而新 getSDKClient() 会按新代次重建实例，正常工作。
  */
 export function abortInFlightApiRequests(reason = 'Server endpoint changed'): void {
   _apiRequestGeneration++
@@ -84,6 +139,7 @@ export function abortInFlightApiRequests(reason = 'Server endpoint changed'): vo
     controller.abort(createAbortError(reason))
   }
   _apiRequestControllers.clear()
+  _cachedClients.clear()
 }
 
 // Client 缓存：按 serverId → "baseUrl + authHash" 缓存实例，避免重复创建

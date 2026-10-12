@@ -1,5 +1,5 @@
-import { describe, expect, it, afterEach } from 'vitest'
-import { isTauri, isTauriMobile, extToMime } from './tauri'
+import { describe, expect, it, afterEach, vi } from 'vitest'
+import { isTauri, isTauriMobile, isTauriDesktop, extToMime } from './tauri'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 需要动态修改 window 属性做测试
 const win = window as any
@@ -22,6 +22,8 @@ describe('isTauri', () => {
 describe('isTauriMobile', () => {
   afterEach(() => {
     delete win.__TAURI_INTERNALS__
+    delete win.__opencode_android
+    vi.restoreAllMocks()
   })
 
   it('returns false when not in Tauri environment', () => {
@@ -32,6 +34,20 @@ describe('isTauriMobile', () => {
     win.__TAURI_INTERNALS__ = {}
     // jsdom 默认 userAgent 不含移动端标识
     expect(isTauriMobile()).toBe(false)
+  })
+
+  it('recognizes Android tablets regardless of viewport width', () => {
+    win.__TAURI_INTERNALS__ = {}
+    vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Mozilla/5.0 (Linux; Android 15)')
+    expect(isTauriMobile()).toBe(true)
+    expect(isTauriDesktop()).toBe(false)
+  })
+
+  it('recognizes the native Android bridge even with a desktop user agent', () => {
+    win.__TAURI_INTERNALS__ = {}
+    win.__opencode_android = {}
+    expect(isTauriMobile()).toBe(true)
+    expect(isTauriDesktop()).toBe(false)
   })
 })
 

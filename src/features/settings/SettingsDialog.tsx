@@ -17,7 +17,7 @@ import {
   KeyIcon,
 } from '../../components/Icons'
 import { useIsMobile } from '../../hooks'
-import { isTauri } from '../../utils/tauri'
+import { isTauriDesktop } from '../../utils/tauri'
 import { KeybindingsSection } from './KeybindingsSection'
 import { AgentSettings } from './components/AgentSettings'
 import { AppearanceSettings } from './components/AppearanceSettings'
@@ -153,19 +153,19 @@ function TabContent({ tab }: { tab: SettingsTab }) {
 export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: SettingsDialogProps) {
   const { t } = useTranslation(['settings', 'commands'])
   const isMobile = useIsMobile()
-  const isTauriDesktop = isTauri() && !isMobile
+  const supportsLocalService = isTauriDesktop()
   const scrollRef = useRef<HTMLDivElement>(null)
   const highlightFrameRef = useRef<number | null>(null)
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const normalizeTab = useCallback((next: SettingsDialogProps['initialTab']): SettingsTab => {
-    if (!next || next === 'general') return 'servers'
+    if (!next || next === 'general' || (next === 'service' && !supportsLocalService)) return 'servers'
     return next
-  }, [])
+  }, [supportsLocalService])
   const [tab, setTab] = useState<SettingsTab>(normalizeTab(initialTab))
 
   const visibleTabIds = useMemo(
-    () => (isTauriDesktop ? TAB_IDS : TAB_IDS.filter(id => id !== 'service')),
-    [isTauriDesktop],
+    () => (supportsLocalService ? TAB_IDS : TAB_IDS.filter(id => id !== 'service')),
+    [supportsLocalService],
   )
 
   const visibleTabs = useMemo(
