@@ -26,6 +26,8 @@ vi.mock('../api/sdk', () => ({
 
 vi.mock('../store/serverStore', () => ({
   serverStore: {
+    // 本 fork 只在存在活动服务器时做模块级预取（安卓可无默认本机服务器）。
+    getActiveServer: () => ({ id: 'srv-1' }),
     getActiveServerId: () => 'srv-1',
     onServerChange: (fn: (serverId: string, reason?: string) => void) => {
       serverChangeHandlers.push(fn)
