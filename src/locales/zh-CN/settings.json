@@ -92,6 +92,9 @@
     "advanced": "高级"
   },
   "servers": {
+    "switchServer": "切换服务器",
+    "selectServer": "选择服务器",
+    "manageServers": "添加 / 管理服务器",
     "connections": "连接",
     "connectionsDesc": "管理后端端点并选择本次会话使用的服务器",
     "noServersConfigured": "尚未配置服务器",

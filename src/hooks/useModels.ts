@@ -80,7 +80,8 @@ export function refreshModels(serverId?: string) {
 }
 
 // 预取活动服务器的模型 — 组件挂载前模型就已就绪
-_fetchModels(serverStore.getActiveServerId())
+const initialServer = serverStore.getActiveServer()
+if (initialServer) void _fetchModels(initialServer.id)
 
 serverStore.onServerChange((serverId, reason) => {
   // 只为「UI 正在消费的服务器」刷新模型：

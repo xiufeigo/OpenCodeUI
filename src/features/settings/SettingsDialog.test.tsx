@@ -4,13 +4,17 @@ import i18n from '../../i18n'
 import { SettingsDialog } from './SettingsDialog'
 
 const notificationTargets = vi.hoisted(() => ({ mode: 'both' as 'both' | 'system' | 'sound' }))
+const platform = vi.hoisted(() => ({ desktop: true }))
 
 vi.mock('../../components/ui/Dialog', () => ({
   Dialog: ({ isOpen, children, ariaLabel }: { isOpen: boolean; children: React.ReactNode; ariaLabel: string }) =>
     isOpen ? <div role="dialog" aria-label={ariaLabel}>{children}</div> : null,
 }))
 vi.mock('../../hooks', () => ({ useIsMobile: () => false }))
-vi.mock('../../utils/tauri', () => ({ isTauri: () => true }))
+vi.mock('../../utils/tauri', async importOriginal => ({
+  ...await importOriginal<typeof import('../../utils/tauri')>(),
+  isTauriDesktop: () => platform.desktop,
+}))
 vi.mock('./KeybindingsSection', () => ({ KeybindingsSection: () => <div>Shortcuts content</div> }))
 vi.mock('./components/AgentSettings', () => ({ AgentSettings: () => <div>Agent content</div> }))
 vi.mock('./components/AppearanceSettings', () => ({
@@ -47,6 +51,7 @@ describe('SettingsDialog search', () => {
   beforeEach(async () => {
     await i18n.changeLanguage('en')
     notificationTargets.mode = 'both'
+    platform.desktop = true
     vi.stubGlobal('__APP_VERSION__', 'test')
     vi.useFakeTimers()
     vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => window.setTimeout(() => callback(0), 0))
@@ -77,6 +82,26 @@ describe('SettingsDialog search', () => {
     expect(screen.getByRole('tab', { name: 'Appearance' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByText('Color control').parentElement).toHaveClass('settings-search-highlight')
     expect(screen.getByRole('button', { name: 'Color control' })).toHaveFocus()
+  })
+
+  it('hides local service controls and search on a native tablet, including a service deep link', async () => {
+    platform.desktop = false
+    render(<SettingsDialog isOpen initialTab="service" onClose={vi.fn()} />)
+    expect(screen.queryByText('Service content')).not.toBeInTheDocument()
+    await act(async () => vi.advanceTimersByTime(1))
+    expect(screen.queryByRole('tab', { name: 'Service' })).not.toBeInTheDocument()
+    expect(screen.getByText('Servers content')).toBeInTheDocument()
+
+    const input = screen.getByRole('combobox', { name: 'Search settings' })
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: 'Auto Start' } })
+    expect(screen.queryByRole('option', { name: /Auto Start/ })).not.toBeInTheDocument()
+  })
+
+  it('retains the local service controls on native desktop', async () => {
+    render(<SettingsDialog isOpen initialTab="service" onClose={vi.fn()} />)
+    await act(async () => vi.advanceTimersByTime(1))
+    expect(screen.getByText('Service content')).toBeInTheDocument()
   })
 
   it('distinguishes duplicate setting labels by their subgroup', async () => {

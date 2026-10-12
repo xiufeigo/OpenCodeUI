@@ -7,7 +7,6 @@ import android.os.Handler
 import android.os.Looper
 import android.os.Build
 import android.view.View
-import android.view.ViewGroup
 import android.webkit.WebView
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -20,7 +19,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 class MainActivity : TauriActivity() {
 
   private val handler = Handler(Looper.getMainLooper())
-  private var cachedInsetsJs: String? = null
+  @Volatile private var safeAreaInsetsJson = """{"top":0,"bottom":0,"left":0,"right":0}"""
   private var themeSyncRunnable: Runnable? = null
   private var cachedWebView: WebView? = null
 
@@ -63,24 +62,21 @@ class MainActivity : TauriActivity() {
         bottomPadding
       )
 
-      cachedInsetsJs = """
-        (function() {
-          var s = document.documentElement.style;
-          s.setProperty('--safe-area-inset-top', '${topInsetCssPx}px');
-          s.setProperty('--safe-area-inset-bottom', '0px');
-          s.setProperty('--safe-area-inset-left', '0px');
-          s.setProperty('--safe-area-inset-right', '0px');
-        })();
-      """.trimIndent()
-
-      // 立即尝试注入
-      tryInjectInsets(view)
+      // 原生快照跨文档导航保留；CSS 由每个文档启动时读取，避免 evaluateJavascript 的加载竞态。
+      safeAreaInsetsJson = """{"top":$topInsetCssPx,"bottom":0,"left":0,"right":0}"""
+      cachedWebView?.evaluateJavascript("window.dispatchEvent(new Event('opencode:insets-changed'));", null)
 
       WindowInsetsCompat.CONSUMED
     }
 
-    // WebView 可能还没创建好，轮询几次确保注入成功
-    scheduleInsetsInjection(contentView, 0)
+    ViewCompat.requestApplyInsets(contentView)
+  }
+
+  override fun onWebViewCreate(webView: WebView) {
+    super.onWebViewCreate(webView)
+    cachedWebView = webView
+    // 必须在第一次文档加载前注册；JavascriptInterface 会由 WebView 自动带入后续文档。
+    webView.addJavascriptInterface(SystemBarBridge(), "__opencode_android")
   }
 
   override fun onResume() {
@@ -96,8 +92,7 @@ class MainActivity : TauriActivity() {
   private fun startThemeSync() {
     if (themeSyncRunnable != null) return
     themeSyncRunnable = Runnable {
-      val rootView = window.decorView.findViewById<View>(android.R.id.content)
-      syncSystemBars(rootView)
+      syncSystemBars()
       handler.postDelayed(themeSyncRunnable!!, 800L)
     }
     handler.post(themeSyncRunnable!!)
@@ -108,8 +103,8 @@ class MainActivity : TauriActivity() {
     themeSyncRunnable = null
   }
 
-  private fun syncSystemBars(rootView: View) {
-    val webView = cachedWebView ?: findWebView(rootView) ?: return
+  private fun syncSystemBars() {
+    val webView = cachedWebView ?: return
     // 在 JS 端用 Canvas 2D 将 getComputedStyle 返回的任意格式颜色
     // 统一转为 #rrggbb hex，避免不同 WebView 版本返回不同格式
     // (rgb 逗号/空格分隔, color(srgb ...), oklch(...) 等)
@@ -153,6 +148,9 @@ class MainActivity : TauriActivity() {
   }
 
   private inner class SystemBarBridge {
+    @android.webkit.JavascriptInterface
+    fun getSafeAreaInsets(): String = safeAreaInsetsJson
+
     @android.webkit.JavascriptInterface
     fun setSystemBars(mode: String, bg: String) {
       val color = parseCssColor(bg) ?: return
@@ -257,53 +255,4 @@ class MainActivity : TauriActivity() {
     return luminance > 0.6f
   }
 
-  /**
-   * 延迟重试注入 insets，确保 WebView 加载完成后 CSS 变量被设置
-   * 最多重试 10 次，间隔递增
-   */
-  private fun scheduleInsetsInjection(rootView: View, attempt: Int) {
-    if (attempt >= 10) return
-    val delay = if (attempt < 3) 200L else 1000L
-    handler.postDelayed({
-      if (tryInjectInsets(rootView)) {
-        // 注入成功后再补几次，确保页面导航后也有值
-        if (attempt < 5) {
-          scheduleInsetsInjection(rootView, attempt + 1)
-        }
-      } else {
-        scheduleInsetsInjection(rootView, attempt + 1)
-      }
-    }, delay)
-  }
-
-  /**
-   * 尝试向 WebView 注入 insets CSS 变量
-   * @return 是否找到了 WebView 并成功注入
-   */
-  private fun tryInjectInsets(view: View): Boolean {
-    val js = cachedInsetsJs ?: return false
-    val webView = findWebView(view) ?: return false
-    cachedWebView = webView
-    ensureJsBridge(webView)
-    webView.evaluateJavascript(js, null)
-    return true
-  }
-
-  private fun ensureJsBridge(webView: WebView) {
-    try {
-      webView.addJavascriptInterface(SystemBarBridge(), "__opencode_android")
-    } catch (_: Exception) {
-      // ignore - may be added already
-    }
-  }
-
-  private fun findWebView(view: View): WebView? {
-    if (view is WebView) return view
-    if (view is ViewGroup) {
-      for (i in 0 until view.childCount) {
-        findWebView(view.getChildAt(i))?.let { return it }
-      }
-    }
-    return null
-  }
 }

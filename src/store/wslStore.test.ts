@@ -8,7 +8,10 @@ let pushState: (event: WslServersEvent) => void = () => {}
 // 评审 N1 竞态测试用：可控 resolve 的初始 getState（模拟"快照晚于事件到达"）
 let resolveGetState: (state: WslServersState) => void = () => {}
 
-vi.mock('../utils/tauri', () => ({ isTauri: () => true }))
+vi.mock('../utils/tauri', async importOriginal => ({
+  ...await importOriginal<typeof import('../utils/tauri')>(),
+  isTauri: () => true,
+}))
 vi.mock('../api/wsl', () => ({
   wslApi: {
     getState: () =>

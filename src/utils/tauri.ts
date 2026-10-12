@@ -12,7 +12,12 @@ export function isTauri(): boolean {
 
 export function isTauriMobile(): boolean {
   if (!isTauri() || typeof navigator === 'undefined') return false
+  if ('__opencode_android' in window) return true
   return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+}
+
+export function isTauriDesktop(): boolean {
+  return isTauri() && !isTauriMobile()
 }
 
 export type DesktopPlatform = 'windows' | 'macos' | 'linux' | 'other'

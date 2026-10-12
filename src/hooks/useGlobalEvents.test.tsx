@@ -164,6 +164,10 @@ vi.mock('../store', () => ({
   serverStore: {
     applyServerConnectedTimestamp: applyServerConnectedTimestampMock,
     getActiveServerId: getActiveServerIdMock,
+    getActiveServer: () => {
+      const id = getActiveServerIdMock()
+      return registeredServerIds.has(id) ? { id } : null
+    },
     checkHealth: checkHealthMock,
     onServerChange: onServerChangeMock,
     // collectActiveServerIds 会过滤未注册服务器：mock 只认 local 与显式注册的 id
@@ -908,6 +912,13 @@ describe('useGlobalEvents', () => {
     await waitFor(() => expect(subscribeToEventsMock).toHaveBeenCalledTimes(2))
     expect(subscribeToEventsMock.mock.calls[1][1]).toBe('wsl:Ubuntu')
     expect(unsubscribes.local[0]).not.toHaveBeenCalled()
+  })
+
+  it('does not create a phantom localhost subscription when no servers are configured', () => {
+    registeredServerIds.clear()
+    renderHook(() => useGlobalEvents())
+    expect(subscribeToEventsMock).not.toHaveBeenCalled()
+    expect(checkHealthMock).not.toHaveBeenCalled()
   })
 
   it('reconnects only the changed server subscription on server-runtime-updated', async () => {

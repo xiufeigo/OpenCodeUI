@@ -47,7 +47,7 @@
   --app-height: 100vh;
   color-scheme: light;
   /* Safe area insets：
-   * - Android: 由 MainActivity.kt 通过 evaluateJavascript 注入真实值
+   * - Android: 页面初始化和原生 insets 变化时通过 bridge 读取真实值
    *   (Android WebView 的 env(safe-area-inset-*) 返回 0px)
    * - iOS/浏览器: 使用 env() fallback */
   --safe-area-inset-top: env(safe-area-inset-top, 0px);
@@ -78,9 +78,9 @@ body,
   background: hsl(var(--bg-100));
 }
 
-/* Safe-area padding 应用在 #root 上：浏览器、PWA、Tauri 共用同一份 env()。
- * 非 PWA 浏览器场景下 env() 自然返回 0，不会产生副作用；Tauri 走原生 setPadding，
- * 由下方 .tauri-app #root 显式重置为 0，避免与原生层叠加产生双倍 padding。
+/* 浏览器/PWA 的顶部和侧边 safe-area padding 应用在 #root 上。
+ * Tauri Android 的顶部由各 Web surface 读取 --app-safe-top，侧边由原生 setPadding 处理；
+ * 下方 .tauri-app #root 显式重置为 0，避免重复留白。
  * 不在这里加 padding-bottom——贴底组件 (InputBox / BottomPanel / SidebarFooter)
  * 自己读取 var(--safe-area-inset-bottom) 处理底边距，避免和键盘 inset 冲突。 */
 #root {

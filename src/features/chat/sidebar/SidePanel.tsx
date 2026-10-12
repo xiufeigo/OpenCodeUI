@@ -11,6 +11,7 @@ import { ConfirmDialog } from '../../../components/ui/ConfirmDialog'
 import { ActiveSessionItem } from './ActiveSessionItem'
 import { NotificationItem } from './NotificationItem'
 import { SidebarFooter } from './SidebarFooter'
+import { ServerSwitcher } from './ServerSwitcher'
 import { buildActiveSessionTree } from './activeSessionTree'
 import { getParentPath } from './sidebarUtils'
 import {
@@ -1092,20 +1093,17 @@ export function SidePanel({
     <div className="flex flex-col h-full overflow-hidden">
       {/* ===== Header ===== */}
       <div className="mobile-safe-topbar-14 shrink-0 flex items-center">
-        {/* Logo 区域 - 展开时显示 */}
+        {/* 服务器入口 - 展开时显示 */}
         <div
-          className="overflow-hidden transition-[width,padding,opacity] duration-300 ease-out"
+          className="min-w-0 overflow-hidden transition-[width,padding,opacity] duration-300 ease-out"
           style={{
             width: showLabels ? 'auto' : 0,
+            maxWidth: isMobile ? '100%' : 'calc(100% - 40px)',
             paddingLeft: showLabels ? 16 : 0,
             opacity: showLabels ? 1 : 0,
           }}
         >
-          <a href="/" className="flex items-center whitespace-nowrap">
-            <span className="text-[length:var(--fs-heading-3)] font-semibold text-text-100 tracking-tight">
-              {t('header.openCode')}
-            </span>
-          </a>
+          {showLabels && <ServerSwitcher onOpenSettings={onOpenSettings} />}
         </div>
 
         {!isMobile && (

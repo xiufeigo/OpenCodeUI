@@ -32,6 +32,8 @@ function parseEntries(raw: unknown): PinnedSessionEntry[] {
 }
 
 function loadEntries(): PinnedSessionEntry[] {
+  // 无服务器时不能消费旧全局数据，等用户配置服务器后再迁移。
+  if (!serverStore.getActiveServer()) return []
   // 已有 per-server key 时直接用（含空数组）
   if (serverStorage.get(STORAGE_KEY) !== null) {
     return parseEntries(serverStorage.getJSON<unknown>(STORAGE_KEY))

@@ -73,7 +73,7 @@ class MultiServerStore {
     this.settings.enabled = enabled
     // 开启时若白名单为空，自动订阅当前活动服务器，避免开启后一片空白
     if (enabled && this.settings.subscribedServerIds.length === 0) {
-      const activeId = serverStore.getActiveServerId()
+      const activeId = serverStore.getActiveServer()?.id
       if (activeId) {
         this.settings.subscribedServerIds = [activeId]
       }

@@ -92,6 +92,9 @@
     "advanced": "Advanced"
   },
   "servers": {
+    "switchServer": "Switch server",
+    "selectServer": "Select server",
+    "manageServers": "Add / manage servers",
     "connections": "Connections",
     "connectionsDesc": "Manage backend endpoints and choose which server this session uses",
     "noServersConfigured": "No servers configured",

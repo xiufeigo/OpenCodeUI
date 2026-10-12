@@ -306,25 +306,25 @@ function isSessionDirectlyOpen(sessionId: string): boolean {
  */
 function collectActiveServerIds(): string[] {
   const ids = new Set<string>()
+  const activeServerId = serverStore.getActiveServer()?.id
   for (const leaf of paneLayoutStore.allLeaves()) {
     if (leaf.sessionId) ids.add(sessionKeyToServerId(leaf.sessionId))
   }
-  if (ids.size === 0) ids.add(serverStore.getActiveServerId())
+  if (ids.size === 0 && activeServerId) ids.add(activeServerId)
   if (multiServerStore.isEnabled()) {
     // 多服务器模式：白名单服务器保持连接 + 至少 active server
     // （白名单的清理在删除服务器时由设置页同步处理）
     for (const serverId of multiServerStore.getSubscribedServerIds()) {
       ids.add(serverId)
     }
-    ids.add(serverStore.getActiveServerId())
+    if (activeServerId) ids.add(activeServerId)
   }
   // 过滤未注册服务器：WSL 白名单 id 在 sidecar 就绪前就存在于持久化配置中，
-  // 而 getServerBaseUrl 对未知 id 静默回退 local——不过滤就会拿 local 的数据
-  // 写到 wsl: 键下（数据串服）。服务器注册进 serverStore 时 notify 触发重算，自然入集
+  // 服务器注册进 serverStore 时 notify 触发重算，自然入集。
   const registered = Array.from(ids).filter(id => serverStore.getServer(id) !== null)
   // 兜底：pane 可能仍指向已失效的服务器（如 WSL sidecar 崩溃后未清理），
-  // 过滤后为空会让 SSE 全灭——active server 恒注册，保住它
-  return registered.length > 0 ? registered : [serverStore.getActiveServerId()]
+  // 仅在存在活动服务器时保住它；没有服务器时不建立连接。
+  return registered.length > 0 ? registered : activeServerId ? [activeServerId] : []
 }
 
 export function useGlobalEvents(directories?: string[]) {
