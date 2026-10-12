@@ -32,13 +32,13 @@ import {
   canUseSplitPane,
   useChatViewportController,
 } from './features/chat/chatViewport'
-import { uiErrorHandler, isSameDirectory, collectActiveDirectories } from './utils'
+import { isSameDirectory, collectActiveDirectories } from './utils'
 import { makeSessionKey, sessionKeyToServerId, splitSessionKey } from './utils/sessionKey'
 import { multiServerStore } from './store/multiServerStore'
 import { serverStore } from './store/serverStore'
 import { initNotificationSound } from './utils/notificationSoundBridge'
-import { createPtySession } from './api/pty'
-import type { TerminalTab } from './store/layoutStore'
+import { useSessionTerminals } from './hooks/useSessionTerminals'
+import { useServerStore } from './hooks/useServerStore'
 import type { SettingsTab } from './features/settings/SettingsDialog'
 import { isTauri, isTauriMobile } from './utils/tauri'
 import { InternalDragLayer } from './components/InternalDragLayer'
@@ -75,7 +75,6 @@ function App() {
     if (!routeSessionId) return null
     if (routeSessionId.includes('::')) return routeSessionId
     return makeSessionKey(serverStore.getActiveServerId(), routeSessionId)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routeSessionId])
   const { currentDirectory, savedDirectories, sidebarExpanded, setSidebarExpanded } = useDirectory()
   const { rightPanelOpen, rightPanelWidth, wakeLock } = useLayoutStore()
@@ -357,7 +356,8 @@ function App() {
     const scrollLeft = pager.scrollLeft
 
     // -1 (滑向左栏) 到 0 (对话页) 到 1 (滑向右栏)
-    const rawProgress = (scrollLeft - mobileChatScrollLeft) / (scrollLeft < mobileChatScrollLeft ? mobileLeftPanelWidth : mobilePageWidth)
+    const rawProgress =
+      (scrollLeft - mobileChatScrollLeft) / (scrollLeft < mobileChatScrollLeft ? mobileLeftPanelWidth : mobilePageWidth)
     const progress = Math.max(-1, Math.min(1, rawProgress))
     const absProgress = Math.abs(progress)
     const rightProgress = Math.max(0, progress)
@@ -517,7 +517,14 @@ function App() {
     if (sidebarExpanded) setSidebarExpanded(false)
     scrollMobilePagerTo('right')
     layoutStore.openRightPanel()
-  }, [ensureMobileRightPanelRendered, isMobilePanelLayout, rightPanelOpen, scrollMobilePagerTo, setSidebarExpanded, sidebarExpanded])
+  }, [
+    ensureMobileRightPanelRendered,
+    isMobilePanelLayout,
+    rightPanelOpen,
+    scrollMobilePagerTo,
+    setSidebarExpanded,
+    sidebarExpanded,
+  ])
 
   const focusedDirectory = focusedRouteDirectory || ''
 
@@ -527,6 +534,13 @@ function App() {
     if (!paneLayout.focusedSessionId) return undefined
     return sessionKeyToServerId(paneLayout.focusedSessionId)
   }, [paneLayout.focusedSessionId])
+
+  const { activeServer } = useServerStore()
+  const terminals = useSessionTerminals({
+    serverId: focusedServerId ?? activeServer!.id,
+    sessionId: paneLayout.focusedSessionId,
+    directory: focusedDirectory || undefined,
+  })
 
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>('servers')
@@ -597,19 +611,8 @@ function App() {
 
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
 
-  const handleNewTerminal = useCallback(async () => {
-    try {
-      const pty = await createPtySession({ cwd: focusedDirectory }, focusedDirectory)
-      const tab: TerminalTab = {
-        id: pty.id,
-        title: pty.title || t('components:terminal.terminal'),
-        status: 'connecting',
-      }
-      layoutStore.addTerminalTab(tab, true)
-    } catch (error) {
-      uiErrorHandler('create terminal', error)
-    }
-  }, [focusedDirectory, t])
+  const createTerminal = terminals.create
+  const handleNewTerminal = useCallback(() => createTerminal('bottom'), [createTerminal])
 
   const keybindingHandlers = useMemo<KeybindingHandlers>(
     () => ({
@@ -960,14 +963,17 @@ function App() {
                     aria-hidden={mobileActivePage !== 'chat'}
                     inert={mobileActivePage !== 'chat'}
                     style={{
-                      transform: 'translate3d(var(--mobile-chat-offset-x, 0px), 0, 0) rotateY(var(--mobile-chat-rotate-y, 0deg)) scale(var(--mobile-chat-scale, 1))',
+                      transform:
+                        'translate3d(var(--mobile-chat-offset-x, 0px), 0, 0) rotateY(var(--mobile-chat-rotate-y, 0deg)) scale(var(--mobile-chat-scale, 1))',
                       transformOrigin: 'var(--mobile-chat-transform-origin, 50% 50%)',
                       transformStyle: 'preserve-3d',
                       backfaceVisibility: 'hidden',
                       willChange: 'transform',
                     }}
                   >
-                    <div className={`flex-1 min-h-0 px-4 ${paneLayout.isSplit && !paneLayout.fullscreenPaneId ? 'py-2' : ''}`}>
+                    <div
+                      className={`flex-1 min-h-0 px-4 ${paneLayout.isSplit && !paneLayout.fullscreenPaneId ? 'py-2' : ''}`}
+                    >
                       <SplitContainer
                         node={paneLayout.root}
                         renderLeaf={renderPaneLeaf}
@@ -1003,6 +1009,7 @@ function App() {
                   }}
                 >
                   <RightPanel
+                    terminals={terminals}
                     directory={focusedDirectory}
                     sessionId={paneLayout.focusedSessionId}
                     serverId={focusedServerId}
@@ -1012,7 +1019,7 @@ function App() {
                 </section>
               </div>
 
-              <BottomPanel directory={focusedDirectory} serverId={focusedServerId} />
+              <BottomPanel directory={focusedDirectory} serverId={focusedServerId} terminals={terminals} />
             </>
           ) : (
             <>
@@ -1035,7 +1042,11 @@ function App() {
                   className="flex-1 flex flex-col min-w-0 overflow-hidden"
                   style={{ minWidth: `${CHAT_SURFACE_MIN_WIDTH}px` }}
                 >
-                  <div className={paneLayout.isSplit && !paneLayout.fullscreenPaneId ? 'flex-1 min-h-0 p-2' : 'flex-1 min-h-0'}>
+                  <div
+                    className={
+                      paneLayout.isSplit && !paneLayout.fullscreenPaneId ? 'flex-1 min-h-0 p-2' : 'flex-1 min-h-0'
+                    }
+                  >
                     <SplitContainer
                       node={paneLayout.root}
                       renderLeaf={renderPaneLeaf}
@@ -1043,10 +1054,11 @@ function App() {
                     />
                   </div>
 
-                  <BottomPanel directory={focusedDirectory} serverId={focusedServerId} />
+                  <BottomPanel directory={focusedDirectory} serverId={focusedServerId} terminals={terminals} />
                 </div>
 
                 <RightPanel
+                  terminals={terminals}
                   directory={focusedDirectory}
                   sessionId={paneLayout.focusedSessionId}
                   serverId={focusedServerId}

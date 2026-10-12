@@ -15,6 +15,7 @@
 // ============================================
 
 import { getSDKClient } from './sdk'
+export { isPtyNotFoundError } from '@opencode/client/promise'
 import { locationParam } from './location'
 import { getApiBaseUrl } from './http'
 import { formatPathForApi } from '../utils/directoryUtils'

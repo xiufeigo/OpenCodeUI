@@ -2,11 +2,10 @@ import { lazy, memo, Suspense, useCallback, useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLayoutStore, layoutStore, type PanelTab } from '../store/layoutStore'
 import { PanelContainer } from './PanelContainer'
-import { createPtySession, removePtySession } from '../api/pty'
-import type { TerminalTab } from '../store/layoutStore'
 import { ResizablePanel } from './ui/ResizablePanel'
-import { logger } from '../utils/logger'
-import { normalizeToForwardSlash, uiErrorHandler } from '../utils'
+import { normalizeToForwardSlash } from '../utils'
+import type { SessionTerminals } from '../hooks/useSessionTerminals'
+import { TerminalRestoreStatus } from './TerminalRestoreStatus'
 import { useChatViewport } from '../features/chat/chatViewport'
 
 const SessionChangesPanel = lazy(() =>
@@ -29,6 +28,7 @@ function PanelFallback() {
 }
 
 interface RightPanelProps {
+  terminals: SessionTerminals
   directory?: string
   sessionId?: string | null
   /** 数据所属服务器（跟随焦点 session；缺省用活动服务器） */
@@ -41,6 +41,7 @@ export const RightPanel = memo(function RightPanel({
   directory,
   sessionId,
   serverId,
+  terminals,
   inline = false,
   renderPanelContent = true,
 }: RightPanelProps) {
@@ -62,35 +63,8 @@ export const RightPanel = memo(function RightPanel({
     }
   }, [])
 
-  // 关闭终端时清理 PTY 会话
-  const handleCloseTerminal = useCallback(
-    async (ptyId: string) => {
-      try {
-        await removePtySession(ptyId, normalizedDirectory, serverId)
-      } catch {
-        // ignore cleanup errors
-      }
-    },
-    [normalizedDirectory, serverId],
-  )
-
-  // 创建新终端
-  const handleNewTerminal = useCallback(async () => {
-    try {
-      logger.log('[RightPanel] Creating PTY session, directory:', normalizedDirectory, 'server:', serverId)
-      const pty = await createPtySession({ cwd: normalizedDirectory }, normalizedDirectory, serverId)
-      logger.log('[RightPanel] PTY created:', pty)
-      const tab: TerminalTab = {
-        id: pty.id,
-        title: pty.title || 'Terminal',
-        status: 'connecting',
-        serverId,
-      }
-      layoutStore.addTerminalTab(tab, true, 'right')
-    } catch (error) {
-      uiErrorHandler('create terminal', error)
-    }
-  }, [normalizedDirectory, serverId])
+  const createTerminal = terminals.create
+  const handleNewTerminal = useCallback(() => createTerminal('right'), [createTerminal])
 
   // 渲染内容
   const renderContent = useCallback(
@@ -142,7 +116,7 @@ export const RightPanel = memo(function RightPanel({
 
           {activeTab.type === 'terminal' ? (
             <Suspense fallback={<PanelFallback />}>
-              <TerminalContent activeTab={activeTab} directory={normalizedDirectory} serverId={serverId} />
+              <TerminalContent activeTab={activeTab} />
             </Suspense>
           ) : null}
 
@@ -181,12 +155,16 @@ export const RightPanel = memo(function RightPanel({
         {renderPanelContent ? (
           <PanelContainer
             position="right"
-            directory={normalizedDirectory}
             onNewTerminal={handleNewTerminal}
-            onCloseTerminal={handleCloseTerminal}
+            onCloseTerminal={terminals.close}
             forceOpen
           >
-            {renderContent}
+            {tab => (
+              <div className="flex h-full flex-col">
+                <TerminalRestoreStatus terminals={terminals} />
+                <div className="flex-1 min-h-0">{renderContent(tab)}</div>
+              </div>
+            )}
           </PanelContainer>
         ) : null}
       </div>
@@ -204,13 +182,13 @@ export const RightPanel = memo(function RightPanel({
       onSizeChange={w => layoutStore.setRightPanelWidth(w)}
       onClose={() => layoutStore.closeRightPanel()}
     >
-      <PanelContainer
-        position="right"
-        directory={normalizedDirectory}
-        onNewTerminal={handleNewTerminal}
-        onCloseTerminal={handleCloseTerminal}
-      >
-        {renderContent}
+      <PanelContainer position="right" onNewTerminal={handleNewTerminal} onCloseTerminal={terminals.close}>
+        {tab => (
+          <div className="flex h-full flex-col">
+            <TerminalRestoreStatus terminals={terminals} />
+            <div className="flex-1 min-h-0">{renderContent(tab)}</div>
+          </div>
+        )}
       </PanelContainer>
     </ResizablePanel>
   )
@@ -222,11 +200,9 @@ export const RightPanel = memo(function RightPanel({
 
 interface TerminalContentProps {
   activeTab: PanelTab
-  directory?: string
-  serverId?: string
 }
 
-const TerminalContent = memo(function TerminalContent({ activeTab, directory, serverId }: TerminalContentProps) {
+const TerminalContent = memo(function TerminalContent({ activeTab }: TerminalContentProps) {
   const { panelTabs } = useLayoutStore()
 
   // 获取所有 right 位置的 terminal tabs
@@ -235,7 +211,14 @@ const TerminalContent = memo(function TerminalContent({ activeTab, directory, se
   return (
     <>
       {terminalTabs.map(tab => (
-        <Terminal key={tab.id} ptyId={tab.id} directory={directory} serverId={tab.serverId ?? serverId} isActive={tab.id === activeTab.id} />
+        <Terminal
+          key={`${tab.terminalScopeKey}:${tab.id}`}
+          ptyId={tab.id}
+          directory={tab.directory}
+          serverId={tab.serverId}
+          terminalScopeKey={tab.terminalScopeKey}
+          isActive={tab.id === activeTab.id}
+        />
       ))}
     </>
   )

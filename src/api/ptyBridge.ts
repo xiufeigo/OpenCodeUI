@@ -24,6 +24,8 @@ interface ConnectTauriPtyParams {
   onError: (message: string) => void
 }
 
+let connectionSequence = 0
+
 export interface TauriPtyConnection {
   send: (data: string) => void
   close: () => void
@@ -45,7 +47,8 @@ export async function connectTauriPty({
   const url = await getPtyConnectUrl(ptyId, directory, { includeAuthInUrl: false, cursor }, serverId)
   const authHeader = getAuthHeader(serverId)['Authorization'] || null
   // bridgeId 带服务器前缀，避免两个服务器（同后端）相同 ptyId 的 bridge 冲突
-  const bridgeId = `pty:${serverId ?? ''}:${ptyId}`
+  // A late disconnect from an old mount must not close a newer connection to the same PTY.
+  const bridgeId = `pty:${serverId ?? ''}:${ptyId}:${++connectionSequence}`
   const onEvent = new Channel<BridgeEvent>()
   let closed = false
 

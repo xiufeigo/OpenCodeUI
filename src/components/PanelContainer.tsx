@@ -21,7 +21,12 @@ import { layoutStore, useLayoutStore, type PanelTab, type PanelPosition, type Pa
 import { updatePtySession } from '../api/pty'
 import { useTheme } from '../hooks'
 import { uiErrorHandler } from '../utils'
-import { getInternalDragSnapshot, startInternalDrag, subscribeInternalDrag, subscribeInternalDrop } from '../lib/internalDragCore'
+import {
+  getInternalDragSnapshot,
+  startInternalDrag,
+  subscribeInternalDrag,
+  subscribeInternalDrop,
+} from '../lib/internalDragCore'
 import { useDragEdgeAutoScroll } from '../hooks/useDragEdgeAutoScroll'
 import { IconButton } from './ui/IconButton'
 
@@ -32,9 +37,8 @@ import { IconButton } from './ui/IconButton'
 interface PanelContainerProps {
   position: PanelPosition
   children: (activeTab: PanelTab | null) => React.ReactNode
-  directory?: string
   onNewTerminal?: () => void // 仅 bottom 面板需要
-  onCloseTerminal?: (ptyId: string) => void // Terminal 关闭回调
+  onCloseTerminal?: (tab: PanelTab) => Promise<void> // Terminal 关闭回调
   forceOpen?: boolean
 }
 
@@ -87,7 +91,6 @@ function getTabLabel(tab: PanelTab, tabs: PanelTab[], t: (key: string) => string
 export const PanelContainer = memo(function PanelContainer({
   position,
   children,
-  directory,
   onNewTerminal,
   onCloseTerminal,
   forceOpen = false,
@@ -205,7 +208,8 @@ export const PanelContainer = memo(function PanelContainer({
       e.stopPropagation()
       // Terminal 需要先清理 PTY session
       if (tab.type === 'terminal' && onCloseTerminal) {
-        onCloseTerminal(tabId)
+        void onCloseTerminal(tab)
+        return
       }
       layoutStore.removeTab(tabId)
     },
@@ -255,18 +259,18 @@ export const PanelContainer = memo(function PanelContainer({
 
       renamePendingRef.current = true
       try {
-        await updatePtySession(tab.id, { title: nextTitle }, directory)
-        layoutStore.updateTerminalCustomTitle(tab.id, nextTitle)
+        await updatePtySession(tab.id, { title: nextTitle }, tab.directory, tab.serverId)
+        layoutStore.updateTerminalCustomTitle(tab.id, nextTitle, tab.terminalScopeKey)
       } catch (error) {
         uiErrorHandler('rename terminal', error)
       } finally {
         cancelRename()
       }
     },
-    [cancelRename, directory, editingValue],
+    [cancelRename, editingValue],
   )
 
-  const contextTab = contextMenu ? tabs.find(tab => tab.id === contextMenu.tabId) ?? null : null
+  const contextTab = contextMenu ? (tabs.find(tab => tab.id === contextMenu.tabId) ?? null) : null
 
   // 拖拽处理
   useEffect(() => {
@@ -279,7 +283,9 @@ export const PanelContainer = memo(function PanelContainer({
       }
 
       setDraggedId(active.payload.tabId)
-      const target = document.elementFromPoint(active.current.x, active.current.y)?.closest<HTMLElement>('[data-panel-tab-id]')
+      const target = document
+        .elementFromPoint(active.current.x, active.current.y)
+        ?.closest<HTMLElement>('[data-panel-tab-id]')
       const targetId = target?.dataset.panelTabId
       setDragOverId(targetId && targetId !== active.payload.tabId ? targetId : null)
     })
@@ -288,7 +294,9 @@ export const PanelContainer = memo(function PanelContainer({
   useEffect(() => {
     return subscribeInternalDrop(event => {
       if (event.payload.kind !== 'panel-tab' || event.payload.position !== position) return
-      const target = document.elementFromPoint(event.point.x, event.point.y)?.closest<HTMLElement>('[data-panel-tab-id]')
+      const target = document
+        .elementFromPoint(event.point.x, event.point.y)
+        ?.closest<HTMLElement>('[data-panel-tab-id]')
       const targetId = target?.dataset.panelTabId
       if (targetId && targetId !== event.payload.tabId) {
         layoutStore.reorderTabs(position, event.payload.tabId, targetId)
@@ -307,7 +315,9 @@ export const PanelContainer = memo(function PanelContainer({
   return (
     <>
       {/* Header with Tabs */}
-      <div className={`${position === 'right' ? 'mobile-safe-topbar-14' : ''} flex items-center justify-between px-3 z-20 bg-bg-100 relative shrink-0`}>
+      <div
+        className={`${position === 'right' ? 'mobile-safe-topbar-14' : ''} flex items-center justify-between px-3 z-20 bg-bg-100 relative shrink-0`}
+      >
         {/* Tabs Container - 水平滚动 */}
         <div
           ref={tabsContainerRef}
