@@ -297,10 +297,12 @@ GitHub Actions runs the same checks in the `Build Validation` workflow for every
 
 ### Release Preparation
 
+This fork starts at `v1.0.0`: fixes increment the patch version (for example, `1.0.1`), feature changes increment the minor version and reset the patch (`1.1.0`), and major updates increment the major version and reset both lower components (`2.0.0`). This fork's release versions are independent of upstream versions.
+
 For a real release, prefer the command below. It runs the full validation suite first, then updates versions and the changelog:
 
 ```bash
-npm run release:prepare -- 0.2.0
+npm run release:prepare -- 1.0.1
 ```
 
 After it finishes, follow the printed `git commit`, `git tag`, and `git push` steps.

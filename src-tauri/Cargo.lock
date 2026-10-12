@@ -2725,7 +2725,7 @@ dependencies = [
 
 [[package]]
 name = "opencodeui"
-version = "0.7.4"
+version = "1.0.0"
 dependencies = [
  "futures-util",
  "log",

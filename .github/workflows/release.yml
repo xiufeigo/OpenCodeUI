@@ -181,8 +181,9 @@ jobs:
           APK_PATH="${APKS[0]}"
           "$BT/apksigner" verify --verbose --print-certs "$APK_PATH" | tee "$RUNNER_TEMP/apk-certificate.txt"
           EXPECTED=$(tr -d '\r\n' < src-tauri/gen/android/release-signing.sha256)
-          ACTUAL=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/apk-certificate.txt")
-          if [[ "$ACTUAL" != "$EXPECTED" ]]; then
+          SIGNERS=$(sed -n 's/^Number of signers: //p' "$RUNNER_TEMP/apk-certificate.txt")
+          ACTUAL=$(sed -nE 's/^(Signer #[0-9]+|V[0-9]+ Signer:) certificate SHA-256 digest: ([[:xdigit:]]{64})$/\2/p' "$RUNNER_TEMP/apk-certificate.txt" | tr '[:upper:]' '[:lower:]' | sort -u)
+          if [[ "$SIGNERS" != "1" || "$ACTUAL" != "$EXPECTED" ]]; then
             echo "APK signing certificate does not match this fork's release key" >&2
             exit 1
           fi

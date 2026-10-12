@@ -5,7 +5,10 @@
 - feat: 按聊天 Session 隔离终端页面、远端 PTY 和进展记录。
 - feat: APP 重启后恢复原远端终端，补回客户端离线期间的输出。
 - fix: 修复终端恢复请求覆盖实时连接状态的竞态。
-- feat: 增加服务器切换、Android 正式签名与 Fork 更新检测配置。
+- feat: 左上角显示当前服务器，点击即可选择和切换服务器。
+- fix: 修复 Android 状态栏安全区消失，移除安卓默认本机服务器与启动本机服务开关。
+- build: 本地和 GitHub Actions 统一 Android 正式签名，并兼容新旧 apksigner 的证书核验输出。
+- feat: 更新检测与下载入口指向本 Fork 的 GitHub Releases。
 
 ## [v0.7.4] - 2026-10-07
 
