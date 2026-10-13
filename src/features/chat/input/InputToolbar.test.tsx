@@ -4,11 +4,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiAgent } from '../../../api/client'
 import { InputToolbar } from './InputToolbar'
 
-const useIsMobileMock = vi.fn()
-const isTauriMock = vi.fn()
-const isTauriMobileMock = vi.fn()
-const openMock = vi.fn()
-const readFileMock = vi.fn()
+const { useIsMobileMock, isTauriMock, isTauriMobileMock, openMock, readFileMock } = vi.hoisted(() => ({
+  useIsMobileMock: vi.fn(),
+  isTauriMock: vi.fn(),
+  isTauriMobileMock: vi.fn(),
+  openMock: vi.fn(),
+  readFileMock: vi.fn(),
+}))
 const agents: ApiAgent[] = [
   { id: 'build', name: 'Build', description: 'Build things', mode: 'primary', permissions: [], request: { settings: {}, headers: {}, body: {} }, hidden: false },
   { id: 'plan', name: 'Plan', description: 'Plan work', mode: 'primary', permissions: [], request: { settings: {}, headers: {}, body: {} }, hidden: false },
