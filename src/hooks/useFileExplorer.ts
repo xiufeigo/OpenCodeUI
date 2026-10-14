@@ -66,6 +66,9 @@ export interface UseFileExplorerResult {
   loadPreview: (path: string) => Promise<void>
   clearPreview: () => void
 
+  /** 实际生效的目录（session 目录优先于传入目录）；预览按此作用域分键 */
+  effectiveDirectory: string | undefined
+
   // 文件状态
   fileStatus: Map<string, FileStatusItem>
 
@@ -312,7 +315,10 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
       setPreviewLoading(true)
       setPreviewError(null)
 
-      const cached = previewCacheRef.current.get(path)
+      // 缓存键必须带服务器+目录维度：相对路径在不同工作区会撞名（两边都有
+      // src/app.ts），只按 path 缓存会在切工作区后预览到上一个工作区的同名文件
+      const cacheKey = `${serverId ?? ''}::${effectiveDirectory}::${path}`
+      const cached = previewCacheRef.current.get(cacheKey)
       if (cached) {
         if (loadId === previewLoadIdRef.current) {
           setPreviewContent(cached)
@@ -324,7 +330,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
       try {
         const content = await getFileContent(path, effectiveDirectory, serverId)
         if (loadId !== previewLoadIdRef.current) return
-        previewCacheRef.current.set(path, content)
+        previewCacheRef.current.set(cacheKey, content)
         setPreviewContent(content)
       } catch (e) {
         if (loadId !== previewLoadIdRef.current) return
@@ -345,6 +351,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
     setPreviewError(null)
     setPreviewLoading(false)
   }, [])
+
 
   // 刷新
   const refresh = useCallback(async () => {
@@ -400,7 +407,8 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
   }, [effectiveDirectory, expandedPaths, loadChildren, tree])
 
   useEffect(() => {
-    previewCacheRef.current.clear()
+    // 目录/会话/服务器切换：清的是「当前显示」与在途请求，缓存按目录分键保留——
+    // 切回工作区时预览秒开，且绝不会串到另一个工作区的同名文件内容
     previewLoadIdRef.current += 1
     setPreviewContent(null)
     setPreviewError(null)
@@ -420,6 +428,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
     previewError,
     loadPreview,
     clearPreview,
+    effectiveDirectory,
     fileStatus,
     refresh,
     softRefresh,
