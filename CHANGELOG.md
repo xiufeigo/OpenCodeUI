@@ -1,5 +1,25 @@
 # Changelog
 
+## [v1.0.4] - 2026-10-14
+
+- chore: bump version to 0.7.10 (90850bc8)
+- fix(chat): restore session model/agent/variant from durable SessionInfo on fresh launch (c9429753)
+- fix(message): make tool-produced file capsules expandable like user attachments (d65a395e)
+- fix(file-explorer): scope preview tabs by workspace instead of one global list (eced73be)
+- fix(message): restore tool row descriptions lost in the v2 migration (4600e2dc)
+- fix(chat): keep bottom-follow alive through high-TPS streaming artifacts (136210b4)
+- fix(file-explorer): key preview cache by workspace, clear stale preview on switch (b05934f6)
+- fix(sidebar): switch workspace when opening a session from the active tab (3ef7ee3d)
+- chore: bump version to 0.7.9 (3d6ab5f1)
+- fix(events): debounce catalog refetches triggered by SSE bursts (33be0456)
+- fix(chat): stop blanking the seat menu label during background refetches (85468568)
+- fix(chat): stop prefilling persisted drafts, recall them via ArrowUp instead (0ff39041)
+- chore: bump version to 0.7.8 (852b1f08)
+- fix(service): normalize IPv6 unspecified bind address in listening URL (9c0294e3)
+- feat(settings): one complete serve argument per line (fd84ca88)
+- fix(service): run bare 'opencode serve' for the default entry URL (54b2166f)
+- fix(service): let user --hostname/--port replace derived serve args (cc1e5e29)
+
 ## [v1.0.3] - 2026-10-13
 
 - test: 提前初始化输入框工具栏的 Tauri mock (f559f80c)
@@ -52,6 +72,29 @@
 - fix: 修复 Android 状态栏安全区消失，移除安卓默认本机服务器与启动本机服务开关。
 - build: 本地和 GitHub Actions 统一 Android 正式签名，并兼容新旧 apksigner 的证书核验输出。
 - feat: 更新检测与下载入口指向本 Fork 的 GitHub Releases。
+
+## [v0.7.10] - 2026-10-14
+
+- fix(chat): restore session model/agent/variant from durable SessionInfo on fresh launch (c9429753)
+- fix(message): make tool-produced file capsules expandable like user attachments (d65a395e)
+- fix(file-explorer): scope preview tabs by workspace instead of one global list (eced73be)
+- fix(message): restore tool row descriptions lost in the v2 migration (4600e2dc)
+- fix(chat): keep bottom-follow alive through high-TPS streaming artifacts (136210b4)
+- fix(file-explorer): key preview cache by workspace, clear stale preview on switch (b05934f6)
+- fix(sidebar): switch workspace when opening a session from the active tab (3ef7ee3d)
+
+## [v0.7.9] - 2026-10-13
+
+- fix(events): debounce catalog refetches triggered by SSE bursts (33be0456)
+- fix(chat): stop blanking the seat menu label during background refetches (85468568)
+- fix(chat): stop prefilling persisted drafts, recall them via ArrowUp instead (0ff39041)
+
+## [v0.7.8] - 2026-10-13
+
+- fix(service): normalize IPv6 unspecified bind address in listening URL (9c0294e3)
+- feat(settings): one complete serve argument per line (fd84ca88)
+- fix(service): run bare 'opencode serve' for the default entry URL (54b2166f)
+- fix(service): let user --hostname/--port replace derived serve args (cc1e5e29)
 
 ## [v0.7.7] - 2026-10-13
 
