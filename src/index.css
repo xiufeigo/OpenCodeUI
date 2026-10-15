@@ -55,7 +55,6 @@
   --safe-area-inset-left: env(safe-area-inset-left, 0px);
   --safe-area-inset-right: env(safe-area-inset-right, 0px);
   --app-safe-top: 0px;
-  --keyboard-inset-bottom: 0px;
 }
 
 /* 支持 dvh 的浏览器使用动态视口高度 */
@@ -76,6 +75,19 @@ body,
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
   background: hsl(var(--bg-100));
+}
+
+/* 键盘会话期间（焦点在可编辑元素）放开文档滚动：
+ * iOS 键盘弹起时 innerHeight/visualViewport 都可能被污染（实测 vv 少报
+ * ~120px），任何 JS 钉高都会把 absolute 贴底的输入框顶飞。改为冻结
+ * --app-height 并允许文档滚动——iOS 原生 scroll-into-view 会把聚焦的
+ * 输入框滚到键盘上方，与设置弹窗里输入框的行为一致。
+ * 仅触屏设备需要；桌面端有实体键盘，不受影响。 */
+@media (pointer: coarse) {
+  html.keyboard-session,
+  html.keyboard-session body {
+    overflow: visible;
+  }
 }
 
 /* 浏览器/PWA 的顶部和侧边 safe-area padding 应用在 #root 上。
@@ -140,6 +152,14 @@ body,
   padding-right: max(1rem, var(--safe-area-inset-right));
   padding-bottom: max(1rem, var(--safe-area-inset-bottom));
   padding-left: max(1rem, var(--safe-area-inset-left));
+}
+
+/* 浏览器/PWA：dialog 经 portal 挂在 body 上，吃不到 #root 的 safe-area
+ * padding-top，需要自己让开 iOS 状态栏区域（否则顶部内容和下滑关闭的
+ * 触摸横条落在状态栏遮挡区，看得见点不到）。
+ * Tauri 已由 --app-safe-top 覆盖同义值，排除避免双倍。 */
+:root:not(.tauri-app) .dialog-safe-region {
+  top: calc(var(--desktop-titlebar-height, 0px) + var(--app-safe-top, 0px) + var(--safe-area-inset-top, 0px));
 }
 
 .settings-search-highlight {
@@ -228,13 +248,6 @@ body,
 .desktop-titlebar button#decorum-tb-close:hover {
   background: hsl(var(--danger-100));
   color: hsl(var(--always-white, 0 0% 100%));
-}
-
-/* Browser/PWA: keyboard inset via visualViewport (Tauri uses native insets) */
-@media (display-mode: browser), (display-mode: standalone) {
-  :root:not(.tauri-app) #root {
-    padding-bottom: var(--keyboard-inset-bottom, 0px);
-  }
 }
 
 /* ============================================

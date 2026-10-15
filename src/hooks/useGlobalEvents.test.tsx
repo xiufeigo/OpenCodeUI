@@ -92,7 +92,9 @@ const {
     activeSessionStoreMock: {
       initialize: vi.fn(),
       initializePendingRequests: vi.fn(),
-      mergeStatusRefresh: vi.fn(),
+      applyServerStatusSnapshot: vi.fn(),
+      beginStatusSnapshot: vi.fn(),
+      endStatusSnapshot: vi.fn(),
       mergePendingRequests: vi.fn(),
       setSessionMetaBulk: vi.fn(),
       setSessionMeta: vi.fn(),
@@ -370,6 +372,37 @@ describe('useGlobalEvents', () => {
     expect(clearPaneSessionMock).toHaveBeenCalledWith('local::child-session')
   })
 
+  it('never attributes active sessions to scope directories (v2 status/permission/form lists are global)', async () => {
+    // 回归：v2 的 active/permission/form 列表接口不按目录过滤。曾经把返回的
+    // session 按「查询时的 scope 目录」写进 meta.directory，导致活跃 session 被
+    // 最后一个订阅工作区覆盖，文件预览串到别的工作区。
+    getSessionStatusMock.mockResolvedValue({ 'ses-active': { type: 'busy' } })
+    getPendingPermissionsMock.mockResolvedValue([
+      { id: 'perm-1', sessionID: 'ses-active', action: 'bash', resources: [] },
+    ])
+    getPendingFormsMock.mockResolvedValue([])
+
+    renderHook(() => useGlobalEvents(['/dir-a', '/dir-b']))
+
+    // 等待初始化完成（单服务器首次拉取走 applyServerStatusSnapshot；两个 scope 的全局结果合并后写入）
+    await waitFor(() => {
+      expect(activeSessionStoreMock.applyServerStatusSnapshot).toHaveBeenCalledWith(
+        'local',
+        {
+          'local::ses-active': { type: 'busy' },
+        },
+        { keepOtherServers: false },
+      )
+    })
+
+    // 不允许任何「按 scope 目录贴标签」的批量 meta 写入
+    expect(activeSessionStoreMock.setSessionMetaBulk).not.toHaveBeenCalled()
+    for (const call of activeSessionStoreMock.setSessionMeta.mock.calls) {
+      expect(call[2]).not.toBe('/dir-a')
+      expect(call[2]).not.toBe('/dir-b')
+    }
+  })
+
   it('ignores stale initialization responses after directories change', async () => {
     const statusDeferreds = new Map<string, ReturnType<typeof createDeferred<Record<string, { type: string }>>>>()
     getPendingPermissionsMock.mockResolvedValue([])
@@ -394,18 +427,25 @@ describe('useGlobalEvents', () => {
     statusDeferreds.get('/two')?.resolve({ 'new-session': { type: 'busy' } })
 
     await waitFor(() => {
-      expect(activeSessionStoreMock.mergeStatusRefresh).toHaveBeenCalledTimes(1)
-      expect(activeSessionStoreMock.mergeStatusRefresh).toHaveBeenCalledWith({ 'local::new-session': { type: 'busy' } })
+      expect(activeSessionStoreMock.applyServerStatusSnapshot).toHaveBeenCalledTimes(1)
+      // 目录变化触发的范围刷新走 merge：跨 server 保留，但本 server 快照仍是绝对的
+      expect(activeSessionStoreMock.applyServerStatusSnapshot).toHaveBeenCalledWith(
+        'local',
+        { 'local::new-session': { type: 'busy' } },
+        { keepOtherServers: true },
+      )
     })
 
     statusDeferreds.get('/one')?.resolve({ 'old-session': { type: 'idle' } })
     await Promise.resolve()
     await Promise.resolve()
 
-    expect(activeSessionStoreMock.mergeStatusRefresh).toHaveBeenCalledTimes(1)
-    expect(activeSessionStoreMock.mergeStatusRefresh).not.toHaveBeenCalledWith({
-      'local::old-session': { type: 'idle' },
-    })
+    expect(activeSessionStoreMock.applyServerStatusSnapshot).toHaveBeenCalledTimes(1)
+    expect(activeSessionStoreMock.applyServerStatusSnapshot).not.toHaveBeenCalledWith(
+      'local',
+      { 'local::old-session': { type: 'idle' } },
+      expect.anything(),
+    )
   })
 
   it('replays pending requests that arrive while initialization is in flight', async () => {

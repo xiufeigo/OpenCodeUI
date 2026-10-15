@@ -73,6 +73,43 @@
 - build: 本地和 GitHub Actions 统一 Android 正式签名，并兼容新旧 apksigner 的证书核验输出。
 - feat: 更新检测与下载入口指向本 Fork 的 GitHub Releases。
 
+## [v0.7.13] - 2026-10-15
+
+- fix(chat): refresh stale session state after an SSE reconnect (09163a20)
+- fix(chat): keep auto-scroll pinned to the bottom during streaming (a9011c54)
+
+## [v0.7.12] - 2026-10-14
+
+- fix(mobile): scope the keyboard-session reveal to iOS - Android Chrome was already correct (f00d8952)
+- chore: remove the viewport debug badge - keyboard lift confirmed fixed on device (cd858745)
+- fix(mobile): stop deriving keyboard-open layout from viewport metrics - hand over to native scroll-into-view (ad68aefc)
+- chore: temporary viewport debug badge for the iOS keyboard-lift issue (bdceec8c)
+- fix(mobile): single-channel keyboard compensation - pin app height to the visual viewport, drop the inset padding (35dc0868)
+- chore: remove the scaffolding from the iOS white-flash hunt (c0fff34c)
+- fix(router): never assign window.location for hash navigation - iOS standalone treats it as an app navigation (a870ad3a)
+- feat(router): wrap route changes in View Transitions - snapshot crossfade instead of live re-raster (23bf0db4)
+- fix(mobile): cover the workspace switch before paint, not after (ef514680)
+- fix(mobile): composite the chat surface only while the pager is swiping (934082f7)
+- fix(mobile): veil workspace switches on iOS to hide the WebKit tile-raster white flash (155bec57)
+- fix(mobile): remove the display-flip viewport heal - it blanked the whole root on iOS (8ae5a841)
+
+## [v0.7.11] - 2026-10-14
+
+- test(form): capture form state in an effect to satisfy the react-compiler lint rule (97a00665)
+- refactor(changes): align the review panel with the official v2 diff consumption (97c2d3db)
+- fix(chat): direction-aware scroll attribution - growth-animation frames no longer detach follow (c88444fc)
+- fix(form): restore free-form custom answer input on choice questions (5721b508)
+- chore(mobile): remove the temporary standalone viewport debug badge and probes (94ec4035)
+- fix(explorer): stop attributing sessions to scope directories - v2 lists are global (f2a98d90)
+- fix(mobile): pin standalone shell to screen.height - innerHeight drifts per launch (2e7d324e)
+- fix(mobile): drop baseline compensation - on-device data shows a healthy viewport (feb67ef4)
+- fix(mobile): measure the standalone viewport gap instead of assuming the env inset (e0d10a36)
+- fix(dialog): keep mobile sheet below the iOS status bar in browser/PWA (1a2a5ae0)
+- fix(mobile): revert blind safe-area compensation that pushed the shell off-screen (1517b62e)
+- fix(mobile): compensate iOS standalone viewport undermeasuring safe-area inset (07e8565f)
+- ci(docker): build images on dev pushes too, not just main (c298405e)
+- fix(mobile): pin app height to real innerHeight in browser/PWA mode (e3b51efb)
+
 ## [v0.7.10] - 2026-10-14
 
 - fix(chat): restore session model/agent/variant from durable SessionInfo on fresh launch (c9429753)
