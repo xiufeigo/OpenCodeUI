@@ -220,31 +220,25 @@ async function fetchActiveScopeData(directories: string[] | undefined, serverId:
   const mergedStatusMap: SessionStatusMap = {}
   const permissionMap = new Map<string, ApiPermissionRequest>()
   const questionMap = new Map<string, ApiFormInfo>()
-  const sessionMetaEntries: Array<{ sessionId: string; directory?: string }> = []
 
-  results.forEach(({ directory, statusMap, permissions, questions }) => {
+  results.forEach(({ statusMap, permissions, questions }) => {
     // statusMap 的 key 复合化（事件/store 内部统一用 serverId::sessionId）
     for (const [sid, status] of Object.entries(statusMap)) {
       mergedStatusMap[makeSessionKey(serverId, sid)] = status
     }
 
-    if (directory) {
-      Object.keys(statusMap).forEach(sid => {
-        sessionMetaEntries.push({ sessionId: makeSessionKey(serverId, sid), directory })
-      })
-    }
+    // 注意：v2 的 active/permission/form 列表接口全部是**全局的、不按目录过滤**
+    // （服务端 handler 直接忽略 location 参数），因此绝不能把返回的 session
+    // 归属到当前查询的 scope 目录——曾按 scope 贴 directory 标签，导致活跃
+    // session 的 meta.directory 被最后一个订阅工作区覆盖，文件预览串到别的
+    // 工作区。session 的真实目录只来自 SSE session.updated 的 location.directory
+    // 和 getSession 的 durable 数据。
 
     permissions.forEach(permission => {
-      if (directory) {
-        sessionMetaEntries.push({ sessionId: makeSessionKey(serverId, permission.sessionID), directory })
-      }
       permissionMap.set(permission.id, { ...permission, sessionID: makeSessionKey(serverId, permission.sessionID) })
     })
 
     questions.forEach(question => {
-      if (directory) {
-        sessionMetaEntries.push({ sessionId: makeSessionKey(serverId, question.sessionID), directory })
-      }
       questionMap.set(question.id, { ...question, sessionID: makeSessionKey(serverId, question.sessionID) })
     })
   })
@@ -253,7 +247,6 @@ async function fetchActiveScopeData(directories: string[] | undefined, serverId:
     statusMap: mergedStatusMap,
     permissions: Array.from(permissionMap.values()),
     questions: Array.from(questionMap.values()),
-    sessionMetaEntries,
   }
 }
 
@@ -416,14 +409,20 @@ export function useGlobalEvents(directories?: string[]) {
       const currentVersion = (fetchVersions.get(serverId) ?? 0) + 1
       fetchVersions.set(serverId, currentVersion)
       activeFetchVersions.set(serverId, currentVersion)
+      // 官方 server.connected 同款：快照对本 server 是绝对的；拉取窗口内的
+      // status 事件先记账，apply 时覆盖旧快照（防止旧快照盖掉新事件）
+      activeSessionStore.beginStatusSnapshot(serverId)
       void fetchActiveScopeData(directoriesRef.current, serverId)
-        .then(({ statusMap, permissions, questions, sessionMetaEntries }) => {
+        .then(({ statusMap, permissions, questions }) => {
           if (disposed || currentVersion !== fetchVersions.get(serverId)) return
+          // merge 只跨 server 保留条目，不跨时间保留——本 server 快照里
+          // 没有的 busy/retry 一律视为已结束（官方 active() 全量替换语义）
+          activeSessionStore.applyServerStatusSnapshot(serverId, statusMap, {
+            keepOtherServers: effectiveStrategy === 'merge',
+          })
           if (effectiveStrategy === 'merge') {
-            activeSessionStore.mergeStatusRefresh(statusMap)
             activeSessionStore.mergePendingRequests(permissions, questions)
           } else {
-            activeSessionStore.initialize(statusMap)
             activeSessionStore.initializePendingRequests(permissions, questions)
           }
           const currentDirectories = directoriesRef.current
@@ -442,12 +441,12 @@ export function useGlobalEvents(directories?: string[]) {
               pending.description,
             )
           }
-          activeSessionStore.setSessionMetaBulk(sessionMetaEntries)
         })
         .catch(() => {
           // best effort: 下次目录切换或 SSE 重连会再拉一次
         })
         .finally(() => {
+          activeSessionStore.endStatusSnapshot(serverId)
           if (currentVersion === fetchVersions.get(serverId)) {
             activeFetchVersions.set(serverId, 0)
           }
