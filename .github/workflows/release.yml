@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to release (e.g. v1.0.5)'
+        required: true
+        type: string
 
 concurrency:
   group: release-${{ github.ref }}
@@ -38,6 +44,8 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       - uses: actions/setup-node@v6
         with:
@@ -114,6 +122,8 @@ jobs:
             label: armv7
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       - uses: actions/setup-node@v6
         with:
@@ -195,7 +205,7 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           ANDROID_TARGET: ${{ matrix.target }}
           ANDROID_LABEL: ${{ matrix.label }}
-          RELEASE_VERSION: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
       - uses: actions/upload-artifact@v7
         with:
@@ -213,6 +223,8 @@ jobs:
     needs: [build-desktop, build-android]
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       - uses: actions/download-artifact@v8
         with:
@@ -226,7 +238,7 @@ jobs:
       - name: Extract changelog
         id: changelog
         run: |
-          TAG="${{ github.ref_name }}"
+          TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
           BODY=$(sed -n "/^## \[${TAG}\]/,/^## \[/{ /^## \[${TAG}\]/d; /^## \[/d; p; }" CHANGELOG.md)
           BODY=$(echo "$BODY" | sed -e '/./,$!d' -e :a -e '/^\n*$/{$d;N;ba;}')
           if [ -z "$BODY" ]; then
@@ -238,11 +250,11 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: 'OpenCodeUI ${{ github.ref_name }}'
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          name: "OpenCodeUI ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
           body_path: /tmp/release-body.md
           files: artifacts/*
           draft: false
-          prerelease: ${{ contains(github.ref_name, 'canary') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') }}
+          prerelease: ${{ contains(github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name, 'canary') || contains(github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name, 'alpha') || contains(github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name, 'beta') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
