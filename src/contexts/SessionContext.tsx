@@ -13,11 +13,15 @@ import { serverStore } from '../store/serverStore'
 import { pinnedSessionsStore } from '../store/pinnedSessionsStore'
 import { useDirectory } from './useDirectory'
 import { sessionErrorHandler, normalizeToForwardSlash, isSameDirectory, autoDetectPathStyle } from '../utils'
+import { sessionListDirectory } from '../utils/globalSessionScope'
 import { clearSessionRuntimeState } from '../utils/sessionLifecycle'
 import { SessionContext, type SessionContextValue } from './SessionContext.shared'
 
 export function SessionProvider({ children }: { children: ReactNode }) {
-  const { currentDirectory } = useDirectory()
+  const { currentDirectory, pathInfo } = useDirectory()
+  // 全局（没有选中项目）时不能省略 directory，否则 session.list 会返回所有目录。
+  // 见 globalSessionScope：这时用服务器默认目录（主目录 / 启动目录）。
+  const scopeDirectory = useMemo(() => sessionListDirectory(currentDirectory, pathInfo), [currentDirectory, pathInfo])
 
   const [sessions, setSessions] = useState<ApiSession[]>([])
   const [isLoading, setIsLoading] = useState(true)
@@ -27,8 +31,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const requestIdRef = useRef(0)
   const searchTimerRef = useRef<number | null>(null)
-  const currentDirectoryRef = useRef(currentDirectory)
+  const scopeDirectoryRef = useRef(scopeDirectory)
   const searchRef = useRef(search)
+  scopeDirectoryRef.current = scopeDirectory
   const isLoadingMoreRef = useRef(false) // 防止并发 loadMore
   const isFetchingRef = useRef(false) // 防止 onReconnected 密集触发时重复请求
   const queuedReconnectRefreshRef = useRef(false)
@@ -37,11 +42,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     (params?: SessionListParams & { append?: boolean; retryAttempt?: number }) => Promise<void>
   >(() => Promise.resolve())
   const currentLimitRef = useRef(30) // 当前 limit，loadMore 时递增
-
-  // 保持 ref 同步
-  useEffect(() => {
-    currentDirectoryRef.current = currentDirectory
-  }, [currentDirectory])
 
   useEffect(() => {
     searchRef.current = search
@@ -53,6 +53,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const fetchSessions = useCallback(
     async (params: SessionListParams & { append?: boolean; retryAttempt?: number } = {}) => {
       const { append = false, retryAttempt = 0, ...queryParams } = params
+      // 全局目录还没解析出来时不要发请求：不带 directory 的 list 会把所有项目的会话混进来
+      if (!scopeDirectory) return
+
       const requestId = ++requestIdRef.current
       isFetchingRef.current = true
 
@@ -63,14 +66,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       }
 
       try {
-        // 使用正斜杠格式传给 API（http 层会处理兼容）
-        const targetDir = normalizeToForwardSlash(currentDirectory) || undefined
-
         const data = await getSessions({
           // v2 没有 roots 开关：根会话用 parentID: null 表达
           parentID: null,
           limit: currentLimitRef.current,
-          directory: targetDir,
+          directory: scopeDirectory,
           search: search || undefined,
           ...queryParams,
         })
@@ -120,19 +120,25 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         }
       }
     },
-    [currentDirectory, search],
+    [scopeDirectory, search],
   )
 
   // 保持 fetchSessions ref 同步（用于 SSE onReconnected 回调）
   fetchSessionsRef.current = fetchSessions
 
   const matchesCurrentDirectory = useCallback((session: ApiSession) => {
-    return !currentDirectoryRef.current || isSameDirectory(currentDirectoryRef.current, session.location?.directory)
+    const scope = scopeDirectoryRef.current
+    // 作用域未知时不要当成「全部匹配」——那正是全局列表串进其它目录的原因
+    if (!scope) return false
+    return isSameDirectory(scope, session.location?.directory)
   }, [])
 
   // 监听 directory 和 search 变化
   useEffect(() => {
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
+
+    // 全局主目录还没到：保持 loading，不要先拉一份未过滤的全量列表
+    if (!scopeDirectory) return
 
     // 切换目录或搜索时重置 limit
     currentLimitRef.current = 30
@@ -148,7 +154,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
       if (retryTimerRef.current) clearTimeout(retryTimerRef.current)
     }
-  }, [fetchSessions, search, currentDirectory])
+  }, [fetchSessions, search, scopeDirectory])
 
   // 订阅 SSE 事件，实时更新 session 列表
   useEffect(() => {
@@ -159,7 +165,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
         // v2 的 session.created 负载是**创建记录**（以 sessionID 为键、带 slug/version），
         // 不是 SessionInfo，因此回读一次拿到完整会话再入列表。
-        void getSession(data.sessionID, normalizeToForwardSlash(currentDirectory) || undefined, data.location?.directory)
+        void getSession(
+          data.sessionID,
+          normalizeToForwardSlash(currentDirectory) || undefined,
+          data.location?.directory,
+        )
           .then(session => {
             if (!session || !matchesCurrentDirectory(session)) return
 
@@ -238,19 +248,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }
   }, [hasMore, sessions, fetchSessions])
 
-  const createSession = useCallback(
-    async (title?: string) => {
-      // 使用正斜杠格式传给后端
-      const targetDir = normalizeToForwardSlash(currentDirectory) || undefined
-
-      const newSession = await apiCreateSession({
-        title,
-        directory: targetDir,
-      })
-      return newSession
-    },
-    [currentDirectory],
-  )
+  const createSession = useCallback(async (title?: string) => {
+    const newSession = await apiCreateSession({
+      title,
+      directory: scopeDirectoryRef.current,
+    })
+    return newSession
+  }, [])
 
   const deleteSession = useCallback(
     async (id: string) => {
