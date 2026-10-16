@@ -17,6 +17,7 @@ import {
   registerSessionConsumer,
   updateConsumerSessionId,
   hasOtherConsumerForSession,
+  flushPendingRequests,
 } from '../hooks'
 import { usePermissions, usePermissionHandler, useMessageAnimation, useDirectory, useSessionContext, useAgents } from '../hooks'
 import { useNotification } from './useNotification'
@@ -65,7 +66,8 @@ import { clipboardErrorHandler, copyTextToClipboard, createErrorHandler } from '
 import { saveData } from '../utils/downloadUtils'
 import { clearSessionRuntimeState } from '../utils/sessionLifecycle'
 import { serverStorage } from '../utils/perServerStorage'
-import { sessionKeyToServerId, splitSessionKey } from '../utils/sessionKey'
+import { makeSessionKey, sessionKeyToServerId, splitSessionKey } from '../utils/sessionKey'
+import { sweepTaskChildBindings, verifyTaskChildBindings } from '../utils/taskChildBinding'
 import { createMessageId } from '../utils/identifier'
 import { serverStore } from '../store/serverStore'
 import { STORAGE_KEY_SELECTED_AGENT } from '../constants'
@@ -482,6 +484,24 @@ export function useChatSession({
   // 每个 pane 都注册自己的 consumer，由 App 顶层统一建立 SSE 连接
   // ============================================
 
+  /**
+   * 请求所属 session 是否就是本 pane 正在看的会话（含其子 / 孙会话）。
+   *
+   * 用于系统通知去重：属于当前会话 family 的权限 / 提问会**挂在这个 pane 的
+   * 界面上**（主会话里的子会话权限就是这种），用户在看着它，不该再收到一条
+   * 通知。父子关系从子会话创建起就存在（session.created 与 REST session
+   * 列表同源），这里直接复用 childSessionStore 的判定。
+   */
+  const isWithinCurrentSession = useCallback(
+    (sessionId: string) => {
+      if (!routeSessionId) return false
+      const scoped = sessionId.includes('::') ? sessionId : makeSessionKey(paneServerId, sessionId)
+      if (scoped === routeSessionId) return true
+      return childSessionStore.belongsToSession(scoped, routeSessionId)
+    },
+    [routeSessionId, paneServerId],
+  )
+
   const sseCallbacks = useMemo(
     () => ({
       onPermissionAsked: (request: import('../api').ApiPermissionRequest) => {
@@ -507,10 +527,14 @@ export function useChatSession({
           return [...prev, request]
         })
 
-        // 页面不在前台时通知用户有权限请求等待批准
+        // 系统通知只在「这条请求不在你眼前的会话里」时才发：
+        // 请求所属 session 的父链上就是这个 pane 正在看的会话 → 权限卡片已经
+        // 挂在当前界面（主会话里的子会话就属于这种），再弹通知就是重复打扰。
+        // 父子关系从子会话创建起就存在（session.created / session 列表同源），
+        // 这里直接复用 childSessionStore 的判定即可。
         const permDesc = request.resources?.length ? `${request.action}: ${request.resources[0]}` : request.action
-        const title = buildNotificationTitle(request.sessionID, 'Permission Required')
-        if (notificationEventSettingsStore.isSystemEnabled('permission')) {
+        if (notificationEventSettingsStore.isSystemEnabled('permission') && !isWithinCurrentSession(request.sessionID)) {
+          const title = buildNotificationTitle(request.sessionID, 'Permission Required')
           sendNotification(title, permDesc, {
             sessionId: request.sessionID,
             directory: effectiveDirectory,
@@ -529,10 +553,10 @@ export function useChatSession({
           return [...prev, form]
         })
 
-        // 页面不在前台时通知用户有表单等待回答
+        // 同权限：本 pane 就会展示的提问不再重复发系统通知
         const questionDesc = form.title || 'AI is waiting for your input'
-        const title = buildNotificationTitle(form.sessionID, 'Question')
-        if (notificationEventSettingsStore.isSystemEnabled('question')) {
+        if (notificationEventSettingsStore.isSystemEnabled('question') && !isWithinCurrentSession(form.sessionID)) {
+          const title = buildNotificationTitle(form.sessionID, 'Question')
           sendNotification(title, questionDesc, {
             sessionId: form.sessionID,
             directory: effectiveDirectory,
@@ -601,6 +625,7 @@ export function useChatSession({
       setPendingQuestionRequests,
       buildNotificationTitle,
       sendNotification,
+      isWithinCurrentSession,
       loadSession,
       refreshPendingRequests,
       refetchModels,
@@ -697,10 +722,28 @@ export function useChatSession({
           for (const child of children) {
             childSessionStore.registerChildSession(child, paneServerId)
           }
+          // 父子关系刚由 REST 建立：此前因「不知道子会话归属」而只弹了 toast、
+          // 被缓存下来的权限/表单请求，现在补投进 pane（否则要刷新页面才挂上）
+          flushPendingRequests()
         } catch {
           // 获取子 session 失败不影响主流程
         }
       }
+
+      // 刷新/重进后运行中的 task 卡片 metadata 里没有 sessionID（progress 不落库）：
+      // 先一对一同步直绑，剩下的用 input.prompt 与子 session 首条用户消息
+      // 逐字比对精确绑定（在线时由 tool.progress 的 metadata.sessionID 精确下发，
+      // 这里是离线恢复通道——绝不用 agent/title 做概率性配对，会挂错会话）
+      sweepTaskChildBindings(paneServerId, routeSessionId!)
+      await verifyTaskChildBindings(paneServerId, routeSessionId!, async childKey => {
+        try {
+          const messages = await getSessionMessages(childKey, undefined, undefined, paneServerId)
+          const firstUser = messages.find(m => m.type === 'user')
+          return firstUser?.type === 'user' ? firstUser.text : undefined
+        } catch {
+          return undefined
+        }
+      })
 
       if (cancelled) return
 

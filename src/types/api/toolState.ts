@@ -66,6 +66,46 @@ export function currentToolMetadata(tool: AssistantTool): Record<string, unknown
 }
 
 /**
+ * task/subagent 工具派生的子 session id。
+ *
+ * 两个权威来源，按可靠性排序：
+ *
+ * 1. `metadata.sessionID`（v2）/ `metadata.sessionId`（v1）——服务端在子
+ *    session 创建瞬间经 progress 事件下发、完成后经 success 的 metadata 落库
+ *    （core/src/tool/plugin/subagent.ts:264；官方 session-ui 同款读取）。
+ * 2. **工具入参里的 `sessionID`**——续接已有子会话时模型会显式传入
+ *    （subagent.ts:40-42 "Continue a specific previous subagent conversation
+ *    by passing its sessionID"）。这种情况服务端不会再下发 metadata，
+ *    参数本身就是精确答案，无需任何配对。streaming 阶段 input 是半截 JSON，
+ *    截断的 id 会指错会话，因此只在 called 之后（非 streaming）才采用。
+ */
+export function currentToolChildSessionId(tool: AssistantTool): string | undefined {
+  const name = tool.name.toLowerCase()
+  if (name !== 'task' && name !== 'subagent') return undefined
+  const metadata = currentToolMetadata(tool)
+  const id = metadata.sessionID ?? metadata.sessionId
+  if (typeof id === 'string' && id) return id
+  if (tool.state.status === 'streaming') return undefined
+  const input = currentToolInput(tool)
+  const resumed = input.sessionID ?? input.sessionId
+  return typeof resumed === 'string' && resumed ? resumed : undefined
+}
+
+/**
+ * task/subagent 工具的子 agent 名。
+ *
+ * v2 参数名是 `agent`，v1 是 `subagent_type`（官方 v1 迁移说明同款：
+ * "takes `agent` instead of `subagent_type`"）。
+ */
+export function currentToolSubagentName(tool: AssistantTool): string | undefined {
+  const name = tool.name.toLowerCase()
+  if (name !== 'task' && name !== 'subagent') return undefined
+  const input = currentToolInput(tool)
+  const agent = input.agent ?? input.subagent_type
+  return typeof agent === 'string' && agent ? agent : undefined
+}
+
+/**
  * 工具产出文本。
  *
  * running 时官方从 `metadata.output` 取（shell 类工具边跑边出）；

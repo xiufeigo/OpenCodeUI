@@ -34,8 +34,26 @@ describe('ComposerSeatMenu', () => {
     expect(trigger).toHaveTextContent('Build')
   })
 
-  it('opens root pane with model / effort / agent rows', () => {
+  it('trigger shrinks like the non-aggregated buttons: only the long model name compresses', () => {
     renderMenu()
+    const trigger = screen.getByRole('button', { name: 'Model / effort / agent menu' })
+    // 可收缩（min-w-0 + max-w-full + overflow-hidden）——空间不足时才截断
+    expect(trigger.className).toContain('min-w-0')
+    expect(trigger.className).toContain('max-w-full')
+    expect(trigger.className).toContain('overflow-hidden')
+    // 无固定宽度上限：有空间就完整显示模型名（曾经 160/72px 会无谓压缩）
+    const labels = Array.from(trigger.querySelectorAll('span'))
+    expect(labels.some(span => /max-w-\[\d+px\]/.test(span.className))).toBe(false)
+    // 长段可压缩，短值（Default / Build）不参与压缩——与非聚合模式那两个 shrink-0 按钮一致
+    const modelLabel = labels.find(span => span.textContent === 'Kimi K3-256K')
+    expect(modelLabel?.className).toContain('truncate')
+    expect(modelLabel?.className).not.toContain('shrink-0')
+    const shortLabels = labels.filter(span => span.textContent === 'High' || span.textContent === 'Build')
+    expect(shortLabels).toHaveLength(2)
+    expect(shortLabels.every(span => span.className.includes('shrink-0'))).toBe(true)
+  })
+
+  it('opens root pane with model / effort / agent rows', () => {    renderMenu()
     fireEvent.click(screen.getByRole('button', { name: 'Model / effort / agent menu' }))
     expect(screen.getByRole('menuitem', { name: /Model/ })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /Reasoning effort/ })).toBeInTheDocument()

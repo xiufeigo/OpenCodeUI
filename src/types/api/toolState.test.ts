@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { AssistantTool } from './message'
 import {
   currentContentDefaultOpen,
+  currentToolChildSessionId,
   currentToolError,
   currentToolErrorStatus,
   currentToolFailed,
@@ -10,6 +11,7 @@ import {
   currentToolInput,
   currentToolMetadata,
   currentToolOutput,
+  currentToolSubagentName,
   executeToolFailed,
   shellResultFailed,
 } from './toolState'
@@ -56,8 +58,120 @@ describe('currentToolMetadata', () => {
   })
 })
 
-describe('currentToolOutput', () => {
-  it('running 时从 metadata.output 取（shell 边跑边出）', () => {
+describe('currentToolChildSessionId', () => {
+  it('v2 的 subagent 工具从 metadata.sessionID 取子 session', () => {
+    const t = tool({
+      name: 'subagent',
+      state: { status: 'running', input: {}, metadata: { sessionID: 'ses_child', status: 'running' } },
+    })
+    expect(currentToolChildSessionId(t)).toBe('ses_child')
+  })
+
+  it('v1 的 task 工具从 metadata.sessionId 取子 session（旧服务端/迁移数据兼容）', () => {
+    const t = tool({
+      name: 'task',
+      state: {
+        status: 'completed',
+        input: {},
+        content: [{ type: 'text', text: 'done' }],
+        metadata: { sessionId: 'ses_legacy' },
+      },
+    })
+    expect(currentToolChildSessionId(t)).toBe('ses_legacy')
+  })
+
+  it('v2 键优先于 v1 键', () => {
+    const t = tool({
+      name: 'subagent',
+      state: { status: 'running', input: {}, metadata: { sessionID: 'ses_v2', sessionId: 'ses_v1' } },
+    })
+    expect(currentToolChildSessionId(t)).toBe('ses_v2')
+  })
+
+  it('非 task/subagent 工具或缺 id 时返回 undefined', () => {
+    expect(
+      currentToolChildSessionId(tool({ state: { status: 'running', input: {}, metadata: { sessionID: 'x' } } })),
+    ).toBeUndefined()
+    expect(
+      currentToolChildSessionId(
+        tool({ name: 'subagent', state: { status: 'running', input: {}, metadata: { status: 'running' } } }),
+      ),
+    ).toBeUndefined()
+    expect(
+      currentToolChildSessionId(
+        tool({ name: 'subagent', state: { status: 'running', input: {}, metadata: { sessionID: '' } } }),
+      ),
+    ).toBeUndefined()
+    // streaming 状态没有 metadata
+    expect(
+      currentToolChildSessionId(tool({ name: 'subagent', state: { status: 'streaming', input: '{}' } })),
+    ).toBeUndefined()
+  })
+
+  // 续接已有子会话：模型在工具入参里显式传 sessionID（subagent.ts:40-42），
+  // 服务端不会再下发 progress —— 参数即权威答案
+  it('非 streaming 时从 input.sessionID 取续接的子 session', () => {
+    const t = tool({
+      name: 'subagent',
+      state: { status: 'running', input: { description: 'd', prompt: 'p', sessionID: 'ses_resumed' }, metadata: {} },
+    })
+    expect(currentToolChildSessionId(t)).toBe('ses_resumed')
+  })
+
+  it('metadata.sessionID 优先于续接参数', () => {
+    const t = tool({
+      name: 'subagent',
+      state: {
+        status: 'running',
+        input: { sessionID: 'ses_input' },
+        metadata: { sessionID: 'ses_meta' },
+      },
+    })
+    expect(currentToolChildSessionId(t)).toBe('ses_meta')
+  })
+
+  it('streaming 阶段不采信 input.sessionID（半截 JSON 会截断 id 指向错误会话）', () => {
+    const t = tool({
+      name: 'subagent',
+      state: { status: 'streaming', input: '{"description":"d","sessionID":"ses_resum' },
+    })
+    expect(currentToolChildSessionId(t)).toBeUndefined()
+  })
+
+  it('空的续接参数视同没有', () => {
+    const t = tool({
+      name: 'subagent',
+      state: { status: 'running', input: { sessionID: '' }, metadata: {} },
+    })
+    expect(currentToolChildSessionId(t)).toBeUndefined()
+  })
+})
+
+describe('currentToolSubagentName', () => {
+  it('v2 从 input.agent 取子 agent 名', () => {
+    const t = tool({
+      name: 'subagent',
+      state: { status: 'running', input: { agent: 'explore', description: 'd' }, metadata: {} },
+    })
+    expect(currentToolSubagentName(t)).toBe('explore')
+  })
+
+  it('v1 从 input.subagent_type 兜底', () => {
+    const t = tool({
+      name: 'task',
+      state: { status: 'running', input: { subagent_type: 'general' }, metadata: {} },
+    })
+    expect(currentToolSubagentName(t)).toBe('general')
+  })
+
+  it('非 task/subagent 工具返回 undefined', () => {
+    expect(
+      currentToolSubagentName(tool({ state: { status: 'running', input: { agent: 'x' }, metadata: {} } })),
+    ).toBeUndefined()
+  })
+})
+
+describe('currentToolOutput', () => {  it('running 时从 metadata.output 取（shell 边跑边出）', () => {
     expect(currentToolOutput(tool({ state: { status: 'running', input: {}, metadata: { output: 'partial' } } }))).toBe(
       'partial',
     )

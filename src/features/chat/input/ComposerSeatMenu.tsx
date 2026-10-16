@@ -228,26 +228,30 @@ export function ComposerSeatMenu({
         aria-haspopup="menu"
         aria-expanded={isOpen}
         aria-label={t('inputToolbar.seatMenu')}
-        className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg transition-all duration-150 hover:bg-bg-200 active:scale-95 cursor-pointer min-w-0 overflow-hidden"
+        className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg transition-all duration-150 hover:bg-bg-200 active:scale-95 cursor-pointer min-w-0 max-w-full overflow-hidden"
         title={[
           modelLabel || t('inputToolbar.seatSelectModel'),
           ...(showVariantRow ? [variantLabel] : []),
           ...(showAgentRow ? [agentLabel] : []),
         ].join(' · ')}
       >
-        <span className="text-[length:var(--fs-sm)] font-medium text-text-200 truncate max-w-[160px]">
+        {/* 空间分配跟非聚合模式的按钮一致：那两个短值按钮在紧凑布局下是 shrink-0，
+            真正被压缩的只有模型名。所以这里短值（Default / Build）不参与压缩，
+            只让模型名这唯一的长段收缩截断——三段等比例压缩会把短值也压花。
+            宽度不设固定上限：有空间就完整显示，不够时才出省略号。 */}
+        <span className="text-[length:var(--fs-sm)] font-medium text-text-200 min-w-0 truncate">
           {/* 有缓存标签就始终显示：后台刷新（provider/model/config 事件触发 refetch）
               期间 isLoading 短暂为 true，若让 '…' 抢占标签会造成可见闪烁 */}
           {modelLabel || (modelsLoading ? '…' : t('inputToolbar.seatSelectModel'))}
         </span>
         {(showVariantRow || showAgentRow) && <span className="text-text-500 shrink-0">·</span>}
         {showVariantRow && (
-          <span className="text-[length:var(--fs-sm)] text-text-400 truncate max-w-[72px]">{variantLabel}</span>
+          <span className="text-[length:var(--fs-sm)] text-text-400 shrink-0 truncate">{variantLabel}</span>
         )}
         {showVariantRow && showAgentRow && <span className="text-text-500 shrink-0">·</span>}
         {showAgentRow && (
           <span
-            className="text-[length:var(--fs-sm)] text-text-400 truncate max-w-[72px]"
+            className="text-[length:var(--fs-sm)] text-text-400 shrink-0 truncate"
             style={currentAgent?.color ? { color: currentAgent.color } : undefined}
           >
             {agentLabel}

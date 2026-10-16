@@ -1,10 +1,10 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '../../../components/ui/Button'
 import { ConfirmDialog } from '../../../components/ui/ConfirmDialog'
 import { DropdownMenu } from '../../../components/ui/DropdownMenu'
 import { MenuItem } from '../../../components/ui/MenuItem'
-import { TrashIcon, KeyIcon, PencilIcon, RetryIcon, PlugIcon, CircleIcon } from '../../../components/Icons'
+import { TrashIcon, KeyIcon, PencilIcon, RetryIcon, PlugIcon, CircleIcon, QrCodeIcon } from '../../../components/Icons'
 import { useServerStore } from '../../../hooks'
 import { useServerSelection } from '../../../hooks/useServerSelection'
 import { useMultiServerStore, multiServerStore } from '../../../store/multiServerStore'
@@ -14,7 +14,12 @@ import { ServerHealthButton } from './ServerHealthButton'
 import { serverStore, type ServerConfig, type ServerHealth } from '../../../store/serverStore'
 import { paneLayoutStore } from '../../../store/paneLayoutStore'
 import { sessionKeyToServerId } from '../../../utils/sessionKey'
+import { PairServerDialog } from './PairServerDialog'
+import { PairScanDialog } from './PairScanDialog'
+import { PairLinkField } from './PairLinkField'
+import { usePairLinkRedeem } from './usePairLinkRedeem'
 import { isTauri, getDesktopPlatform } from '../../../utils/tauri'
+import { isLegacyPairingLink, parsePairingLink } from '../../../utils/pairing'
 import { wslApi } from '../../../api/wsl'
 import { DialogAddWslServer } from '../../wsl/components/DialogAddWslServer'
 import { WslServerRow } from '../../wsl/components/WslServerRow'
@@ -48,6 +53,7 @@ function ServerItem({
   onDelete,
   onEdit,
   onCheckHealth,
+  onPair,
   onToggleSubscribe,
 }: {
   server: ServerConfig
@@ -59,6 +65,7 @@ function ServerItem({
   onDelete: () => void
   onEdit: (updates: { name: string; url: string; username?: string; password?: string }) => void
   onCheckHealth: () => void
+  onPair: () => void
   onToggleSubscribe: () => void
 }) {
   const { t } = useTranslation(['settings', 'common'])
@@ -136,6 +143,18 @@ function ServerItem({
             {subscribed ? <PlugIcon size={13} /> : <CircleIcon size={11} className="opacity-50" />}
           </button>
           <ServerHealthButton health={health} onCheck={onCheckHealth} />
+          <button
+            type="button"
+            className="p-1.5 rounded-md text-text-400 hover:text-accent-main-100 hover:bg-accent-main-100/10 transition-colors"
+            onClick={e => {
+              e.stopPropagation()
+              onPair()
+            }}
+            title={t('servers.pairServer')}
+            aria-label={t('servers.pairServer')}
+          >
+            <QrCodeIcon size={13} />
+          </button>
           {!server.isDefault && (
             <>
               <button
@@ -206,6 +225,28 @@ function EditServerForm({
   const [error, setError] = useState('')
   const showHttpsIpWarning = isHttpsIpUrl(url)
 
+  // 与添加表单同一条配对链：重新扫码 / 粘贴 pair 链接兑换后回填地址与凭据，
+  // 保存时才落库——适合换了端口 / 重装了服务端后原地更新连接配置
+  const applyPairing = useCallback((pairedUrl: string, token: string) => {
+    setUrl(pairedUrl)
+    setUsername('opencode')
+    setPassword(token)
+    setShowAuth(true)
+    setName(previous => {
+      if (previous.trim()) return previous
+      try {
+        return new URL(pairedUrl).hostname
+      } catch {
+        return previous
+      }
+    })
+    setError('')
+  }, [])
+  const { pairLink, pairState, pairScanOpen, setPairScanOpen, handlePairLinkChange } = usePairLinkRedeem({
+    onPaired: applyPairing,
+    onInput: () => setError(''),
+  })
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     const trimmedName = name.trim().slice(0, SERVER_NAME_MAX_LENGTH)
@@ -238,6 +279,12 @@ function EditServerForm({
       onSubmit={handleSubmit}
       className="p-3 rounded-lg border border-accent-main-100/30 bg-accent-main-100/[0.02] space-y-2.5"
     >
+      <PairLinkField
+        value={pairLink}
+        state={pairState}
+        onChange={handlePairLinkChange}
+        onScan={() => setPairScanOpen(true)}
+      />
       <div>
         <label className="block text-[length:var(--fs-xs)] font-medium text-text-300 mb-1">{t('servers.name')}</label>
         <input
@@ -259,7 +306,13 @@ function EditServerForm({
           type="text"
           value={url}
           onChange={e => {
-            setUrl(e.target.value)
+            const value = e.target.value
+            // 粘贴到 URL 框的 pair 链接转到配对流程（官方连接对话框同款识别）
+            if (parsePairingLink(value) || isLegacyPairingLink(value)) {
+              handlePairLinkChange(value)
+              return
+            }
+            setUrl(value)
             setError('')
           }}
           placeholder={t('servers.urlPlaceholder')}
@@ -322,6 +375,16 @@ function EditServerForm({
           {t('common:save')}
         </Button>
       </div>
+
+      {/* 扫到码直接喂给 pair 链接的兑换链，和粘贴链接走同一条路径 */}
+      <PairScanDialog
+        isOpen={pairScanOpen}
+        onClose={() => setPairScanOpen(false)}
+        onScan={data => {
+          setPairScanOpen(false)
+          handlePairLinkChange(data)
+        }}
+      />
     </form>
   )
 }
@@ -344,6 +407,28 @@ function AddServerForm({
   const [password, setPassword] = useState('')
   const [showAuth, setShowAuth] = useState(false)
   const [error, setError] = useState('')
+
+  const applyPairing = useCallback((pairedUrl: string, token: string) => {
+    setUrl(pairedUrl)
+    setUsername('opencode')
+    setPassword(token)
+    setShowAuth(true)
+    setName(previous => {
+      if (previous.trim()) return previous
+      try {
+        return new URL(pairedUrl).hostname
+      } catch {
+        return previous
+      }
+    })
+    setError('')
+  }, [])
+
+  // 粘贴 pair 链接 / QR 载荷 → 防抖兑换 → 回填地址与凭据
+  const { pairLink, pairState, pairScanOpen, setPairScanOpen, handlePairLinkChange } = usePairLinkRedeem({
+    onPaired: applyPairing,
+    onInput: () => setError(''),
+  })
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -386,6 +471,12 @@ function AddServerForm({
 
   return (
     <form onSubmit={handleSubmit} className="p-3 rounded-lg border border-border-200 bg-bg-100 space-y-2.5">
+      <PairLinkField
+        value={pairLink}
+        state={pairState}
+        onChange={handlePairLinkChange}
+        onScan={() => setPairScanOpen(true)}
+      />
       <div>
         <label className="block text-[length:var(--fs-xs)] font-medium text-text-300 mb-1">{t('servers.name')}</label>
         <input
@@ -407,7 +498,13 @@ function AddServerForm({
           type="text"
           value={url}
           onChange={e => {
-            setUrl(e.target.value)
+            const value = e.target.value
+            // 粘贴到 URL 框的 pair 链接转到配对流程（官方连接对话框同款识别）
+            if (parsePairingLink(value) || isLegacyPairingLink(value)) {
+              handlePairLinkChange(value)
+              return
+            }
+            setUrl(value)
             setError('')
           }}
           placeholder={t('servers.urlPlaceholder')}
@@ -486,6 +583,16 @@ function AddServerForm({
           {t('common:add')}
         </Button>
       </div>
+
+      {/* 扫到码直接喂给 pair 链接的兑换链，和粘贴链接走同一条路径 */}
+      <PairScanDialog
+        isOpen={pairScanOpen}
+        onClose={() => setPairScanOpen(false)}
+        onScan={data => {
+          setPairScanOpen(false)
+          handlePairLinkChange(data)
+        }}
+      />
     </form>
   )
 }
@@ -498,6 +605,7 @@ export function ServersSettings() {
   const { t } = useTranslation(['settings', 'common'])
   const [addingServer, setAddingServer] = useState(false)
   const [addingWslServer, setAddingWslServer] = useState(false)
+  const [pairingServer, setPairingServer] = useState<ServerConfig | null>(null)
   const [addMenuOpen, setAddMenuOpen] = useState(false)
   const addMenuRef = useRef<HTMLButtonElement>(null)
   // portal 到 body 的菜单内容不在 addMenuRef 内，外部点击判定必须同时覆盖它，
@@ -689,6 +797,7 @@ export function ServersSettings() {
                   void checkHealth(s.id)
                 }}
                 onCheckHealth={() => void checkHealth(s.id)}
+                onPair={() => setPairingServer(s)}
                 onToggleSubscribe={() => multiServerStore.setSubscribed(s.id, !multiServerStore.isSubscribed(s.id))}
               />
             )
@@ -732,6 +841,8 @@ export function ServersSettings() {
         onClose={() => setAddingWslServer(false)}
         onAdded={() => void checkAllHealth()}
       />
+
+      <PairServerDialog server={pairingServer} onClose={() => setPairingServer(null)} />
     </>
   )
 }

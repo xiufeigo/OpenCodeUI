@@ -26,6 +26,7 @@ import {
   type ToolViewContext,
 } from '../tools'
 import { currentToolFailed, currentToolInput, currentToolMetadata } from '../../../types/api/toolState'
+import { resolveTaskChildSessionRef } from '../../../utils/taskChildBinding'
 import { executeSubCallSummary, parseCodeModeToolCalls } from './executeSubCallSummary'
 import { MSG_SPACING } from '../messageSpacing'
 import { MessageExpandPanel, useMessageExpandRender } from '../messageExpand'
@@ -123,8 +124,9 @@ export const ToolPartView = memo(function ToolPartView({
     permissionRequest?.action === 'edit' || permissionRequest?.action === 'write' || permissionResolved
   const hideToolBodyForPermission = isEditWritePermission
   // 精简模式：ToolBody 已渲染时，InlinePermission 只显示按钮
-  // task 工具除外：task renderer 无法显示详细的工具请求内容，需要完整展示权限信息
-  const isTaskTool = toolName.toLowerCase() === 'task'
+  // task/subagent 工具除外：其 renderer 无法显示详细的工具请求内容，需要完整展示权限信息
+  const toolNameLower = toolName.toLowerCase()
+  const isTaskTool = toolNameLower === 'task' || toolNameLower === 'subagent'
   const permissionContentHidden =
     compactInlinePermission && !isEditWritePermission && !isTaskTool && !!permissionRequest
   const isReadable = isReadableTool(toolName)
@@ -560,11 +562,9 @@ const ToolBody = memo(function ToolBody({
   return <DefaultRenderer part={part} data={data} context={context} onFullscreenChange={onFullscreenChange} />
 })
 
-/** task 工具派出的子 session：metadata 里是原始 id，服务器以 pane 绑定的 serverId 为权威 */
+/** task/subagent 工具派出的子 session：metadata 权威值 + 早期绑定表兜底（刷新后 progress 不可回放） */
 function getTaskChildSessionRef(part: ToolViewPart, serverId: string): TaskChildSessionRef | undefined {
-  if (part.name.toLowerCase() !== 'task') return undefined
-  const sessionId = currentToolMetadata(part).sessionId as string | undefined
-  return sessionId ? { sessionKey: sessionId, serverId } : undefined
+  return resolveTaskChildSessionRef(part, serverId)
 }
 
 /** Extract description from tool input as title fallback (available while running) */
