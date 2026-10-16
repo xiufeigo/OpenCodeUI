@@ -74,7 +74,11 @@ function parseHash(): RouteState {
   return { sessionId: null, serverId, directory }
 }
 
-function buildHash(sessionId: string | null, serverId: string | null | undefined, directory: string | undefined): string {
+function buildHash(
+  sessionId: string | null,
+  serverId: string | null | undefined,
+  directory: string | undefined,
+): string {
   const path = sessionId ? `#/session/${encodeURIComponent(sessionId)}` : '#/'
   const params: string[] = []
   // 仅 home（无 session）写 server 参数；session URL 的复合 key 已携带服务器
@@ -144,6 +148,11 @@ function subscribe(listener: Listener): () => void {
 function getSnapshot(): RouteState {
   ensureWindowListener()
   return ensureSnapshot()
+}
+
+/** 点击处理里读路由目录。React state 在同一次点击的 setDirectory 之后仍是旧值。 */
+export function readRouteDirectory(): string | undefined {
+  return getSnapshot().directory
 }
 
 export function useRouter() {

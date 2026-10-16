@@ -13,6 +13,7 @@ import {
 import { ExpandableSection } from '../../../components/ui'
 import { ConfirmDialog } from '../../../components/ui/ConfirmDialog'
 import { useDelayedRender, useSessions } from '../../../hooks'
+import { useGlobalScopeDirectory } from '../../../hooks/useGlobalScopeDirectory'
 import { useInputCapabilities } from '../../../hooks/useInputCapabilities'
 import { useInView } from '../../../hooks/useInView'
 import { getDirectoryName, isSameDirectory } from '../../../utils'
@@ -907,6 +908,11 @@ function FolderRecentSection({
   const [hasActivated, setHasActivated] = useState(false)
   const shouldRenderBody = useDelayedRender(isExpanded)
   const folderFallbackName = getDirectoryName(project.worktree) || project.worktree
+  const isGlobalProject = project.id === 'global'
+  // 全局文件夹的 worktree 是空的。空目录传给 useSessions 等于不过滤，会列出所有会话。
+  const globalDirectory = useGlobalScopeDirectory(serverId)
+  const listDirectory = isGlobalProject ? globalDirectory : project.worktree
+  const waitingForGlobalScope = isGlobalProject && !listDirectory
 
   useEffect(() => {
     if (isExpanded && inView) {
@@ -926,9 +932,9 @@ function FolderRecentSection({
     patchLocalSession,
     removeLocalSession,
   } = useSessions({
-    directory: project.worktree,
+    directory: listDirectory || undefined,
     pageSize: DIRECTORY_PAGE_SIZE,
-    enabled: hasActivated,
+    enabled: hasActivated && !waitingForGlobalScope,
     serverId,
   })
   const pinnedEntries = useSyncExternalStore(
@@ -1078,7 +1084,7 @@ function FolderRecentSection({
         <ExpandableSection show={isExpanded}>
           {shouldRenderBody && (
             <div onTouchStart={e => e.stopPropagation()}>
-              {!hasActivated || isLoading ? (
+              {!hasActivated || isLoading || waitingForGlobalScope ? (
                 // 与 minimal SessionListItem 对齐：状态点占位 + spinner 落在标题文字区
                 <div className="flex items-center gap-2 px-2 py-1.5" aria-busy="true">
                   <span className="size-5 shrink-0" aria-hidden="true" />
