@@ -46,6 +46,7 @@ import {
   Share,
   Link,
   Globe,
+  QrCode,
   MessageSquare,
   ArrowUp,
   ArrowDown,
@@ -91,6 +92,7 @@ import {
   AppWindow,
   ZoomIn,
   ZoomOut,
+  ScanLine,
 } from 'lucide-react'
 
 export interface IconProps extends SVGProps<SVGSVGElement> {
@@ -154,6 +156,8 @@ export const MaximizeIcon = wrap(Maximize)
 export const MinimizeIcon = wrap(Minimize)
 export const ShareIcon = wrap(Share)
 export const LinkIcon = wrap(Link)
+
+export const QrCodeIcon = wrap(QrCode)
 export const ExternalLinkIcon = wrap(ExternalLink)
 export const GlobeIcon = wrap(Globe)
 export const MessageSquareIcon = wrap(MessageSquare)
@@ -221,3 +225,4 @@ export const SplitHorizontalIcon = wrap(Columns2)
 export const SplitVerticalIcon = wrap(Rows2)
 export const GripVerticalIcon = wrap(GripVertical)
 export const AppWindowIcon = wrap(AppWindow)
+export const ScanLineIcon = wrap(ScanLine)
