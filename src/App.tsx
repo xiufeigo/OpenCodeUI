@@ -10,7 +10,7 @@ import { UsageExceededDialog } from './components/UsageExceededDialog'
 import { RightPanel } from './components/RightPanel'
 import { BottomPanel } from './components/BottomPanel'
 import { DesktopTitlebar } from './components/DesktopTitlebar'
-import { useDirectory, useGlobalEvents, useGlobalKeybindings, useRouter } from './hooks'
+import { readRouteDirectory, useDirectory, useGlobalEvents, useGlobalKeybindings, useRouter } from './hooks'
 import { useSessionContext } from './contexts/useSessionContext'
 import { useViewportHeight } from './hooks/useViewportHeight'
 import { useCloseServiceDialog } from './hooks/useCloseServiceDialog'
@@ -35,6 +35,7 @@ import {
 import { isSameDirectory, collectActiveDirectories } from './utils'
 import { makeSessionKey, sessionKeyToServerId, splitSessionKey } from './utils/sessionKey'
 import { sessionRouteDirectory } from './utils/sessionDirectory'
+import { directoryForSessionOpen, globalScopeDirectory } from './utils/globalSessionScope'
 import { multiServerStore } from './store/multiServerStore'
 import { serverStore } from './store/serverStore'
 import { initNotificationSound } from './utils/notificationSoundBridge'
@@ -77,7 +78,8 @@ function App() {
     if (routeSessionId.includes('::')) return routeSessionId
     return makeSessionKey(serverStore.getActiveServerId(), routeSessionId)
   }, [routeSessionId])
-  const { currentDirectory, savedDirectories, sidebarExpanded, setSidebarExpanded } = useDirectory()
+  const { currentDirectory, pathInfo, savedDirectories, sidebarExpanded, setSidebarExpanded } = useDirectory()
+  const globalDirectory = useMemo(() => globalScopeDirectory(pathInfo), [pathInfo])
   const { rightPanelOpen, rightPanelWidth, wakeLock } = useLayoutStore()
   const { surfaceRef, value: chatViewport } = useChatViewportController({
     sidebarExpanded,
@@ -189,11 +191,13 @@ function App() {
       // 项目选择器焦点跟随打开的 session：服务器 + 工作区目录
       // （注意：不用 setCurrentDirectory——它会把 URL 清成 #/?dir= 导致 session 路由丢失；
       //  目录通过 navigateRouteToSession 写入 URL，currentDirectory 由 URL 派生自动跟随）
+      // 全局下打开主目录会话不写 dir，否则选择器会从「全局」跳成该文件夹。
+      // 活跃 tab 若要切到别的项目，会先 addDirectory，这时路由里已经有 dir。
       const { serverId } = splitSessionKey(sessionKey)
       multiServerStore.setFocusedServerId(serverId)
-      navigateRouteToSession(sessionKey, directory)
+      navigateRouteToSession(sessionKey, directoryForSessionOpen(readRouteDirectory(), directory, globalDirectory))
     },
-    [navigateRouteToSession],
+    [navigateRouteToSession, globalDirectory],
   )
 
   const navigatePaneHome = useCallback(
@@ -221,10 +225,12 @@ function App() {
       const paneId = paneLayout.focusedPaneId ?? paneLayoutStore.getFocusedPaneId()
       if (!paneId) return
       const sessionKey = makeSessionKey(session.serverId ?? serverStore.getActiveServerId(), session.id)
-      // v2 的目录在 location.directory；扁平 directory 只有命令面板等少数路径会带
-      navigatePaneToSession(paneId, sessionKey, sessionRouteDirectory(session))
+      // v2 的目录在 location.directory；扁平 directory 只有命令面板等少数路径会带。
+      // 全局下打开主目录会话不写 dir，否则选择器会从「全局」跳成该文件夹。
+      const directory = directoryForSessionOpen(readRouteDirectory(), sessionRouteDirectory(session), globalDirectory)
+      navigatePaneToSession(paneId, sessionKey, directory)
     },
-    [paneLayout.focusedPaneId, navigatePaneToSession],
+    [paneLayout.focusedPaneId, navigatePaneToSession, globalDirectory],
   )
 
   // 命令面板混合搜索的会话/文件数据源（官方 palette.ts 同款：

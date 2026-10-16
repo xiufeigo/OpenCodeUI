@@ -29,6 +29,7 @@ import {
   CheckIcon,
 } from '../../../components/Icons'
 import { useDirectory, useKeybindingLabel, useVcsInfo } from '../../../hooks'
+import { globalScopeDirectory, sessionMatchesListScope } from '../../../utils/globalSessionScope'
 import { useSessionContext } from '../../../contexts/useSessionContext'
 import { useLayoutStore, childSessionStore } from '../../../store'
 import { useBusySessions, useBusyCount } from '../../../store/activeSessionStore'
@@ -110,6 +111,7 @@ export function SidePanel({
   const { t } = useTranslation(['chat', 'common'])
   const {
     currentDirectory,
+    pathInfo,
     savedDirectories,
     setCurrentDirectory,
     removeDirectory,
@@ -334,22 +336,30 @@ export function SidePanel({
   }, [sessions, fetchedSessions])
 
   const orderedSessions = useMemo(() => {
+    const inScope = (session: ApiSession) =>
+      !!currentDirectory || sessionMatchesListScope(session.location?.directory, currentDirectory, pathInfo)
     const pinnedSet = new Set(pinnedEntries.map(e => e.sessionId))
     const pinned = pinnedEntries
       .map(entry => sessionLookup.get(entry.sessionId))
       .filter((session): session is ApiSession => Boolean(session))
-    const rest = sessions.filter(s => !pinnedSet.has(s.id))
+      .filter(inScope)
+    const rest = sessions.filter(s => !pinnedSet.has(s.id) && inScope(s))
     return [...pinned, ...rest]
-  }, [pinnedEntries, sessionLookup, sessions])
+  }, [pinnedEntries, sessionLookup, sessions, currentDirectory, pathInfo])
   const pinnedDividerAfterIds = useMemo(() => {
-    const lastPinned = pinnedEntries
+    const inScope = (session: ApiSession) =>
+      !!currentDirectory || sessionMatchesListScope(session.location?.directory, currentDirectory, pathInfo)
+    const visiblePinned = pinnedEntries
       .map(entry => sessionLookup.get(entry.sessionId))
       .filter((session): session is ApiSession => Boolean(session))
-      .at(-1)
+      .filter(inScope)
+    const lastPinned = visiblePinned.at(-1)
     if (!lastPinned) return undefined
-    const pinnedSet = new Set(pinnedEntries.map(e => e.sessionId))
-    return sessions.some(s => !pinnedSet.has(s.id)) ? new Set([lastPinned.id]) : undefined
-  }, [pinnedEntries, sessionLookup, sessions])
+    const pinnedSet = new Set(visiblePinned.map(session => session.id))
+    return sessions.some(session => !pinnedSet.has(session.id) && inScope(session))
+      ? new Set([lastPinned.id])
+      : undefined
+  }, [pinnedEntries, sessionLookup, sessions, currentDirectory, pathInfo])
   const resolvedPinnedSessions = useMemo(
     () =>
       pinnedEntries
@@ -729,16 +739,14 @@ export function SidePanel({
 
   const handleSelect = useCallback(
     (session: ApiSession) => {
-      // Global 模式下，点击 session 自动切换到该 session 的工作目录并添加到项目列表
-      if (!currentDirectory && session.location?.directory) {
-        addDirectory(session.location?.directory)
-      }
+      // 不要在这里 addDirectory。全局列表只含主目录会话，写上 dir 会让选择器
+      // 从「全局」变成该文件夹。是否离开全局由 directoryForSessionOpen 决定。
       onSelectSession(session)
       if (window.innerWidth < 768 && onCloseMobile) {
         onCloseMobile()
       }
     },
-    [currentDirectory, addDirectory, onSelectSession, onCloseMobile],
+    [onSelectSession, onCloseMobile],
   )
 
   // 多服务器模式：从分组列表选择 session（serverId 已由 MultiServerFolderList 附加）
@@ -768,15 +776,20 @@ export function SidePanel({
 
   const handleSelectActive = useCallback(
     (session: ApiSession & { serverId?: string }) => {
-      if (session.location?.directory) {
+      const sessionDir = session.location?.directory
+      const home = globalScopeDirectory(pathInfo)
+      // 全局里打开主目录会话：留在「全局」。addDirectory 会把 dir 写进 URL，
+      // 选择器就会从「全局」变成主目录文件夹名。其它目录的活跃会话仍切过去。
+      const keepGlobalScope = !currentDirectory && !!sessionDir && !!home && isSameDirectory(home, sessionDir)
+      if (sessionDir && !keepGlobalScope) {
         // 调用点无条件给 session 附加 serverId（splitSessionKey 对非复合 key
         // 也回退活动服务器），所以这里必须看模式而不是 serverId 是否存在，
         // 否则单服务器永远走 addServerWorkspace（只添加、不切换工作区）
         if (multiServerConfig.enabled && session.serverId) {
           // 多服务器模式：写入该 session 所属服务器的工作区（避免污染活动服务器）
-          addServerWorkspace(session.serverId, session.location?.directory)
+          addServerWorkspace(session.serverId, sessionDir)
         } else {
-          addDirectory(session.location?.directory)
+          addDirectory(sessionDir)
         }
       }
       // 多服务器模式：session 附带 serverId（App 用它合成复合 key 打开）
@@ -785,7 +798,7 @@ export function SidePanel({
         onCloseMobile()
       }
     },
-    [multiServerConfig.enabled, addDirectory, onSelectSession, onCloseMobile],
+    [currentDirectory, pathInfo, multiServerConfig.enabled, addDirectory, onSelectSession, onCloseMobile],
   )
 
   const renderActiveSessionNode = useCallback(

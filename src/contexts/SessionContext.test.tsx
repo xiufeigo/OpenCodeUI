@@ -16,6 +16,7 @@ function createDeferred<T>() {
 
 const {
   getSessionsMock,
+  getSessionMock,
   createSessionMock,
   deleteSessionMock,
   subscribeToEventsMock,
@@ -25,8 +26,10 @@ const {
   sessionErrorHandlerMock,
   autoDetectPathStyleMock,
   onServerChangeMock,
+  directoryState,
 } = vi.hoisted(() => ({
   getSessionsMock: vi.fn(),
+  getSessionMock: vi.fn(),
   createSessionMock: vi.fn(),
   deleteSessionMock: vi.fn(),
   subscribeToEventsMock: vi.fn(),
@@ -36,6 +39,10 @@ const {
   sessionErrorHandlerMock: vi.fn(),
   autoDetectPathStyleMock: vi.fn(),
   onServerChangeMock: vi.fn(),
+  directoryState: {
+    currentDirectory: '/workspace/demo' as string | undefined,
+    pathInfo: null as { directory: string } | null,
+  },
 }))
 let latestEventCallbacks: Partial<EventCallbacks> = {}
 let latestContext: ContextType<typeof SessionContext> = null
@@ -43,13 +50,17 @@ let latestServerChange: ((serverId: string, reason: ServerChangeReason) => void)
 
 vi.mock('../api', () => ({
   getSessions: (...args: unknown[]) => getSessionsMock(...args),
+  getSession: (...args: unknown[]) => getSessionMock(...args),
   createSession: (...args: unknown[]) => createSessionMock(...args),
   deleteSession: (...args: unknown[]) => deleteSessionMock(...args),
   subscribeToEvents: (...args: unknown[]) => subscribeToEventsMock(...args),
 }))
 
 vi.mock('./useDirectory', () => ({
-  useDirectory: () => ({ currentDirectory: '/workspace/demo' }),
+  useDirectory: () => ({
+    currentDirectory: directoryState.currentDirectory,
+    pathInfo: directoryState.pathInfo,
+  }),
 }))
 
 vi.mock('../store/childSessionStore', () => ({
@@ -99,7 +110,10 @@ describe('SessionProvider', () => {
     vi.useFakeTimers()
     latestContext = null
     latestEventCallbacks = {}
+    directoryState.currentDirectory = '/workspace/demo'
+    directoryState.pathInfo = null
     getSessionsMock.mockReset()
+    getSessionMock.mockReset()
     createSessionMock.mockReset()
     deleteSessionMock.mockReset()
     subscribeToEventsMock.mockReset()
@@ -314,5 +328,88 @@ describe('SessionProvider', () => {
 
     expect(getSessionsMock).toHaveBeenCalledTimes(1)
     expect(latestContext?.sessions.map(session => session.id)).toEqual(['session-1'])
+  })
+
+  it('lists only the home directory when Global has no project selected', async () => {
+    directoryState.currentDirectory = undefined
+    directoryState.pathInfo = { directory: '/home/user/' }
+    getSessionsMock.mockResolvedValue([{ id: 'home-session', location: { directory: '/home/user' } }])
+
+    render(
+      <SessionProvider>
+        <SessionContextProbe />
+      </SessionProvider>,
+    )
+
+    await act(async () => {
+      vi.runAllTimers()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(getSessionsMock).toHaveBeenCalledWith(expect.objectContaining({ directory: '/home/user', parentID: null }))
+    expect(getSessionsMock.mock.calls.some(call => call[0]?.directory == null)).toBe(false)
+  })
+
+  it('does not fetch every session before the home directory is known', async () => {
+    directoryState.currentDirectory = undefined
+    directoryState.pathInfo = null
+
+    render(
+      <SessionProvider>
+        <SessionContextProbe />
+      </SessionProvider>,
+    )
+
+    await act(async () => {
+      vi.runAllTimers()
+      await Promise.resolve()
+    })
+
+    expect(getSessionsMock).not.toHaveBeenCalled()
+  })
+
+  it('ignores sessions created outside the global home directory', async () => {
+    directoryState.currentDirectory = undefined
+    directoryState.pathInfo = { directory: '/home/user' }
+    getSessionsMock.mockResolvedValue([])
+    getSessionMock.mockImplementation(async (id: string) => ({
+      id,
+      location: { directory: id === 'home-session' ? '/home/user' : '/workspace/demo' },
+    }))
+
+    render(
+      <SessionProvider>
+        <SessionContextProbe />
+      </SessionProvider>,
+    )
+
+    await act(async () => {
+      vi.runAllTimers()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      latestEventCallbacks.onSessionCreated?.({
+        sessionID: 'other-session',
+        location: { directory: '/workspace/demo' },
+      } as never)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(latestContext?.sessions.map(session => session.id)).toEqual([])
+
+    await act(async () => {
+      latestEventCallbacks.onSessionCreated?.({
+        sessionID: 'home-session',
+        location: { directory: '/home/user' },
+      } as never)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(latestContext?.sessions.map(session => session.id)).toEqual(['home-session'])
   })
 })
