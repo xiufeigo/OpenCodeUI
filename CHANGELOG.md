@@ -1,5 +1,29 @@
 # Changelog
 
+## [v1.0.6] - 2026-10-16
+
+- ci: allow manual Release via workflow_dispatch (2b467ce8)
+- chore: bump version to 0.7.15 (761faef2)
+- fix(composer): compress only the model name in the seat trigger (7ad42a0c)
+- fix(composer): let the seat trigger use the room it has (10035271)
+- fix(composer): keep the aggregated seat trigger from colliding with the actions (4d74f6a0)
+- docs(terminal): state both gates of the connect-ticket endpoint in the hint (94b7fc1c)
+- fix(service): rewrite the registered bind address (0.0.0.0) to loopback (a50d925b)
+- fix(terminal): explain why the PTY connection failed instead of only retrying (b6287c95)
+- chore: bump version to 0.7.14 (03e75481)
+- fix(chat): decide the permission notification after the session chain is known (09c8d8a9)
+- fix(chat): never notify about a permission that is already on screen (1d74fed8)
+- fix(chat): mount live child-session permissions instead of only toasting (cac92e36)
+- fix(chat): make subagent card binding deterministic and bounded (ec96b783)
+- fix(store): make childSessionStore.subscribe safe to pass unbound (3cbadce3)
+- feat(servers): re-pair from the edit form and grant Android camera access (ab061980)
+- fix(chat): keep subagent permissions visible and mounted while tools run (c21fa795)
+- feat(desktop): adopt the shared background service and manage it from settings (3f9dc4a9)
+- feat(servers): scan pairing QR codes when adding a server (98cb17ff)
+- fix(servers): redeem pair links before diagnosing mixed content (99837f92)
+- feat(servers): add servers via opencode pair links and pair from the UI (9363caca)
+- fix(message): restore the inline subagent transcript in task tool cards (f3f32510)
+
 ## [v1.0.5] - 2026-10-15
 
 - chore: bump version to 0.7.13 (996b0d44)
