@@ -13,6 +13,7 @@ const Terminal = lazy(() => import('./Terminal').then(module => ({ default: modu
 const SessionChangesPanel = lazy(() =>
   import('./SessionChangesPanel').then(module => ({ default: module.SessionChangesPanel })),
 )
+const ContextPanel = lazy(() => import('./ContextPanel').then(module => ({ default: module.ContextPanel })))
 const FileExplorer = lazy(() => import('./FileExplorer').then(module => ({ default: module.FileExplorer })))
 const McpPanel = lazy(() => import('./McpPanel').then(module => ({ default: module.McpPanel })))
 const SkillPanel = lazy(() => import('./SkillPanel').then(module => ({ default: module.SkillPanel })))
@@ -106,6 +107,12 @@ export const BottomPanel = memo(function BottomPanel({ directory, serverId, term
             <div className="flex items-center justify-center h-full text-text-400 text-[length:var(--fs-sm)]">
               {t('rightPanel.noActiveSession')}
             </div>
+          ) : null}
+
+          {activeTab.type === 'context' ? (
+            <Suspense fallback={<PanelFallback />}>
+              <ContextPanel sessionId={sessionId} serverId={serverId} />
+            </Suspense>
           ) : null}
 
           {activeTab.type === 'terminal' ? (
