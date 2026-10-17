@@ -4,9 +4,14 @@
         <!-- 状态栏和导航栏透明，实现沉浸式 -->
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarDividerColor" tools:targetApi="28">@android:color/transparent</item>
         <!-- 暗色模式：浅色状态栏图标 -->
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:windowLightNavigationBar" tools:targetApi="27">false</item>
+        <!-- 关掉对比度 scrim。键盘期间的手势条颜色由 MainActivity 钉成主题色。 -->
+        <item name="android:enforceStatusBarContrast" tools:targetApi="29">false</item>
+        <item name="android:enforceNavigationBarContrast" tools:targetApi="29">false</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
         <!-- 确保内容延伸到状态栏下方 -->
         <item name="android:windowTranslucentStatus">false</item>
         <item name="android:windowTranslucentNavigation">false</item>

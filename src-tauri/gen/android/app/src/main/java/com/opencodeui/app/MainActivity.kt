@@ -2,15 +2,18 @@ package com.opencodeui.app
 
 import android.content.Context
 import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.Build
 import android.view.View
+import android.view.WindowManager
 import android.webkit.WebView
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -22,9 +25,18 @@ class MainActivity : TauriActivity() {
   @Volatile private var safeAreaInsetsJson = """{"top":0,"bottom":0,"left":0,"right":0}"""
   private var themeSyncRunnable: Runnable? = null
   private var cachedWebView: WebView? = null
+  private var systemBarColor: Int? = null
+  private var lightSystemBars = true
+  private var applyingSystemBars = false
 
   override fun onCreate(savedInstanceState: Bundle?) {
-    enableEdgeToEdge()
+    // 不用 SystemBarStyle.auto：它会把 isNavigationBarContrastEnforced 设回 true，
+    // 三键导航会被铺上约 90% 不透明的白 scrim（DefaultLightScrim）。
+    val transparentBars = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
+    enableEdgeToEdge(
+      statusBarStyle = transparentBars,
+      navigationBarStyle = transparentBars,
+    )
     super.onCreate(savedInstanceState)
 
     // 初始状态栏样式（后续由 WebView 主题同步驱动）
@@ -34,7 +46,7 @@ class MainActivity : TauriActivity() {
     window.statusBarColor = Color.TRANSPARENT
     window.navigationBarColor = Color.TRANSPARENT
 
-    // 禁用系统对比度强制（避免状态栏自动加黑/渐变）
+    // 禁用系统对比度强制（避免状态栏自动加黑/渐变，以及 IME 期间的白 scrim）
     if (Build.VERSION.SDK_INT >= 29) {
       window.isStatusBarContrastEnforced = false
       window.isNavigationBarContrastEnforced = false
@@ -66,6 +78,16 @@ class MainActivity : TauriActivity() {
       safeAreaInsetsJson = """{"top":$topInsetCssPx,"bottom":0,"left":0,"right":0}"""
       cachedWebView?.evaluateJavascript("window.dispatchEvent(new Event('opencode:insets-changed'));", null)
 
+      // IME 焦点会在这次 inset 分发里把导航栏刷回透明/纯白，分发结束后立刻钉回主题色。
+      if (!applyingSystemBars) {
+        applyingSystemBars = true
+        try {
+          reapplySystemBars()
+        } finally {
+          applyingSystemBars = false
+        }
+      }
+
       WindowInsetsCompat.CONSUMED
     }
 
@@ -77,6 +99,14 @@ class MainActivity : TauriActivity() {
     cachedWebView = webView
     // 必须在第一次文档加载前注册；JavascriptInterface 会由 WebView 自动带入后续文档。
     webView.addJavascriptInterface(SystemBarBridge(), "__opencode_android")
+    // WebView 默认底色是纯白，键盘把文档顶上去时会从手势条区域露出来。
+    systemBarColor?.let { webView.setBackgroundColor(it) }
+  }
+
+  override fun onWindowFocusChanged(hasFocus: Boolean) {
+    super.onWindowFocusChanged(hasFocus)
+    // 部分平板 IME 抢焦点时会把导航栏颜色打回主题默认（透明 → 框架白）。
+    if (hasFocus) reapplySystemBars()
   }
 
   override fun onResume() {
@@ -138,13 +168,53 @@ class MainActivity : TauriActivity() {
     val mode = json.optString("mode", "system")
     val bg = json.optString("bg", "")
     val color = parseCssColor(bg) ?: return
-    val isLightBg = isColorLight(color)
-    val controller = WindowInsetsControllerCompat(window, window.decorView)
-    controller.isAppearanceLightStatusBars = isLightBg && mode != "dark"
-    controller.isAppearanceLightNavigationBars = isLightBg && mode != "dark"
+    applySystemBars(color, isColorLight(color) && mode != "dark")
+  }
+
+  /**
+   * 把系统栏钉成当前主题色。
+   *
+   * 状态栏保持透明：顶部不设 padding，由 Web surface 自己画到状态栏后面。
+   * 导航栏必须是不透明主题色。完全透明时，输入框获焦、IME 弹出后框架会用默认
+   * 浅色（纯白，不跟应用暗色走）填上手势条/导航栏——平板上这条还留在屏幕底边。
+   * Android 15 的三键导航还会去读 window background；它必须是 ColorDrawable，
+   * 只给 decorView 上色不会被算进去。
+   */
+  private fun applySystemBars(color: Int, lightBars: Boolean) {
+    val opaque = Color.rgb(Color.red(color), Color.green(color), Color.blue(color))
+    systemBarColor = opaque
+    lightSystemBars = lightBars
+
+    if (Build.VERSION.SDK_INT >= 29) {
+      window.isStatusBarContrastEnforced = false
+      window.isNavigationBarContrastEnforced = false
+    }
+
+    window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
+    window.clearFlags(
+      WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS or
+        WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION
+    )
+
     window.statusBarColor = Color.TRANSPARENT
-    window.navigationBarColor = Color.TRANSPARENT
-    window.decorView.setBackgroundColor(color)
+    window.navigationBarColor = opaque
+    if (Build.VERSION.SDK_INT >= 28) {
+      window.navigationBarDividerColor = Color.TRANSPARENT
+    }
+
+    window.setBackgroundDrawable(ColorDrawable(opaque))
+    window.decorView.setBackgroundColor(opaque)
+    findViewById<View>(android.R.id.content)?.setBackgroundColor(opaque)
+    cachedWebView?.setBackgroundColor(opaque)
+
+    val controller = WindowInsetsControllerCompat(window, window.decorView)
+    controller.isAppearanceLightStatusBars = lightBars
+    controller.isAppearanceLightNavigationBars = lightBars
+  }
+
+  private fun reapplySystemBars() {
+    val color = systemBarColor ?: return
+    applySystemBars(color, lightSystemBars)
   }
 
   private inner class SystemBarBridge {
@@ -154,13 +224,9 @@ class MainActivity : TauriActivity() {
     @android.webkit.JavascriptInterface
     fun setSystemBars(mode: String, bg: String) {
       val color = parseCssColor(bg) ?: return
-      val isLightBg = isColorLight(color)
-      val controller = WindowInsetsControllerCompat(window, window.decorView)
-      controller.isAppearanceLightStatusBars = isLightBg && mode != "dark"
-      controller.isAppearanceLightNavigationBars = isLightBg && mode != "dark"
-      window.statusBarColor = Color.TRANSPARENT
-      window.navigationBarColor = Color.TRANSPARENT
-      window.decorView.setBackgroundColor(color)
+      val lightBars = isColorLight(color) && mode != "dark"
+      // JavascriptInterface 不在主线程；Window 颜色必须在主线程写。
+      runOnUiThread { applySystemBars(color, lightBars) }
     }
 
     @android.webkit.JavascriptInterface
