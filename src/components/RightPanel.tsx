@@ -11,6 +11,7 @@ import { useChatViewport } from '../features/chat/chatViewport'
 const SessionChangesPanel = lazy(() =>
   import('./SessionChangesPanel').then(module => ({ default: module.SessionChangesPanel })),
 )
+const ContextPanel = lazy(() => import('./ContextPanel').then(module => ({ default: module.ContextPanel })))
 const FileExplorer = lazy(() => import('./FileExplorer').then(module => ({ default: module.FileExplorer })))
 const Terminal = lazy(() => import('./Terminal').then(module => ({ default: module.Terminal })))
 const McpPanel = lazy(() => import('./McpPanel').then(module => ({ default: module.McpPanel })))
@@ -112,6 +113,12 @@ export const RightPanel = memo(function RightPanel({
             <div className="flex items-center justify-center h-full text-text-400 text-[length:var(--fs-sm)]">
               {t('rightPanel.noActiveSession')}
             </div>
+          ) : null}
+
+          {activeTab.type === 'context' ? (
+            <Suspense fallback={<PanelFallback />}>
+              <ContextPanel sessionId={sessionId} serverId={serverId} />
+            </Suspense>
           ) : null}
 
           {activeTab.type === 'terminal' ? (

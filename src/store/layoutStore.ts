@@ -6,7 +6,7 @@
 export type PanelPosition = 'bottom' | 'right'
 
 // 面板内容类型
-export type PanelTabType = 'terminal' | 'files' | 'changes' | 'mcp' | 'skill' | 'worktree' | 'plugins'
+export type PanelTabType = 'terminal' | 'files' | 'changes' | 'context' | 'mcp' | 'skill' | 'worktree' | 'plugins'
 type PersistedPanelTabType = Exclude<PanelTabType, 'terminal'>
 
 // 统一的面板标签
@@ -164,7 +164,8 @@ interface PersistedPanelTab {
 }
 
 export interface PersistedPanelLayout {
-  version: 1
+  /** 2：右侧默认带上上下文页。1 在读取时补这一页，之后按用户的关闭结果保存。 */
+  version: 1 | 2
   panelTabs: PersistedPanelTab[]
   activeTabId: LayoutState['activeTabId']
   rightPanelOpen: boolean
@@ -198,7 +199,34 @@ export interface PersistedTerminalLayoutMap {
 }
 
 const PANEL_POSITIONS: PanelPosition[] = ['bottom', 'right']
-const PERSISTED_PANEL_TAB_TYPES: PersistedPanelTabType[] = ['files', 'changes', 'mcp', 'skill', 'worktree', 'plugins']
+const PERSISTED_PANEL_TAB_TYPES: PersistedPanelTabType[] = [
+  'files',
+  'changes',
+  'context',
+  'mcp',
+  'skill',
+  'worktree',
+  'plugins',
+]
+
+/** 旧布局只有文件和变更。上下文页插在变更后面，没有变更时紧跟文件。 */
+function withDefaultContextTab(tabs: PanelTab[]): PanelTab[] {
+  if (tabs.some(tab => tab.type === 'context')) return tabs
+  const next = tabs.slice()
+  const changesIndex = next.findIndex(tab => tab.position === 'right' && tab.type === 'changes')
+  const filesIndex = next.findIndex(tab => tab.position === 'right' && tab.type === 'files')
+  const anchor = changesIndex >= 0 ? changesIndex : filesIndex
+  const id = next.some(tab => tab.id === 'context') ? 'context-usage' : 'context'
+  const contextTab: PanelTab = { id, type: 'context', position: 'right' }
+  if (anchor >= 0) {
+    next.splice(anchor + 1, 0, contextTab)
+    return next
+  }
+  const firstRight = next.findIndex(tab => tab.position === 'right')
+  if (firstRight >= 0) next.splice(firstRight, 0, contextTab)
+  else next.push(contextTab)
+  return next
+}
 
 function isPanelPosition(value: unknown): value is PanelPosition {
   return typeof value === 'string' && PANEL_POSITIONS.includes(value as PanelPosition)
@@ -233,7 +261,7 @@ function sanitizePersistedPanelLayout(raw: unknown): PersistedPanelLayout | null
 
   const data = raw as Partial<PersistedPanelLayout>
   if (
-    data.version !== 1 ||
+    (data.version !== 1 && data.version !== 2) ||
     !Array.isArray(data.panelTabs) ||
     !data.activeTabId ||
     typeof data.activeTabId !== 'object'
@@ -254,7 +282,7 @@ function sanitizePersistedPanelLayout(raw: unknown): PersistedPanelLayout | null
   }
 
   return {
-    version: 1,
+    version: data.version,
     panelTabs,
     activeTabId: {
       bottom: typeof data.activeTabId.bottom === 'string' ? data.activeTabId.bottom : null,
@@ -333,9 +361,10 @@ function sanitizePersistedTerminalLayoutMap(raw: unknown): PersistedTerminalLayo
 export class LayoutStore {
   private state: LayoutState = {
     panelTabs: [
-      // 默认 tabs: files 和 changes 在右侧面板
+      // 默认 tabs: 文件、变更、上下文都在右侧面板
       { id: 'files', type: 'files', position: 'right', previewFile: null, previewFiles: [] },
       { id: 'changes', type: 'changes', position: 'right' },
+      { id: 'context', type: 'context', position: 'right' },
     ],
     activeTabId: {
       bottom: null,
@@ -359,7 +388,7 @@ export class LayoutStore {
   private persistPanelLayout() {
     try {
       const persisted: PersistedPanelLayout = {
-        version: 1,
+        version: 2,
         panelTabs: this.state.panelTabs
           .filter((tab): tab is PanelTab & { type: PersistedPanelTabType } => tab.type !== 'terminal')
           .map(tab => ({
@@ -482,7 +511,8 @@ export class LayoutStore {
       if (savedPanelLayout) {
         const restored = sanitizePersistedPanelLayout(JSON.parse(savedPanelLayout))
         if (restored) {
-          this.state.panelTabs = restored.panelTabs.map(normalizePersistedPanelTab)
+          const tabs = restored.panelTabs.map(normalizePersistedPanelTab)
+          this.state.panelTabs = restored.version < 2 ? withDefaultContextTab(tabs) : tabs
           this.state.activeTabId = { ...restored.activeTabId }
           this.state.rightPanelOpen = restored.rightPanelOpen
           this.state.bottomPanelOpen = restored.bottomPanelOpen
@@ -678,6 +708,11 @@ export class LayoutStore {
     return this.addTab({ type: 'changes', position })
   }
 
+  // 添加上下文标签（同一位置只保留一个）
+  addContextTab(position: PanelPosition) {
+    return this.addSingletonTab('context', position, 'context')
+  }
+
   // 添加 MCP 标签
   addMcpTab(position: PanelPosition) {
     return this.addSingletonTab('mcp', position, 'mcp')
@@ -858,9 +893,7 @@ export class LayoutStore {
     if (!targetTab) return
 
     // 目录规范化（正斜杠）：身份比较是字符串级，避免同目录不同写法产生重复条目
-    const normalizedFile = file.directory
-      ? { ...file, directory: normalizeToForwardSlash(file.directory) }
-      : file
+    const normalizedFile = file.directory ? { ...file, directory: normalizeToForwardSlash(file.directory) } : file
 
     // 按身份（path+工作区）去重；已存在则移到末尾——列表顺序即「最近使用序」，
     // FileExplorer 用它推导每个工作区自己的最近预览
@@ -1277,7 +1310,7 @@ export interface LayoutBackup {
 
 function buildPersistedPanelLayout(state: LayoutState): PersistedPanelLayout {
   return {
-    version: 1,
+    version: 2,
     panelTabs: state.panelTabs
       .filter((tab): tab is PanelTab & { type: PersistedPanelTabType } => tab.type !== 'terminal')
       .map(tab => ({

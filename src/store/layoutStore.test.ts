@@ -23,10 +23,13 @@ describe('LayoutStore panel and terminal layout', () => {
     const persisted = JSON.parse(localStorage.getItem(STORAGE_KEY_PANEL_LAYOUT) ?? 'null')
 
     expect(persisted).toMatchObject({
-      version: 1,
+      version: 2,
       rightPanelOpen: true,
       bottomPanelOpen: true,
     })
+    expect(persisted.panelTabs).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'context', type: 'context', position: 'right' })]),
+    )
     expect(persisted.panelTabs).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ id: 'files', type: 'files', position: 'right' }),
@@ -41,6 +44,39 @@ describe('LayoutStore panel and terminal layout', () => {
     expect(restored.bottomPanelOpen).toBe(true)
     expect(restored.panelTabs.some(tab => tab.id === 'mcp' && tab.position === 'bottom')).toBe(true)
     expect(restored.panelTabs.some(tab => tab.id === 'term-1')).toBe(false)
+  })
+
+  it('opens with files, changes, and context on the right', () => {
+    const store = new LayoutStore()
+    expect(store.getTabsForPosition('right').map(tab => tab.type)).toEqual(['files', 'changes', 'context'])
+  })
+
+  it('adds the context tab once when restoring a layout saved before it existed', () => {
+    localStorage.setItem(
+      STORAGE_KEY_PANEL_LAYOUT,
+      JSON.stringify({
+        version: 1,
+        panelTabs: [
+          { id: 'files', type: 'files', position: 'right' },
+          { id: 'changes', type: 'changes', position: 'bottom' },
+        ],
+        activeTabId: { bottom: 'changes', right: 'files' },
+        rightPanelOpen: true,
+        bottomPanelOpen: false,
+      }),
+    )
+
+    const store = new LayoutStore()
+    expect(store.getTabsForPosition('right').map(tab => tab.type)).toEqual(['files', 'context'])
+    expect(store.getTabsForPosition('bottom').map(tab => tab.type)).toEqual(['changes'])
+
+    store.removeTab('context')
+    const persisted = JSON.parse(localStorage.getItem(STORAGE_KEY_PANEL_LAYOUT) ?? 'null')
+    expect(persisted.version).toBe(2)
+    expect(persisted.panelTabs.some((tab: { type: string }) => tab.type === 'context')).toBe(false)
+
+    const restored = new LayoutStore()
+    expect(restored.getState().panelTabs.some(tab => tab.type === 'context')).toBe(false)
   })
 
   it('keeps bottom and right panels open when syncing a directory with no terminal sessions', () => {

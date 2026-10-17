@@ -52,6 +52,7 @@
   "panelContainer": {
     "files": "Files",
     "changes": "Changes",
+    "context": "Context",
     "mcp": "MCP",
     "skills": "Skills",
     "worktrees": "Worktrees",
@@ -62,6 +63,27 @@
     "moveToRight": "Move to Right Panel",
     "moveToBottom": "Move to Bottom Panel",
     "mcpServers": "MCP Servers"
+  },
+  "contextPanel": {
+    "session": "Session",
+    "messages": "Messages",
+    "provider": "Provider",
+    "model": "Model",
+    "limit": "Context limit",
+    "totalTokens": "Total tokens",
+    "usage": "Usage",
+    "inputTokens": "Input tokens",
+    "outputTokens": "Output tokens",
+    "reasoningTokens": "Reasoning tokens",
+    "cacheTokens": "Cache tokens (read/write)",
+    "userMessages": "User messages",
+    "assistantMessages": "Assistant messages",
+    "totalCost": "Total cost",
+    "sessionCreated": "Created",
+    "lastActivity": "Last activity",
+    "systemPrompt": "System prompt",
+    "rawMessages": "Raw messages",
+    "exportSession": "Export session"
   },
   "sessionChanges": {
     "loadingChanges": "Loading changes...",

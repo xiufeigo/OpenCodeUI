@@ -52,6 +52,7 @@
   "panelContainer": {
     "files": "文件",
     "changes": "变更",
+    "context": "上下文",
     "mcp": "MCP",
     "skills": "Skills",
     "worktrees": "Worktrees",
@@ -62,6 +63,27 @@
     "moveToRight": "移动到右侧面板",
     "moveToBottom": "移动到底部面板",
     "mcpServers": "MCP 服务器"
+  },
+  "contextPanel": {
+    "session": "会话",
+    "messages": "消息数",
+    "provider": "提供商",
+    "model": "模型",
+    "limit": "上下文限制",
+    "totalTokens": "词元总数",
+    "usage": "使用率",
+    "inputTokens": "输入词元",
+    "outputTokens": "输出词元",
+    "reasoningTokens": "推理词元",
+    "cacheTokens": "缓存词元（读/写）",
+    "userMessages": "用户消息",
+    "assistantMessages": "助手消息",
+    "totalCost": "总成本",
+    "sessionCreated": "创建时间",
+    "lastActivity": "最后活动",
+    "systemPrompt": "系统提示词",
+    "rawMessages": "原始消息",
+    "exportSession": "导出会话"
   },
   "sessionChanges": {
     "loadingChanges": "加载变更中...",
