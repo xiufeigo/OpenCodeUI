@@ -1,5 +1,10 @@
 # Changelog
 
+## [v1.0.7] - 2026-10-17
+
+- feat(sidebar): add Context usage tab as third right-sidebar page (8420e7af)
+- fix(android): keyboard focus keeps themed nav bar immersion (2c0e8323)
+
 ## [v1.0.6] - 2026-10-16
 
 - ci: allow manual Release via workflow_dispatch (2b467ce8)
