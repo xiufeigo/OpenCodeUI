@@ -25,6 +25,7 @@ import { pinnedSessionsStore, type PinnedSessionEntry } from '../../../store/pin
 import { SessionListItem } from '../../sessions'
 import { getSelectionRoundClass } from '../../sessions/selectionRound'
 import { SessionChildrenSlot } from './SessionChildrenSlot'
+import { SessionShellsSlot } from './SessionShellsSlot'
 
 const DIRECTORY_PAGE_SIZE = 5
 
@@ -719,6 +720,7 @@ function PinnedFolderSection({
                     onToggleSessionSelection={onToggleSessionSelection}
                   />
                 )}
+              <SessionShellsSlot parentSession={session} />
             </div>
             )
           })}
@@ -1157,6 +1159,7 @@ function FolderRecentSection({
                             onToggleSessionSelection={onToggleSessionSelection}
                           />
                         )}
+                      <SessionShellsSlot parentSession={session} serverId={serverId} />
                     </div>
                     )
                   })}

@@ -141,6 +141,8 @@ interface MessageBodyProps {
   isTurnLatestAssistant?: boolean
   allowStreamingLayoutAnimation: boolean
   processContentScope?: 'all' | 'process' | 'final' | 'inline'
+  /** step 完成信息是否由本实例渲染（壳内那截且壳外还有一份时传 false） */
+  stepFinishVisible?: boolean
   onEntryGrowComplete?: (messageId: string) => void
 }
 
@@ -155,10 +157,13 @@ const MessageBody = memo(function MessageBody({
   isTurnLatestAssistant,
   allowStreamingLayoutAnimation,
   processContentScope = 'all',
+  stepFinishVisible,
   onEntryGrowComplete,
 }: MessageBodyProps) {
   const messageId = message.id
   const isUser = isUserMessage(message)
+  // undo 边界：用户消息，或 v2 的独立压缩消息（revert.stage 接受任意 messageID）
+  const undoable = isUser || message.type === 'compaction'
   return (
     <div
       ref={node => registerMessage?.(messageId, node as HTMLDivElement | null)}
@@ -173,10 +178,11 @@ const MessageBody = memo(function MessageBody({
             turnDuration={turnDuration}
             isTurnLatestAssistant={isTurnLatestAssistant}
             processContentScope={processContentScope}
-            onUndo={isUser ? onUndo : undefined}
+            stepFinishVisible={stepFinishVisible}
+            onUndo={undoable ? onUndo : undefined}
             onFork={onFork}
             forkMessageId={forkMessageId}
-            canUndo={isUser ? canUndo : undefined}
+            canUndo={undoable ? canUndo : undefined}
             onEntryGrowComplete={isUser ? onEntryGrowComplete : undefined}
           />
         </div>
@@ -283,6 +289,8 @@ const VirtualRow = memo(
                       isTurnLatestAssistant={turnLatestAssistantIds.has(child.message.id)}
                       allowStreamingLayoutAnimation={allowStreamingLayoutAnimation}
                       processContentScope={child.processContentScope}
+                      // 这条消息的正文还在壳外单独渲染一份 → step 完成信息由壳外那份负责
+                      stepFinishVisible={item.finalMessage?.id !== child.message.id}
                     />
                   ))}
                 </ProcessCollapseBlock>
@@ -372,11 +380,13 @@ export const ChatArea = memo(
       ref,
     ) => {
       const { t } = useTranslation('chat')
-      const { isWideMode, processCollapseEnabled } = useTheme()
+      const { processCollapseEnabled } = useTheme()
       const { presentation } = useChatViewport()
       const atBottomThreshold = presentation.isCompact ? 150 : AT_BOTTOM_THRESHOLD_PX
       const paddingClass = presentation.isCompact ? 'px-3' : 'px-5'
-      const maxWidthClass = isWideMode ? 'max-w-[95%] xl:max-w-6xl' : 'max-w-2xl'
+      // 消息列宽统一引用 pane 根上的 CSS 变量（ChatPane 按 窄672/宽95%·6xl/拖拽自定义 解析），
+      // 变量缺席时回落 42rem(=原 max-w-2xl)。字符串恒定，VirtualRow memo 比较不受影响
+      const maxWidthClass = 'max-w-[min(100%,var(--oc-chat-column-width,42rem))]'
 
       // ── 派生数据 ──
       const entries = useMemo(
@@ -1098,6 +1108,7 @@ export const ChatArea = memo(
                   items={queuedFollowUps}
                   editingId={queueEditingId}
                   mutation={queueMutation}
+                  stateKey={sessionId ? `queue-bubbles:${sessionId}` : undefined}
                   onSteer={onQueueSteer}
                   onEdit={onQueueEdit}
                   onRemove={onQueueRemove}

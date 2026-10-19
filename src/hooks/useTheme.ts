@@ -152,6 +152,10 @@ export function useTheme() {
     themeStore.setRenderUserMarkdown(enabled)
   }, [])
 
+  const setRenderHtmlContent = useCallback((enabled: boolean) => {
+    themeStore.setRenderHtmlContent(enabled)
+  }, [])
+
   // ---- Step Finish Display ----
 
   const setStepFinishDisplay = useCallback((display: Partial<StepFinishDisplay>) => {
@@ -278,6 +282,8 @@ export function useTheme() {
     setCollapseUserMessages,
     renderUserMarkdown: state.renderUserMarkdown,
     setRenderUserMarkdown,
+    renderHtmlContent: state.renderHtmlContent,
+    setRenderHtmlContent,
 
     // step-finish 信息栏显示
     stepFinishDisplay: state.stepFinishDisplay,
@@ -292,6 +298,18 @@ export function useTheme() {
     // 宽模式
     isWideMode: state.wideMode,
     toggleWideMode: themeStore.toggleWideMode.bind(themeStore),
+
+    // 对话列自定义宽度（px，左缘拖拽设置；null = 跟随宽屏模式默认）
+    chatContentWidth: state.chatContentWidth,
+    setChatContentWidth: useCallback((width: number | null) => {
+      themeStore.setChatContentWidth(width)
+    }, []),
+
+    // 输入框自定义宽度（px，左缘拖拽设置；null = 默认 3xl=768）
+    chatInputWidth: state.chatInputWidth,
+    setChatInputWidth: useCallback((width: number | null) => {
+      themeStore.setChatInputWidth(width)
+    }, []),
 
     // Diff 行标记风格
     diffStyle: state.diffStyle,
@@ -329,6 +347,18 @@ export function useTheme() {
     compactInlinePermission: state.compactInlinePermission,
     setCompactInlinePermission: useCallback((enabled: boolean) => {
       themeStore.setCompactInlinePermission(enabled)
+    }, []),
+
+    // 压缩结果流式输出结束后自动收起
+    compactionAutoCollapse: state.compactionAutoCollapse,
+    setCompactionAutoCollapse: useCallback((enabled: boolean) => {
+      themeStore.setCompactionAutoCollapse(enabled)
+    }, []),
+
+    // 队列消息默认折叠成一行摘要
+    queueAutoCollapse: state.queueAutoCollapse,
+    setQueueAutoCollapse: useCallback((enabled: boolean) => {
+      themeStore.setQueueAutoCollapse(enabled)
     }, []),
 
     // 毛玻璃效果

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MarkdownRenderer } from './MarkdownRenderer'
+import { themeStore } from '../store/themeStore'
 import { clearMermaidRenderCache } from './mermaidRenderCache'
 
 const mermaidMocks = vi.hoisted(() => ({
@@ -71,6 +72,8 @@ vi.mock('./ui', () => ({
 
 describe('MarkdownRenderer', () => {
   beforeEach(() => {
+    // raw HTML 的渲染/净化用例要显式打开这个开关：它的默认值已改为关闭
+    themeStore.setRenderHtmlContent(true)
     themeMock.resolvedTheme = 'light'
     clearMermaidRenderCache()
     useInputCapabilitiesMock.mockReset()
@@ -94,14 +97,22 @@ describe('MarkdownRenderer', () => {
     expect(codeEl.tagName).toBe('CODE')
   })
 
-  it('renders inline code with accent text styling (no border/bg)', () => {
+  it('renders inline code as a muted monospace chip (no accent color)', () => {
     render(<MarkdownRenderer content={'Use `code` here'} />)
 
     const codeEl = screen.getByText('code')
-    expect(codeEl.className).not.toMatch(/border/)
-    expect(codeEl.className).not.toMatch(/bg-accent-main/)
+    // chip 样式：等宽 + 淡底 + 细描边 + flex 垂直居中；颜色继承正文
     expect(codeEl.className).toMatch(/font-mono/)
-    expect(codeEl.className).toMatch(/text-accent-main-100/)
+    expect(codeEl.className).not.toMatch(/text-text-\d/)
+    expect(codeEl.className).toMatch(/bg-bg-200/)
+    expect(codeEl.className).toMatch(/border-\[0\.5px\]/)
+    expect(codeEl.className).toMatch(/rounded-md/)
+    expect(codeEl.className).toMatch(/px-\[5px\]/)
+    // 纵向不能靠继承段落行高（leading-7=28px）：chip 会高出一截，和正文对不上
+    expect(codeEl.className).toMatch(/inline-flex/)
+    expect(codeEl.className).toMatch(/items-center/)
+    expect(codeEl.className).toMatch(/leading-tight/)
+    expect(codeEl.className).not.toMatch(/text-accent-main/)
   })
 
   it('renders inline code inside list items as code elements', () => {
@@ -111,7 +122,8 @@ describe('MarkdownRenderer', () => {
     expect(codeEl).toBeInTheDocument()
     expect(codeEl).toHaveTextContent('单行代码')
     expect(codeEl).toHaveClass('font-mono')
-    expect(codeEl).toHaveClass('text-accent-main-100')
+    expect(codeEl).toHaveClass('bg-bg-200')
+    expect(codeEl).toHaveClass('inline-flex')
   })
 
   it('keeps inline emphasis styles on the markdown path', () => {
@@ -233,6 +245,74 @@ $$
 
     const checkbox = container.querySelector('input[type="checkbox"]')
     expect(checkbox).toBeInTheDocument()
+  })
+
+  it('renders one checkbox per task list item', () => {
+    const { container } = render(<MarkdownRenderer content={'- [ ] todo\n- [x] done'} />)
+
+    // marked 把 `[x]` 切成独立的 checkbox token，渲染器不能再自己加一个
+    expect(container.querySelectorAll('input[type="checkbox"]')).toHaveLength(2)
+    expect(container.querySelector('li input[type="checkbox"][checked]')).toBeInTheDocument()
+  })
+
+  it('emphasizes CJK runs that close after punctuation right before a CJK character', () => {
+    const content = '**重点：**正文，**第二点。**继续，*斜体：*结尾，**（括号）**收尾'
+    const { container } = render(<MarkdownRenderer content={content} />)
+
+    expect(Array.from(container.querySelectorAll('strong')).map(node => node.textContent)).toEqual([
+      '重点：',
+      '第二点。',
+      '（括号）',
+    ])
+    expect(container.querySelector('em')).toHaveTextContent('斜体：')
+    expect(container.textContent).not.toContain('**')
+    expect(container.textContent).not.toContain('*斜体')
+  })
+
+  it('keeps already-valid emphasis and intraword underscores literal', () => {
+    const { container } = render(<MarkdownRenderer content={'**粗体**，继续 说明：**重点**内容 snake_case_word'} />)
+
+    expect(Array.from(container.querySelectorAll('strong')).map(node => node.textContent)).toEqual(['粗体', '重点'])
+    expect(container.textContent).toContain('snake_case_word')
+  })
+
+  it('keeps currency amounts literal instead of rendering them as math', () => {
+    const content = '价格是 $5 到 $10 之间，花费 $100 和 $200'
+    const { container } = render(<MarkdownRenderer content={content} />)
+
+    expect(container.querySelector('.katex')).not.toBeInTheDocument()
+    expect(container.querySelector('p')).toHaveTextContent(content)
+  })
+
+  it('still renders inline dollar math', () => {
+    const { container } = render(<MarkdownRenderer content={'公式 $a^2+b^2=c^2$ 成立'} />)
+
+    expect(container.querySelector('.katex')).toBeInTheDocument()
+    expect(container.querySelector('p')).toHaveTextContent('公式')
+    expect(container.querySelector('p')).toHaveTextContent('成立')
+  })
+
+  it('renders footnotes when the definition follows the paragraph without a blank line', () => {
+    const { container } = render(<MarkdownRenderer content={'正文[^note]\n[^note]: 没有空行分隔的脚注'} />)
+
+    // 不能退化成链接引用定义：`[^note]` 曾经被渲染成 href 是脚注内容的 <a>
+    expect(container.querySelector('a[href="没有空行分隔的脚注"]')).toBeNull()
+    expect(container.querySelector('#fnref-note')).toHaveTextContent('note')
+    expect(container.querySelector('#fn-note')).toHaveTextContent('没有空行分隔的脚注')
+    expect(container.textContent).toContain('正文')
+  })
+
+  it('keeps the prose that follows footnote definitions', () => {
+    const { container } = render(<MarkdownRenderer content={'[^a]: 甲\n\n后续段落'} />)
+
+    expect(container.querySelector('#fn-a')).toHaveTextContent('甲')
+    expect(container.textContent).toContain('后续段落')
+  })
+
+  it('does not double escape html entities in text', () => {
+    const { container } = render(<MarkdownRenderer content={'a &amp; b'} />)
+
+    expect(container.querySelector('p')?.textContent).toBe('a & b')
   })
 
   it('renders fenced code blocks via CodeBlock', () => {
@@ -470,7 +550,8 @@ $$
     expect(paragraph.className).toMatch(/text-text-400/)
 
     const codeEl = screen.getByText('code')
-    expect(codeEl.className).not.toMatch(/border/)
+    // chip 也有描边（0.5px 细边），但底色不能是强调色
+    expect(codeEl.className).toMatch(/border-\[0\.5px\]/)
     expect(codeEl.className).not.toMatch(/bg-accent/)
   })
 
@@ -1510,5 +1591,57 @@ $$`
 
     expect(screen.getByText('bad [blocked]')).toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'bad' })).not.toBeInTheDocument()
+  })
+})
+
+describe('MarkdownRenderer HTML 渲染开关', () => {
+  beforeEach(() => {
+    themeStore.setRenderHtmlContent(false)
+  })
+  afterEach(() => {
+    // 还原成默认值（已改为关闭）
+    themeStore.setRenderHtmlContent(false)
+  })
+
+  it('关闭后完整 HTML 文档按源码代码块展示，不起沙箱预览', () => {
+    render(
+      <MarkdownRenderer
+        content={'<!doctype html>\n<html><body><h1>Document</h1></body></html>'}
+      />,
+    )
+
+    expect(screen.queryByTitle('HTML preview')).not.toBeInTheDocument()
+    expect(screen.getByTestId('code-block')).toHaveTextContent('html:<!doctype html>')
+  })
+
+  it('关闭后块级 HTML 不再渲染成活内容，直接展示源码', () => {
+    render(<MarkdownRenderer content={'<div><strong>Rendered HTML</strong></div>'} />)
+
+    expect(screen.queryByText('Rendered HTML')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'View HTML source' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('code-block')).toHaveTextContent('html:<div><strong>Rendered HTML</strong></div>')
+  })
+
+  it('关闭后 html 代码块不再给预览，只按普通代码块展示', () => {
+    render(<MarkdownRenderer content={'```html\n<button>Run</button>\n```'} />)
+
+    expect(screen.queryByTitle('HTML preview')).not.toBeInTheDocument()
+    expect(screen.getByTestId('code-block')).toHaveTextContent('html:<button>Run</button>')
+  })
+
+  it('关闭后正文里混的内联 HTML 转义成文本源码', () => {
+    const { container } = render(
+      <MarkdownRenderer content={'Before <span style="color:red">inline HTML</span> after.'} />,
+    )
+
+    expect(container.querySelector('span[style]')).toBeNull()
+    expect(container.textContent).toContain('<span style="color:red">inline HTML</span>')
+  })
+
+  it('重新开启后恢复活渲染', () => {
+    themeStore.setRenderHtmlContent(true)
+    render(<MarkdownRenderer content={'<div><strong>Rendered HTML</strong></div>'} />)
+
+    expect(screen.getByText('Rendered HTML').tagName).toBe('STRONG')
   })
 })

@@ -1,12 +1,16 @@
-import { memo } from 'react'
+import { memo, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { RetryIcon, ChevronDownIcon, SpinnerIcon } from '../../../components/Icons'
+import { RetryIcon, ChevronDownIcon } from '../../../components/Icons'
+import { CopyButton } from '../../../components/ui'
 import { MarkdownRenderer } from '../../../components/MarkdownRenderer'
 import { useDisclosureScrollLock } from '../../../hooks'
-import type { SessionMessageAssistant, SessionMessageCompaction } from '@opencode/client/promise'
+import { useTheme } from '../../../hooks/useTheme'
+import type { SessionMessageAssistant, SessionMessageCompaction, SessionMessageInfo } from '@opencode/client/promise'
 import { useUiDisclosureState } from '../../../utils/uiDisclosureState'
 import { unwrapErrorMessage } from '../../../utils/errorMessage'
 import { chevronClass, MessageExpandPanel, useMessageExpandRender } from '../messageExpand'
+import { ForkActionButton, UndoActionButton, useMessageActionBarClass } from '../MessageActionBar'
+import { StepFinishPartView, type StepFinishInfo } from './StepFinishPartView'
 
 // ============================================
 // Retry Part View - 显示重试状态
@@ -89,6 +93,10 @@ export const RetryPartView = memo(function RetryPartView({ retry, stateKey }: Re
 interface CompactionPartViewProps {
   /** 原生压缩消息（`status` / `summary` / `tokens` / `error` …） */
   message: SessionMessageCompaction
+  onUndo?: (messageId: string) => void
+  onFork?: (message: SessionMessageInfo, forkMessageId?: string) => Promise<void> | void
+  forkMessageId?: string
+  canUndo?: boolean
 }
 
 /** 官方 TimelineSeparator 同款：细分隔线 + 中间标签 */
@@ -108,13 +116,21 @@ function compactNumber(value: number, locale: string): string {
 }
 
 /**
- * 压缩消息视图（官方 SessionCompactionMessage 同款）：
- *   --- compaction started ---
- *   [摘要文本（running 时随 delta 流式增长）]
- *   [running：进行中指示] / [--- 结果 · 用量 ---]
+ * 压缩消息视图：单标识 + 可收起。
+ * - 头部是唯一分隔线：running 时显示"开始压缩上下文"，结束后变成"结果 · 用量"，
+ *   不再额外渲染第二条结果分隔线，也不显示流式中的转圈指示。
+ * - 摘要内容可点击头部收起/展开；流式输出结束后默认自动收起（设置里可关）。
  */
-export const CompactionPartView = memo(function CompactionPartView({ message }: CompactionPartViewProps) {
+export const CompactionPartView = memo(function CompactionPartView({
+  message,
+  onUndo,
+  onFork,
+  forkMessageId,
+  canUndo,
+}: CompactionPartViewProps) {
   const { t, i18n } = useTranslation('message')
+  const { compactionAutoCollapse } = useTheme()
+  const actionBarClass = useMessageActionBarClass()
   const isRunning = message.status === 'running'
   const isFailed = message.status === 'failed'
   const summary = isFailed ? '' : message.summary
@@ -154,30 +170,99 @@ export const CompactionPartView = memo(function CompactionPartView({ message }: 
     return message.error?.message ?? ''
   })()
 
+  // 唯一标识：running 时是"开始压缩上下文"，结束后变成"结果 · 用量"
+  const headerLabel = isRunning ? t('system.compactionStarted') : outcomeLabel
+  const hasContent = !!(summary.trim() || failureDetail)
+
+  // step 完成信息（对齐助手消息）：model + tokens + cost。
+  // 注意 v2 压缩消息只记录 time.created（官方不持久化完成时间），
+  // 所以助手那种"耗时 / 完成时刻"没有数据，这里不显示。
+  const stepFinish = ((): StepFinishInfo | undefined => {
+    if (isRunning) return undefined
+    const tokens = message.tokens
+    const cost = message.cost ?? 0
+    if (!tokens && cost <= 0) return undefined
+    return {
+      tokens: {
+        input: tokens?.input ?? 0,
+        output: tokens?.output ?? 0,
+        reasoning: tokens?.reasoning ?? 0,
+        cache: { read: tokens?.cache?.read ?? 0, write: tokens?.cache?.write ?? 0 },
+      },
+      cost,
+    }
+  })()
+  const stepFinishModel = message.status === 'completed' ? message.model?.id : undefined
+
+  // 收起状态：running 时展开看流式；结束后默认收起（可在设置里关掉自动收起）
+  const stateKey = `message:compaction:${message.id}`
+  const [expanded, setExpanded] = useUiDisclosureState(stateKey, isRunning || !compactionAutoCollapse)
+  const shouldRenderBody = useMessageExpandRender(expanded)
+  const { rootRef, headerRef, withScrollLock } = useDisclosureScrollLock()
+
+  // 流式结束（running → done）自动收起；respectUser 尊重用户手动展开/收起
+  const wasRunningRef = useRef(isRunning)
+  useEffect(() => {
+    const wasRunning = wasRunningRef.current
+    wasRunningRef.current = isRunning
+    if (wasRunning && !isRunning && compactionAutoCollapse) {
+      setExpanded(false, { touched: false, respectUser: true })
+    }
+  }, [isRunning, compactionAutoCollapse, setExpanded])
+
+  // 无内容可收起（如 aborted 空消息）→ 纯分隔线
+  if (!hasContent) {
+    return (
+      <div data-component="session-compaction-message">
+        <Separator label={headerLabel} />
+      </div>
+    )
+  }
+
   return (
-    <div data-component="session-compaction-message">
-      <Separator label={t('system.compactionStarted')} />
+    <div data-component="session-compaction-message" ref={rootRef} className="group">
+      <button
+        type="button"
+        ref={headerRef}
+        onClick={() => withScrollLock(() => setExpanded(!expanded))}
+        aria-expanded={expanded}
+        className="flex w-full items-center gap-2 bg-transparent border-none p-0 text-left"
+      >
+        <span className="flex-1 h-px bg-border-200/70" />
+        <span className="shrink-0 px-3 py-1.5 text-[length:var(--fs-xs)] leading-none text-text-400">{headerLabel}</span>
+        <ChevronDownIcon className={chevronClass(expanded, 'sm')} />
+        <span className="flex-1 h-px bg-border-200/70" />
+      </button>
 
-      {summary.trim() && (
-        <div className="px-3 pb-1 text-text-300">
-          <MarkdownRenderer content={summary} isStreaming={isRunning} />
+      <MessageExpandPanel open={expanded} variant="fade" innerClassName="overflow-hidden">
+        {shouldRenderBody && (
+          <>
+            {summary.trim() && (
+              <div className="px-3 pb-1 text-text-300">
+                <MarkdownRenderer content={summary} isStreaming={isRunning} />
+              </div>
+            )}
+            {failureDetail && (
+              <div className="px-3 pb-1 text-[length:var(--fs-sm)] text-danger-100">{failureDetail}</div>
+            )}
+          </>
+        )}
+      </MessageExpandPanel>
+
+      {/* step 完成信息（model + tokens + cost），与助手消息一致：内容下方、始终显示 */}
+      {stepFinish && (
+        <div className="px-3">
+          <StepFinishPartView part={stepFinish} modelLabel={stepFinishModel} />
         </div>
       )}
 
-      {isRunning && (
-        <div role="status" className="flex items-center gap-2 px-3 py-1.5 text-[length:var(--fs-sm)] text-text-400">
-          <SpinnerIcon size={13} className="animate-spin" />
-          <span>{t('system.compactionRunning')}</span>
+      {/* 操作条：undo / 分叉 / 复制，在 step 信息下面（与助手消息同一逻辑，悬浮显现） */}
+      {!isRunning && (onUndo || onFork || summary.trim()) && (
+        <div className={`px-3 pb-1 ${actionBarClass}`}>
+          <UndoActionButton messageId={message.id} onUndo={onUndo} canUndo={canUndo} />
+          <ForkActionButton message={message} onFork={onFork} forkMessageId={forkMessageId} />
+          {summary.trim() && <CopyButton text={summary} position="static" />}
         </div>
-      )}
-
-      {!isRunning && (
-        <>
-          <Separator label={outcomeLabel} />
-          {failureDetail && (
-            <div className="px-3 pb-1 text-[length:var(--fs-sm)] text-danger-100">{failureDetail}</div>
-          )}
-        </>
       )}
     </div>
   )

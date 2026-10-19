@@ -1,6 +1,9 @@
-import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueueBubbles } from './QueueBubbles'
+import { setUiDisclosureState } from '../../utils/uiDisclosureState'
+import { themeStore } from '../../store/themeStore'
+import { FullscreenProvider } from '../../contexts/FullscreenContext'
 import type { QueuedUserPrompt } from '../../store/inboxStore'
 
 function makeItem(id: string, text: string): QueuedUserPrompt {
@@ -12,14 +15,22 @@ function makeItem(id: string, text: string): QueuedUserPrompt {
   } as unknown as QueuedUserPrompt
 }
 
+/** 内容用例共用的展开态 key（折叠状态是模块级缓存，显式归位避免用例间串扰） */
+const EXPANDED_KEY = 'queue-bubbles:test-expanded'
+
 describe('QueueBubbles（下轮队列虚线气泡）', () => {
+  beforeEach(() => {
+    themeStore.setQueueAutoCollapse(true)
+    setUiDisclosureState(EXPANDED_KEY, true)
+  })
+
   it('renders nothing when the queue is empty', () => {
     const { container } = render(<QueueBubbles items={[]} />)
     expect(container.querySelector('[data-message-queue]')).not.toBeInTheDocument()
   })
 
   it('renders one dashed bubble per queued item with the group label', () => {
-    render(<QueueBubbles items={[makeItem('q1', '排队这条'), makeItem('q2', '再排一条')]} />)
+    render(<QueueBubbles stateKey={EXPANDED_KEY} items={[makeItem('q1', '排队这条'), makeItem('q2', '再排一条')]} />)
     expect(screen.getByText('排队这条')).toBeInTheDocument()
     expect(screen.getByText('再排一条')).toBeInTheDocument()
     expect(document.querySelectorAll('[data-message-queue="queued"]')).toHaveLength(1)
@@ -29,7 +40,7 @@ describe('QueueBubbles（下轮队列虚线气泡）', () => {
   it('prefers metadata.displayText over payload.text（官方 queuedPromptText）', () => {
     const item = makeItem('q1', 'raw text')
     ;(item.payload as Record<string, unknown>).metadata = { displayText: '展示文本' }
-    render(<QueueBubbles items={[item]} />)
+    render(<QueueBubbles stateKey={EXPANDED_KEY} items={[item]} />)
     expect(screen.getByText('展示文本')).toBeInTheDocument()
     expect(screen.queryByText('raw text')).not.toBeInTheDocument()
   })
@@ -39,12 +50,82 @@ describe('QueueBubbles（下轮队列虚线气泡）', () => {
     const onEdit = vi.fn()
     const onRemove = vi.fn()
     const item = makeItem('q1', '排队这条')
-    render(<QueueBubbles items={[item]} onSteer={onSteer} onEdit={onEdit} onRemove={onRemove} />)
+    render(<QueueBubbles stateKey={EXPANDED_KEY} items={[item]} onSteer={onSteer} onEdit={onEdit} onRemove={onRemove} />)
     fireEvent.click(screen.getByTitle('Inject into current turn'))
     expect(onSteer).toHaveBeenCalledWith(item)
     fireEvent.click(screen.getByTitle('Retract to edit'))
     expect(onEdit).toHaveBeenCalledWith(item)
     fireEvent.click(screen.getByTitle('Remove from queue'))
     expect(onRemove).toHaveBeenCalledWith(item)
+  })
+
+  it('renders attachment chips for queued files/agents（和普通用户消息同款）', () => {
+    const item = makeItem('q1', '带附件')
+    ;(item.payload as Record<string, unknown>).files = [
+      { data: 'aGVsbG8=', mime: 'text/plain', source: { type: 'uri', uri: 'file:///workspace/notes.txt' }, name: 'notes.txt' },
+    ]
+    ;(item.payload as Record<string, unknown>).agents = [{ name: 'reviewer' }]
+    // AttachmentItem 的详情弹窗要 FullscreenProvider 上下文
+    render(
+      <FullscreenProvider>
+        <QueueBubbles stateKey={EXPANDED_KEY} items={[item]} />
+      </FullscreenProvider>,
+    )
+    expect(screen.getByText('notes.txt')).toBeInTheDocument()
+    expect(screen.getByText('reviewer')).toBeInTheDocument()
+  })
+
+  it('collapses bubbles by default and toggles on header click（compact 同款）', async () => {
+    render(<QueueBubbles stateKey="queue-bubbles:test-collapse" items={[makeItem('q1', '排队这条')]} />)
+
+    // 默认折叠：只有标题行，气泡不渲染
+    expect(screen.queryByText('排队这条')).not.toBeInTheDocument()
+    const header = screen.getByRole('button', { name: 'Next turn (1)' })
+    expect(header).toHaveAttribute('aria-expanded', 'false')
+
+    // 点击标题展开
+    fireEvent.click(header)
+    expect(screen.getByText('排队这条')).toBeInTheDocument()
+    expect(header).toHaveAttribute('aria-expanded', 'true')
+
+    // 再点收起（卸载有延迟，等它结束）
+    fireEvent.click(header)
+    await waitFor(() => {
+      expect(screen.queryByText('排队这条')).not.toBeInTheDocument()
+    })
+  })
+
+  it('collapses long queued text like normal user messages（CollapsibleUserText 同款折叠）', () => {
+    // jsdom 的 scrollHeight 恒 0、--fs-base 读不到，mock 出"超长溢出"的环境
+    const scrollHeightSpy = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(9999)
+    const originalGetComputedStyle = window.getComputedStyle
+    const computedStyleSpy = vi.spyOn(window, 'getComputedStyle').mockImplementation((el, pseudo) => {
+      const styles = originalGetComputedStyle(el, pseudo)
+      return {
+        ...styles,
+        getPropertyValue: (name: string) => (name === '--fs-base' ? '14' : styles.getPropertyValue(name)),
+      } as CSSStyleDeclaration
+    })
+    try {
+      const longText = Array.from({ length: 30 }, (_, i) => `第 ${i + 1} 行`).join('\n')
+      render(<QueueBubbles stateKey={EXPANDED_KEY} items={[makeItem('q1', longText)]} />)
+
+      // 折叠态：展开按钮出现，正文 maxHeight 被限制（预览 8 行）
+      const toggle = screen.getByRole('button', { name: 'Show more' })
+      expect(toggle).toBeInTheDocument()
+
+      // 点击展开 → 按钮变 Show less
+      fireEvent.click(toggle)
+      expect(screen.getByRole('button', { name: 'Show less' })).toBeInTheDocument()
+    } finally {
+      scrollHeightSpy.mockRestore()
+      computedStyleSpy.mockRestore()
+    }
+  })
+
+  it('expands by default when the collapse setting is off（默认展开开关）', () => {
+    themeStore.setQueueAutoCollapse(false)
+    render(<QueueBubbles stateKey="queue-bubbles:test-setting-off" items={[makeItem('q1', '排队这条')]} />)
+    expect(screen.getByText('排队这条')).toBeInTheDocument()
   })
 })

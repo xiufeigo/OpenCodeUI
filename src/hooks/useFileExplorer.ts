@@ -5,12 +5,19 @@
 
 import { useState, useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
-import { listDirectory, getFileContent, getFileStatus, getSessionDiff, getVcsDiff } from '../api'
+import { listDirectory, getFileContent, getFileStatus, getSessionDiff, getVcsDiff, writeFileBytes } from '../api'
 import type { FileNode, FileContent, FileStatusItem, FileDiff } from '../api/types'
 import { useSessionChangeScope } from '../store/changeScopeStore'
 import { activeSessionStore } from '../store/activeSessionStore'
 import { useAutoRefresh } from './useAutoRefresh'
-import { fileBaseName, toAbsoluteFilePath } from '../utils/pathUtils'
+import { canonicalizePath, fileBaseName, toAbsoluteFilePath } from '../utils/pathUtils'
+import { createUploadId, getServerTmpDirectory } from '../api/file'
+import {
+  encodeTextPreservingFormat,
+  encodeTextUnifyingLineEndings,
+  hashBytes,
+  MixedLineEndingsError,
+} from '../utils/textEncoding'
 
 /**
  * 文件树节点。
@@ -63,7 +70,18 @@ export interface UseFileExplorerResult {
   previewContent: FileContent | null
   previewLoading: boolean
   previewError: string | null
-  loadPreview: (path: string) => Promise<void>
+  loadPreview: (path: string, force?: boolean) => Promise<void>
+  /** 保存编辑中的文件（需求三）：基线比对 → 保真编码 → 写 → 写后重读并更新缓存 */
+  savePreview: (
+    path: string,
+    text: string,
+    baselineHash?: string,
+    force?: boolean,
+    unifyEol?: boolean,
+  ) => Promise<FileContent>
+  /** 正在预览的文件被外部改动过（agent / 别的编辑器）；dirty 时即冲突来源 */
+  externalChange: { path: string } | null
+  clearExternalChange: () => void
   clearPreview: () => void
 
   /** 实际生效的目录（session 目录优先于传入目录）；预览按此作用域分键 */
@@ -108,6 +126,12 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewError, setPreviewError] = useState<string | null>(null)
   const previewCacheRef = useRef<Map<string, FileContent>>(new Map())
+  /** 正在预览的内容（ref 版：事件回调里要读最新值） */
+  const previewContentRef = useRef<FileContent | null>(null)
+  /** 外部改动标记 */
+  const [externalChange, setExternalChange] = useState<{ path: string } | null>(null)
+  /** 最近一次由我们写入的文件（路径 + 内容指纹），用于自写事件抑制 */
+  const lastWriteRef = useRef<{ path: string; hash: string } | null>(null)
   const previewLoadIdRef = useRef(0)
 
   // 文件状态（git）
@@ -302,9 +326,136 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
     })
   }, [updateExpandedPaths])
 
+  /**
+   * 保存编辑中的文件（需求三：保存事务）。
+   *
+   * 服务端的 `fs.write` 没有 If-Match / 版本号（协议里只有 path + 裸字节），
+   * 所以乐观并发只能自己做：**保存前重读磁盘**，与编辑开始时的基线指纹比对。
+   * 不一致且未 force → 抛 `code: 'STALE_REVISION'`，由 UI 弹"重新载入 / 覆盖"。
+   *
+   * 写回时按原文保真（行尾 / BOM）；混合行尾原文直接拒绝（写出去必然整文件 diff）。
+   */
+  const savePreview = useCallback(
+    async (path: string, text: string, baselineHash?: string, force = false, unifyEol = false): Promise<FileContent> => {
+      if (!effectiveDirectory) throw new Error('No workspace is available')
+
+      // ⓪ 写入安全边界（§4.7）：只允许写工作区内的路径。
+      //    fs.write 本身不受 location 限制，所以必须自己拦一道。
+      const absTarget = canonicalizePath(toAbsoluteFilePath(path, effectiveDirectory))
+      const absRoot = canonicalizePath(effectiveDirectory).replace(/[/\\]+$/, "")
+      const withinRoot =
+        absTarget === absRoot || absTarget.startsWith(`${absRoot}/`) || absTarget.startsWith(`${absRoot}\\`)
+      if (!withinRoot) {
+        const outside = new Error(t("fileExplorer.writeOutsideWorkspace")) as Error & { code?: string }
+        outside.code = "OUTSIDE_WORKSPACE"
+        throw outside
+      }
+      const cacheKey = `${serverId ?? ''}::${effectiveDirectory}::${path}`
+      const baseline = previewCacheRef.current.get(cacheKey)
+
+      // ① 条件校验：同时保证"只改已存在的文件"——文件没了就地报错，不会凭空创建
+      const disk = await getFileContent(path, effectiveDirectory, serverId).catch(() => {
+        const missing = new Error(t("fileExplorer.fileMissing")) as Error & { code?: string }
+        missing.code = "FILE_MISSING"
+        throw missing
+      })
+      if (!force && baselineHash && hashBytes(disk.bytes) !== baselineHash) {
+        const conflict = new Error(t('fileExplorer.saveConflict')) as Error & { code?: string }
+        conflict.code = 'STALE_REVISION'
+        throw conflict
+      }
+
+      // ② 保真编码（混合行尾默认拒绝；unifyEol 是用户确认后的"按多数行尾统一"兜底）
+      let encoded: Uint8Array
+      try {
+        const original = baseline?.bytes ?? disk.bytes
+        encoded = unifyEol
+          ? encodeTextUnifyingLineEndings(original, text)
+          : encodeTextPreservingFormat(original, text)
+      } catch (error) {
+        if (error instanceof MixedLineEndingsError) {
+          const mixed = new Error(t("fileExplorer.mixedLineEndings")) as Error & { code?: string }
+          mixed.code = "MIXED_EOL"
+          throw mixed
+        }
+        throw error
+      }
+
+      // ③ 覆盖前留备份：服务端 fs.write 没有版本号/快照，备份是唯一兜底。
+      //    备份失败不阻断保存（用户要的是存下来）。
+      try {
+        const tmp = await getServerTmpDirectory(serverId)
+        const backupTarget = `${tmp.replace(/[/\\]+$/, "")}/backups/${createUploadId()}/${fileBaseName(path)}`
+        await writeFileBytes(backupTarget, disk.bytes, effectiveDirectory, serverId)
+      } catch (backupError) {
+        console.warn("[useFileExplorer] 备份失败（保存继续）:", backupError)
+      }
+
+      // ④ 写入
+      await writeFileBytes(path, encoded, effectiveDirectory, serverId)
+
+      // ④ 写后重读（既做校验，也让缓存与磁盘一致——顺手修掉"存完切走再切回是旧内容"）
+      const saved = await getFileContent(path, effectiveDirectory, serverId)
+
+      // ⑥ 写后校验：磁盘上真的是我们刚写的那些字节吗？
+      //    不一致说明保存被打断，或写完立刻又被并发改了 —— 保留 dirty 让用户重试。
+      if (hashBytes(saved.bytes) !== hashBytes(encoded)) {
+        const verifyError = new Error(t("fileExplorer.saveVerifyFailed")) as Error & { code?: string }
+        verifyError.code = "VERIFY_FAILED"
+        throw verifyError
+      }
+      previewCacheRef.current.set(cacheKey, saved)
+      setPreviewContent(current => (current?.path === path ? saved : current))
+      // 记下"这是我刚写的内容"：后续 filesystem.changed 用内容指纹认出自己的写，
+      // 避免把自己的保存当成外部改动（那会导致保存后立刻弹冲突）。
+      lastWriteRef.current = { path, hash: hashBytes(saved.bytes) }
+      return saved
+    },
+    [effectiveDirectory, serverId, t],
+  )
+
+  useEffect(() => {
+    previewContentRef.current = previewContent
+  }, [previewContent])
+
+  /**
+   * filesystem.changed 命中正在预览的文件时（需求三：和 agent 抢同一个文件）。
+   *
+   * 两件事：
+   *  1) **自写抑制**：内容指纹与我们刚写入的一致 → 是我们自己的保存，忽略
+   *  2) 内容真变了 → 刷新预览内容与缓存（只读视图立刻看到最新），并把这次
+   *     外部改动标记出去；若用户正在编辑（dirty），保存时会由基线比对报冲突
+   */
+  const handleExternalFileChange = useCallback(
+    async (file: string) => {
+      const current = previewContentRef.current
+      if (!current || !effectiveDirectory) return
+
+      const absChanged = toAbsoluteFilePath(file, effectiveDirectory)
+      const absCurrent = toAbsoluteFilePath(current.path, effectiveDirectory)
+      if (canonicalizePath(absChanged) !== canonicalizePath(absCurrent)) return
+
+      const fresh = await getFileContent(current.path, effectiveDirectory, serverId).catch(() => null)
+      if (!fresh) return
+      const freshHash = hashBytes(fresh.bytes)
+
+      // 自写抑制：是我们刚写下去的内容 → 不是外部改动
+      const last = lastWriteRef.current
+      if (last && last.path === current.path && last.hash === freshHash) return
+      // 内容其实没变（touch / 权限变更等）：无需提示
+      if (current.bytes && hashBytes(current.bytes) === freshHash) return
+
+      const cacheKey = `${serverId ?? ""}::${effectiveDirectory}::${current.path}`
+      previewCacheRef.current.set(cacheKey, fresh)
+      setPreviewContent(fresh)
+      setExternalChange({ path: current.path })
+    },
+    [effectiveDirectory, serverId],
+  )
+
   // 加载文件预览
   const loadPreview = useCallback(
-    async (path: string) => {
+    async (path: string, force = false) => {
       if (!effectiveDirectory) return
 
       const loadId = ++previewLoadIdRef.current
@@ -315,7 +466,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
       // 缓存键必须带服务器+目录维度：相对路径在不同工作区会撞名（两边都有
       // src/app.ts），只按 path 缓存会在切工作区后预览到上一个工作区的同名文件
       const cacheKey = `${serverId ?? ''}::${effectiveDirectory}::${path}`
-      const cached = previewCacheRef.current.get(cacheKey)
+      const cached = force ? undefined : previewCacheRef.current.get(cacheKey)
       if (cached) {
         if (loadId === previewLoadIdRef.current) {
           setPreviewContent(cached)
@@ -366,8 +517,13 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
     await Promise.all([loadRoot(), loadStatuses()])
   }, [loadRoot, loadStatuses])
 
-  // 自动刷新：session idle / 窗口聚焦 / SSE 重连
-  useAutoRefresh(consumerId, sessionId ?? null, softRefresh, !!effectiveDirectory)
+  // 自动刷新：文件/分支变更事件 + session idle + SSE 重连（见 useAutoRefresh）
+  useAutoRefresh(consumerId, sessionId ?? null, softRefresh, !!effectiveDirectory, {
+    watchDirectory: effectiveDirectory,
+    onFilesystemChanged: data => {
+      void handleExternalFileChange(data.file)
+    },
+  })
 
   // 初始加载
   useEffect(() => {
@@ -424,6 +580,9 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
     previewLoading,
     previewError,
     loadPreview,
+    savePreview,
+    externalChange,
+    clearExternalChange: () => setExternalChange(null),
     clearPreview,
     effectiveDirectory,
     fileStatus,

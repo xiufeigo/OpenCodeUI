@@ -5,6 +5,8 @@
     "openSidebar": "Open sidebar",
     "clickToRename": "Click to rename",
     "shareSession": "Export session",
+    "moreActions": "Session actions",
+    "exportSessionDesc": "Export as JSON, importable on another device",
     "closeBottomPanel": "Close bottom panel",
     "openBottomPanel": "Open bottom panel",
     "closePanel": "Close panel",
@@ -15,6 +17,7 @@
     "local": "Local (project root)",
     "empty": "No directories to move to",
     "newWorktree": "Create & move",
+    "newWorktreeSection": "New worktree",
     "newWorktreePlaceholder": "New worktree name",
     "runningTitle": "Session is running, cannot move"
   },
@@ -23,6 +26,7 @@
   },
   "websearch": {
     "title": "Third-party web search",
+    "minimize": "Minimize",
     "description": "Select the search provider agents use to search the web",
     "provider": "Search provider",
     "any": "Any",
@@ -54,9 +58,33 @@
   "inputBox": {
     "dropFilesHere": "Drop files here",
     "replyToAgentMobile": "Reply to Agent...",
-    "replyToAgent": "Reply to Agent (type @ to mention, / for commands)",
-    "shellPlaceholder": "Shell command (esc to exit)",
+    "replyToAgent": "Reply to Agent (@ to mention · / for commands · ! for shell)",
+    "shellPlaceholder": "Shell command (esc to exit · ⌫ on empty restores !)",
     "shellMode": "Shell"
+  },
+  "attachment": {
+    "folderUnsupported": {
+      "title": "Folders are not supported",
+      "body": "{{names}} is a folder — drop files instead, or zip it first"
+    },
+    "tooLarge": {
+      "title": "File too large: {{name}}",
+      "body": "Exceeds the {{max}} per-upload limit; it was not attached."
+    },
+    "uploadFailed": {
+      "title": "Attachment upload failed: {{name}}",
+      "body": "{{name}}\n{{reason}}\nUse the retry icon on the attachment, or remove it.",
+      "reason": {
+        "network": "Could not reach the server (network error or timeout)",
+        "unauthorized": "The server rejected the upload (authentication failed)",
+        "server": "The server failed to handle the upload; check its logs",
+        "unknown": "Unknown error"
+      }
+    },
+    "readFailed": {
+      "title": "Could not read file: {{name}}",
+      "body": "The browser refused to read this file; it was not attached."
+    }
   },
   "shellMessage": {
     "timeout": "Command timed out",
@@ -131,6 +159,8 @@
     "editCancel": "Cancel edit",
     "dragReorder": "Drag to reorder"
   },
+  "widthDragHint": "Drag to adjust chat width (toggle widescreen mode to reset)",
+  "inputWidthDragHint": "Drag to adjust input width (toggle widescreen mode to reset)",
   "permissionDialog": {
     "permission": "Permission: {{permission}}",
     "moreCount": "+{{count}} more",
@@ -256,6 +286,7 @@
     "awaitingAnswer": "Awaiting Answer",
     "retrying": "Retrying",
     "working": "Working",
+    "backgroundRunning": "Background work running",
     "attempt": "attempt {{count}}"
   },
   "notification": {

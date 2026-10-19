@@ -41,6 +41,8 @@ export const SETTINGS_SEARCH_DEFINITIONS: SettingsSearchDefinition[] = [
     'chat.descriptiveToolSteps',
     'chat.processCollapse',
     'chat.compactInlinePermission',
+    'chat.compactionAutoCollapse',
+    'chat.queueAutoCollapse',
     'chat.toolCardStyle',
   ]),
   ...definitions('chat', [
@@ -50,6 +52,7 @@ export const SETTINGS_SEARCH_DEFINITIONS: SettingsSearchDefinition[] = [
     'chat.externalDropMentionMode',
     'chat.collapseLongMessages',
     'chat.renderUserMarkdown',
+    'chat.renderHtmlContent',
     'chat.outlineCurrentHighlight',
     'chat.actionsOnLatestAssistantOnly',
     'chat.desktopCollapsedInputDock',

@@ -1,4 +1,4 @@
-import { defaultKeymap } from '@codemirror/commands'
+import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { EditorState, StateEffect, StateField, type Extension, type Range } from '@codemirror/state'
 import {
   closeSearchPanel,
@@ -16,6 +16,7 @@ import {
   Decoration,
   EditorView,
   drawSelection,
+  highlightActiveLine,
   highlightActiveLineGutter,
   keymap,
   lineNumbers,
@@ -23,6 +24,16 @@ import {
   type Panel,
 } from '@codemirror/view'
 import type { HighlightTokens } from '../hooks/useSyntaxHighlight'
+
+/** 只读 / 可编辑两种模式共用的基础参数 */
+export interface CodeMirrorExtensionOptions {
+  wordWrap: boolean
+  lineHeight: number
+  showLineNumbers?: boolean
+  maxHeight?: number
+  lineNumberWidth: number
+  extraExtensions?: Extension[]
+}
 
 export function codeLineHeight(offset: number): number {
   return 24 + offset * 2
@@ -34,23 +45,19 @@ export function createReadonlyCodeMirrorExtensions({
   showLineNumbers = true,
   maxHeight,
   editable = true,
+  readOnly = true,
   lineNumberWidth,
   extraExtensions = [],
-}: {
-  wordWrap: boolean
-  lineHeight: number
-  showLineNumbers?: boolean
-  maxHeight?: number
-  editable?: boolean
-  lineNumberWidth: number
-  extraExtensions?: Extension[]
-}): Extension[] {
+}: CodeMirrorExtensionOptions & { editable?: boolean; readOnly?: boolean }): Extension[] {
   const extensions: Extension[] = [
+    // editable 的语义是「能否选中文本」（历史上与 maxHeight 绑定）；能否编辑看 readOnly
     EditorView.editable.of(editable),
-    EditorState.readOnly.of(true),
+    EditorState.readOnly.of(readOnly),
+    // 可编辑态补上撤销栈与当前行高亮（只读态不需要）
+    ...(readOnly ? [] : [history(), highlightActiveLine()]),
     highlightActiveLineGutter(),
     drawSelection(),
-    keymap.of([...searchKeymap, ...defaultKeymap]),
+    keymap.of([...(readOnly ? [] : historyKeymap), ...searchKeymap, ...defaultKeymap]),
     search({ top: true, createPanel: createCodeMirrorSearchPanel }),
     highlightSelectionMatches(),
     shikiDecorationsField,

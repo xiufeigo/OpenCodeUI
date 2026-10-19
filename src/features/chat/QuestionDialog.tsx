@@ -73,7 +73,7 @@ export function QuestionDialog({
   return (
     <div ref={animRef} className="absolute bottom-0 left-0 right-0 z-[10]" onKeyDown={handleKeyDown}>
       <div
-        className="mx-auto max-w-3xl pointer-events-auto transition-[max-width] duration-300 ease-in-out pb-2"
+        className="mx-auto max-w-[min(100%,var(--oc-chat-input-width,48rem))] pointer-events-auto transition-[max-width] duration-300 ease-in-out pb-2"
         style={{
           paddingLeft: isCompact ? 6 : 14,
           paddingRight: isCompact ? 6 : 14,
@@ -108,7 +108,9 @@ export function QuestionDialog({
               </button>
             </div>
 
-            <div className="border-t border-border-300/30" />
+            {/* 分隔线两端留空，跟内容同宽（项目里面板头部的 inset-x-3 同款做法，
+                这里头部是 px-4 所以留 16px） */}
+            <div className="mx-4 h-px bg-border-300/30" />
 
             {/* 字段 */}
             <div className="px-4 py-3 space-y-5 max-h-[50vh] overflow-y-auto custom-scrollbar">

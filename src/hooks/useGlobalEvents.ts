@@ -13,6 +13,7 @@ import { messageStore, childSessionStore, paneLayoutStore, serverStore } from '.
 import { messageIDFromEvent } from '../store/messageStore'
 import { inboxStore } from '../store/inboxStore'
 import { usageExceededStore } from '../store/usageExceededStore'
+import { shellInventoryStore } from '../store/shellInventoryStore'
 import { activeSessionStore } from '../store/activeSessionStore'
 import { notificationStore } from '../store/notificationStore'
 import { soundStore } from '../store/soundStore'
@@ -39,6 +40,7 @@ import { outboxConfirm } from '../api/sendAdmission'
 import { autoApproveStore } from '../store/autoApproveStore'
 import { multiServerStore } from '../store/multiServerStore'
 import type { ApiFormInfo, ApiPermissionRequest } from '../api/types'
+import type { FilesystemChangedPayload, VcsBranchUpdatedPayload } from '../types/api'
 import type { SessionStatusMap } from '../types/api/session'
 import { INITIAL_MESSAGE_LIMIT } from '../constants'
 
@@ -59,6 +61,10 @@ export interface SessionEventCallbacks {
   onFormCancelled?: (data: { sessionID: string; formID: string }) => void
   onScrollRequest?: () => void
   onSessionIdle?: (sessionID: string) => void
+  /** 全局：工作区文件变更（广播给所有消费者，由消费者按目录过滤） */
+  onFilesystemChanged?: (data: FilesystemChangedPayload) => void
+  /** 全局：git 分支变化（commit / checkout / 切分支，广播给所有消费者） */
+  onVcsBranchUpdated?: (data: VcsBranchUpdatedPayload) => void
   /** v2：会话错误由 execution.failed 表达 */
   onExecutionFailed?: (sessionID: string) => void
   onReconnected?: (reason: 'network' | 'server-switch') => void
@@ -482,7 +488,10 @@ export function useGlobalEvents(directories?: string[]) {
           }
           const currentDirectories = directoriesRef.current
           const currentScopeKey = getScopeKey(directoriesRef.current)
-          for (const pending of latePendingRequests.values()) {
+          // 重放后立即消费掉：latePendingRequests 的语义是「本次拉取窗口内迟到的
+          // 事件」，补进 store 一次就该交给服务端快照接管。留着不删的话，下一次
+          // fetch 会把它再重放一遍——已经回复过的请求就是这么在侧边栏复活的。
+          for (const [requestId, pending] of latePendingRequests) {
             // 只处理属于该 server 的 pending（复合 key 前缀）
             if (!pending.sessionId.startsWith(`${serverId}::`)) continue
             const matchesScope = pending.directory
@@ -495,6 +504,7 @@ export function useGlobalEvents(directories?: string[]) {
               pending.type,
               pending.description,
             )
+            latePendingRequests.delete(requestId)
           }
         })
         .catch(() => {
@@ -878,11 +888,32 @@ export function useGlobalEvents(directories?: string[]) {
         onShellStarted: (data, facts) => {
           const scopedId = scope(data.sessionID)
           messageStore.handleShellStarted({ ...data, sessionID: scopedId }, facts)
+          // shell 库存变化 → 侧边栏后台任务挂载/活跃判定重取
+          shellInventoryStore.requestRefresh()
         },
 
         onShellEnded: (data, facts) => {
           const scopedId = scope(data.sessionID)
           messageStore.handleShellEnded({ ...data, sessionID: scopedId }, facts)
+          shellInventoryStore.requestRefresh()
+        },
+
+        // 全局 shell 库存事件：官方客户端数据层的实时来源——事件带完整
+        // ShellInfo 直写库存，挂载行/活跃判定即时更新，不用等防抖重取。
+        // 库存只跟活动服务器，其它服务器的事件忽略
+        onShellInventoryCreated: (data, location) => {
+          if (serverId !== serverStore.getActiveServerId()) return
+          shellInventoryStore.applyShellCreated(location?.directory, data.info)
+        },
+
+        onShellInventoryExited: (data, location) => {
+          if (serverId !== serverStore.getActiveServerId()) return
+          shellInventoryStore.applyShellExited(location?.directory, data.id, data.status, data.exit)
+        },
+
+        onShellInventoryDeleted: (data, location) => {
+          if (serverId !== serverStore.getActiveServerId()) return
+          shellInventoryStore.applyShellDeleted(location?.directory, data.id)
         },
 
         onSkillActivated: (data, facts) => {
@@ -1076,6 +1107,20 @@ export function useGlobalEvents(directories?: string[]) {
           messageStore.handleSessionIdle(scopedId)
           childSessionStore.markIdle(scopedId)
           dispatchToConsumers(scopedId, cb => cb.onSessionIdle?.(scopedId))
+        },
+
+        // 全局事件（无 sessionId）：广播给所有消费者，由消费者按自己关心的目录过滤。
+        // filesystem.changed = 工作区文件真变了；vcs.branch.updated = commit/checkout/切分支。
+        onFilesystemChanged: data => {
+          for (const consumer of sessionConsumers.values()) {
+            consumer.callbacks.onFilesystemChanged?.(data)
+          }
+        },
+
+        onVcsBranchUpdated: data => {
+          for (const consumer of sessionConsumers.values()) {
+            consumer.callbacks.onVcsBranchUpdated?.(data)
+          }
         },
 
         onExecutionFailed: (data, facts) => {

@@ -5,6 +5,8 @@
     "openSidebar": "打开侧边栏",
     "clickToRename": "点击重命名",
     "shareSession": "导出会话",
+    "moreActions": "会话操作",
+    "exportSessionDesc": "导出为 JSON，可导入到其他设备",
     "closeBottomPanel": "关闭底部面板",
     "openBottomPanel": "打开底部面板",
     "closePanel": "关闭面板",
@@ -15,6 +17,7 @@
     "local": "本地（项目根）",
     "empty": "没有可移动的目录",
     "newWorktree": "新建并移入",
+    "newWorktreeSection": "新建 Worktree",
     "newWorktreePlaceholder": "新 Worktree 名称",
     "runningTitle": "会话运行中，暂不能移动"
   },
@@ -23,6 +26,7 @@
   },
   "websearch": {
     "title": "第三方网页搜索",
+    "minimize": "最小化",
     "description": "选择 Agent 搜索网页时使用的搜索源",
     "provider": "搜索源",
     "any": "任意",
@@ -54,9 +58,33 @@
   "inputBox": {
     "dropFilesHere": "拖放文件到此处",
     "replyToAgentMobile": "回复 Agent...",
-    "replyToAgent": "回复 Agent（输入 @ 提及，/ 执行命令）",
-    "shellPlaceholder": "Shell 命令（esc 退出）",
+    "replyToAgent": "回复 Agent（@ 提及 · / 命令 · ! Shell）",
+    "shellPlaceholder": "Shell 命令（esc 退出 · 空命令退格还原 !）",
     "shellMode": "Shell"
+  },
+  "attachment": {
+    "folderUnsupported": {
+      "title": "暂不支持拖入文件夹",
+      "body": "{{names}} 是文件夹；请拖入文件，或先压缩成 zip 再拖入"
+    },
+    "tooLarge": {
+      "title": "文件过大：{{name}}",
+      "body": "超过单次上传上限 {{max}}，未添加为附件。"
+    },
+    "uploadFailed": {
+      "title": "附件上传失败：{{name}}",
+      "body": "{{name}}\n{{reason}}\n可点击附件上的重试图标重试，或移除该附件。",
+      "reason": {
+        "network": "无法连接服务端（网络错误或超时）",
+        "unauthorized": "服务端拒绝了本次上传（认证失败）",
+        "server": "服务端处理失败，请查看服务端日志",
+        "unknown": "未知错误"
+      }
+    },
+    "readFailed": {
+      "title": "无法读取文件：{{name}}",
+      "body": "浏览器不允许读取该文件，未添加为附件。"
+    }
   },
   "shellMessage": {
     "timeout": "命令超时",
@@ -131,6 +159,8 @@
     "editCancel": "取消编辑",
     "dragReorder": "拖拽调整顺序"
   },
+  "widthDragHint": "拖动调整对话宽度（切换宽屏模式可恢复默认）",
+  "inputWidthDragHint": "拖动调整输入框宽度（切换宽屏模式可恢复默认）",
   "permissionDialog": {
     "permission": "权限：{{permission}}",
     "moreCount": "还有 {{count}} 个",
@@ -256,6 +286,7 @@
     "awaitingAnswer": "等待回答",
     "retrying": "重试中",
     "working": "工作中",
+    "backgroundRunning": "后台任务运行中",
     "attempt": "第 {{count}} 次"
   },
   "notification": {

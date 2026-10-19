@@ -19,7 +19,7 @@ import { getStreamingHotIndexes, getTimelineRowYClass, mergeVirtualRangeIndexes 
 import { buildVisibleMessageEntries, getVisibleMessageForkTargetId } from './chatAreaVisibility'
 import { buildChatPageViewModel } from './useChatPageViewModel'
 import type { AssistantContent, AssistantMessage, SessionMessageInfo, UserMessage } from '../../types/api/message'
-import { isAssistantMessage } from '../../types/api/message'
+import { isAssistantMessage, isFailedIdleMessage, idleMessageError } from '../../types/api/message'
 
 /** 助手消息的 content（非助手返回空数组，测试断言里方便用） */
 function contentOf(message: SessionMessageInfo): AssistantContent[] {
@@ -87,6 +87,34 @@ function createTextPart(_id: string, _messageID: string, text: string): Assistan
 }
 
 describe('buildVisibleMessageEntries', () => {
+  it('keeps failed idle markers visible (session-level error must render)', () => {
+    // pre-promotion failure：只有 user + 失败 idle 标记，过滤掉它错误就永远不渲染
+    const failedIdle = {
+      id: 'idle-1',
+      type: 'idle',
+      outcome: 'failed',
+      error: { type: 'provider.no-route', message: 'Model unavailable' },
+      time: { created: 2 },
+    } as SessionMessageInfo
+    const entries = buildVisibleMessageEntries([createUserMessage('user-1', 1, '你好'), failedIdle])
+
+    expect(entries.some(e => e.message.id === 'idle-1')).toBe(true)
+  })
+
+  it('hides succeeded / interrupted idle markers', () => {
+    const okIdle = { id: 'idle-ok', type: 'idle', outcome: 'succeeded', time: { created: 2 } } as SessionMessageInfo
+    const abortedIdle = {
+      id: 'idle-abort',
+      type: 'idle',
+      outcome: 'interrupted',
+      time: { created: 3 },
+    } as SessionMessageInfo
+    const entries = buildVisibleMessageEntries([createUserMessage('user-1', 1, '你好'), okIdle, abortedIdle])
+
+    expect(entries.some(e => e.message.id === 'idle-ok')).toBe(false)
+    expect(entries.some(e => e.message.id === 'idle-abort')).toBe(false)
+  })
+
   it('keeps source ids for merged assistant tool messages', () => {
     const first = createAssistantMessage('assistant-1', [createToolPart('tool-1', 'assistant-1')])
     const second = createAssistantMessage('assistant-2', [createToolPart('tool-2', 'assistant-2')])
@@ -614,6 +642,104 @@ describe('buildProcessTimeline', () => {
     expect(timeline[0]).toMatchObject({ kind: 'message', key: 'user-1' })
   })
 
+  it('renders a failed idle marker as an error item (pre-promotion failure)', () => {
+    // 会话级失败：prompt 没能提升成 assistant 工作，只剩一条带 error 的失败 idle 标记。
+    // 不渲染它，错误就永远不可见（官方 session-ui projection.ts 的 isFailedIdle）。
+    const failedIdle = {
+      id: 'idle-1',
+      type: 'idle',
+      outcome: 'failed',
+      error: { type: 'provider.auth', message: 'Invalid API key' },
+      time: { created: 1001 },
+    } as SessionMessageInfo
+    const messages = [createUserMessage('user-1', 1000), failedIdle]
+    const timeline = buildProcessTimeline(messages, {
+      turnDurationMap: new Map(),
+      sessionIsStreaming: false,
+      messageHasProcess: hasProcess,
+      messageHasFinal: hasFinal,
+    })
+
+    const errorItem = timeline.find(item => item.kind === 'message' && item.key === 'idle-1')
+    expect(errorItem).toBeTruthy()
+    if (errorItem?.kind === 'message') {
+      expect(isFailedIdleMessage(errorItem.message)).toBe(true)
+      expect(idleMessageError(errorItem.message)).toMatchObject({ type: 'provider.auth' })
+    }
+  })
+
+  it('does not duplicate the error card when the last assistant already shows it', () => {
+    // assistant.error 已由 MessageErrorView 渲染 → idle 卡片跳过（官方同款去重）
+    const failedAssistant = createAssistantMessage(
+      'assistant-1',
+      [createTextPart('text-1', 'assistant-1', 'oops')],
+      1001,
+      1002,
+      { type: 'provider', message: 'boom' },
+    )
+    const failedIdle = {
+      id: 'idle-1',
+      type: 'idle',
+      outcome: 'failed',
+      error: { type: 'provider', message: 'boom' },
+      time: { created: 1003 },
+    } as SessionMessageInfo
+    const messages = [createUserMessage('user-1', 1000), failedAssistant, failedIdle]
+    const timeline = buildProcessTimeline(messages, {
+      turnDurationMap: new Map(),
+      sessionIsStreaming: false,
+      messageHasProcess: hasProcess,
+      messageHasFinal: hasFinal,
+    })
+
+    expect(timeline.some(item => item.kind === 'message' && item.key === 'idle-1')).toBe(false)
+  })
+
+  it('still shows the idle error card when the assistant error was an interruption', () => {
+    // assistant 是被中断的（abort）→ 不算「已显示错误」，idle 卡片仍要渲染
+    const aborted = createAssistantMessage(
+      'assistant-1',
+      [createTextPart('text-1', 'assistant-1', 'partial')],
+      1001,
+      1002,
+      { type: 'MessageAbortedError', message: 'aborted' },
+    )
+    const failedIdle = {
+      id: 'idle-1',
+      type: 'idle',
+      outcome: 'failed',
+      error: { type: 'provider', message: 'boom' },
+      time: { created: 1003 },
+    } as SessionMessageInfo
+    const messages = [createUserMessage('user-1', 1000), aborted, failedIdle]
+    const timeline = buildProcessTimeline(messages, {
+      turnDurationMap: new Map(),
+      sessionIsStreaming: false,
+      messageHasProcess: hasProcess,
+      messageHasFinal: hasFinal,
+    })
+
+    expect(timeline.some(item => item.kind === 'message' && item.key === 'idle-1')).toBe(true)
+  })
+
+  it('ignores succeeded idle markers', () => {
+    const okIdle = {
+      id: 'idle-1',
+      type: 'idle',
+      outcome: 'succeeded',
+      time: { created: 1001 },
+    } as SessionMessageInfo
+    const messages = [createUserMessage('user-1', 1000), okIdle]
+    const timeline = buildProcessTimeline(messages, {
+      turnDurationMap: new Map(),
+      sessionIsStreaming: false,
+      messageHasProcess: hasProcess,
+      messageHasFinal: hasFinal,
+    })
+
+    expect(timeline.some(item => item.key === 'idle-1')).toBe(false)
+  })
+
   it('keeps only the earliest pending Working shell when a later user is queued', () => {
     // 第一轮仍 live，第二轮 user 已发出 → 只挂 user-1 的 Working，user-2 暂不挂空壳
     const mid = createAssistantMessage('assistant-1', [createToolPart('tool-1', 'assistant-1')], 1001)
@@ -693,25 +819,60 @@ describe('buildProcessTimeline', () => {
     expect(shells[1]).toMatchObject({ userMessageId: 'user-2', isActive: true })
   })
 
-  it('does not reopen a completed turn when session becomes busy before the next user lands', () => {
-    // 发送瞬间：streaming 已 true，新 user 还没进列表 → 已 Worked 的回合不能闪回 Working
+  it('keeps the last turn Working while the session is still busy (multi-step gap)', () => {
+    // 上一步已 completed、下一步还没到，但 session.status 仍是 busy —— 这是多步 agent 的常态。
+    // 不能在这一刻判成 Worked 收壳，否则下一步内容到达时又要展开，看着像「提前收工」。
+    const stepped = createAssistantMessage(
+      'assistant-1',
+      [createToolPart('tool-1', 'assistant-1'), { type: 'text', text: '看一眼' }],
+      1001,
+      1500,
+    )
+    const messages = [createUserMessage('user-1', 1000), stepped]
+
+    const busy = buildProcessTimeline(messages, {
+      turnDurationMap: new Map([['assistant-1', 500]]),
+      sessionIsStreaming: true,
+      messageHasProcess: hasProcess,
+      messageHasFinal: hasFinal,
+    })
+    expect(busy.find(item => item.kind === 'process-shell')).toMatchObject({
+      kind: 'process-shell',
+      isActive: true,
+    })
+
+    // busy 摘掉（idle）→ 收壳，并显示总耗时
+    const settled = buildProcessTimeline(messages, {
+      turnDurationMap: new Map([['assistant-1', 500]]),
+      sessionIsStreaming: false,
+      messageHasProcess: hasProcess,
+      messageHasFinal: hasFinal,
+    })
+    expect(settled.find(item => item.kind === 'process-shell')).toMatchObject({
+      kind: 'process-shell',
+      isActive: false,
+      durationMs: 500,
+    })
+  })
+
+  it('settles the previous turn once the next user turn lands, even while busy', () => {
+    // 发送瞬间：busy 已 true、新 user 已入列 → 上一轮立刻 Worked，不能闪回 Working
     const settled = createAssistantMessage(
       'assistant-1',
       [createToolPart('tool-1', 'assistant-1'), { type: 'text', text: 'done' }],
       1001,
       1500,
     )
-    const messages = [createUserMessage('user-1', 1000), settled]
+    const messages = [createUserMessage('user-1', 1000), settled, createUserMessage('user-2', 2000)]
     const timeline = buildProcessTimeline(messages, {
       turnDurationMap: new Map([['assistant-1', 500]]),
       sessionIsStreaming: true,
       messageHasProcess: hasProcess,
       messageHasFinal: hasFinal,
     })
-    expect(timeline.find(item => item.kind === 'process-shell')).toMatchObject({
-      kind: 'process-shell',
-      isActive: false,
-    })
+
+    const shells = timeline.filter(item => item.kind === 'process-shell')
+    expect(shells[0]).toMatchObject({ userMessageId: 'user-1', isActive: false })
   })
 
   it('settles shell with process inside and final answer outside', () => {

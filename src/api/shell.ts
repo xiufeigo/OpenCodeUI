@@ -11,10 +11,14 @@
 import { getSDKClient } from './sdk'
 import type { ShellInfo } from '@opencode/client/promise'
 
-/** 列出当前服务器的 shell（官方 data.shell.list） */
-export async function listShells(serverId?: string): Promise<ShellInfo[]> {
+/**
+ * 列出指定工作区目录的 shell（官方 data.shell.list）。
+ * serve --service 模式下 shell 按目录隔离，directory 必传——
+ * 不带查的是服务根目录，永远空。
+ */
+export async function listShells(directory: string, serverId?: string): Promise<ShellInfo[]> {
   const sdk = getSDKClient(serverId)
-  const result = await sdk.shell.list()
+  const result = await sdk.shell.list({ location: { directory } })
   return result.data
 }
 
@@ -35,4 +39,13 @@ export async function getShellOutput(
     cursor,
   })
   return result.data
+}
+
+/** 终止 shell（官方 session-running-menu 的 stop：sdk.shell.remove） */
+export async function removeShell(id: string, directory?: string, serverId?: string): Promise<void> {
+  const sdk = getSDKClient(serverId)
+  await sdk.shell.remove({
+    id,
+    ...(directory ? { location: { directory } } : {}),
+  })
 }

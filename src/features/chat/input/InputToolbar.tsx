@@ -20,8 +20,16 @@ interface InputToolbarProps {
   selectedVariant?: string
   onVariantChange?: (variant: string | undefined) => void
 
+  /** @deprecated 选择器不再按能力过滤（Issue #182）；内联判定在 InputBox 里做 */
   fileCapabilities?: FileCapabilities
   onFilesSelected: (files: File[]) => void
+  /**
+   * 桌面端原生选择器选中的**本机路径**。
+   *
+   * 与拖入共用一条判定链（本机实例 → `@` 引用，远端 → 上传）。浏览器里拿不到
+   * `File` 的真实路径，所以只有 Tauri 下会走这里；给了它就不再读字节拼 `File`。
+   */
+  onPickedPaths?: (paths: string[]) => void
 
   isStreaming?: boolean
   isSending?: boolean
@@ -53,8 +61,8 @@ export function InputToolbar({
   variants = [],
   selectedVariant,
   onVariantChange,
-  fileCapabilities,
   onFilesSelected,
+  onPickedPaths,
   isStreaming,
   isSending = false,
   onAbort,
@@ -78,43 +86,10 @@ export function InputToolbar({
   const useSeatSelector = composerSelectorStyle === 'seat'
   const useBrowserFileInput = !isTauri() || isTauriMobile()
 
-  // 根据模型能力计算支持的文件类型
-  const caps = fileCapabilities ?? { image: false, pdf: false, audio: false, video: false }
-  const supportsAnyFile = caps.image || caps.pdf || caps.audio || caps.video
+  // 附件选择不再按模型能力过滤（Issue #182）：白名单外的文件会走服务端上传，
+  // 因此文件选择器必须能看到任意文件类型。`fileCapabilities` 仍由上层用于内联判定。
   const controlsDisabled = isSending
 
-  // 动态构建 HTML accept 和 Tauri filter
-  const { acceptString, tauriFilters } = useMemo(() => {
-    const accept: string[] = []
-    const extensions: string[] = []
-    const filterNames: string[] = []
-
-    if (caps.image) {
-      accept.push('image/*')
-      extensions.push('png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg')
-      filterNames.push('Images')
-    }
-    if (caps.pdf) {
-      accept.push('application/pdf')
-      extensions.push('pdf')
-      filterNames.push('PDF')
-    }
-    if (caps.audio) {
-      accept.push('audio/*')
-      extensions.push('mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a')
-      filterNames.push('Audio')
-    }
-    if (caps.video) {
-      accept.push('video/*')
-      extensions.push('mp4', 'webm', 'mov', 'avi', 'mkv')
-      filterNames.push('Video')
-    }
-
-    return {
-      acceptString: accept.join(','),
-      tauriFilters: extensions.length > 0 ? [{ name: filterNames.join(' / '), extensions }] : [],
-    }
-  }, [caps.image, caps.pdf, caps.audio, caps.video])
   // State for menus
   const [agentMenuOpen, setAgentMenuOpen] = useState(false)
   const [variantMenuOpen, setVariantMenuOpen] = useState(false)
@@ -238,14 +213,10 @@ export function InputToolbar({
     }
 
     try {
-      const [{ open }, { readFile }] = await Promise.all([
-        import('@tauri-apps/plugin-dialog'),
-        import('@tauri-apps/plugin-fs'),
-      ])
+      const { open } = await import('@tauri-apps/plugin-dialog')
 
       const selected = await open({
         multiple: true,
-        filters: tauriFilters,
         fileAccessMode: 'copy',
       })
 
@@ -254,6 +225,14 @@ export function InputToolbar({
       const paths = Array.isArray(selected) ? selected : [selected]
       if (paths.length === 0) return
 
+      // 有原生路径就交给上层，与拖入共用同一条判定（本机 → @ 引用 / 远端 → 上传）；
+      // 读字节拼 File 会丢掉路径，那条只作为没有上层的兜底
+      if (onPickedPaths) {
+        onPickedPaths(paths)
+        return
+      }
+
+      const { readFile } = await import('@tauri-apps/plugin-fs')
       const files: File[] = []
       for (const path of paths) {
         const fileName = path.split(/[\\/]/).pop() || 'file'
@@ -271,7 +250,7 @@ export function InputToolbar({
     } catch (err) {
       console.warn('[InputToolbar] File picker error:', err)
     }
-  }, [onFilesSelected, tauriFilters, useBrowserFileInput])
+  }, [onFilesSelected, onPickedPaths, useBrowserFileInput])
 
   // Click outside logic
   useEffect(() => {
@@ -570,14 +549,13 @@ export function InputToolbar({
             {busyDelivery === 'steer' ? t('inputToolbar.steer') : t('inputToolbar.followUp')}
           </button>
         </AnimatedPresence>
-        <AnimatedPresence show={supportsAnyFile}>
+        <AnimatedPresence show={true}>
           <>
-            {/* 浏览器模式下的隐藏文件输入 */}
+            {/* 浏览器模式下的隐藏文件输入（不设 accept：任意文件都可上传，Issue #182） */}
             {useBrowserFileInput && (
               <input
                 ref={fileInputRef}
                 type="file"
-                accept={acceptString}
                 multiple
                 className="hidden"
                 onChange={e => {
