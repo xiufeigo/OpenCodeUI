@@ -68,6 +68,7 @@
   },
   "panelContainer": {
     "files": "文件",
+    "file": "文件",
     "changes": "变更",
     "context": "上下文",
     "mcp": "MCP",

@@ -6,16 +6,30 @@
 export type PanelPosition = 'bottom' | 'right'
 
 // 面板内容类型
-export type PanelTabType = 'terminal' | 'files' | 'changes' | 'context' | 'mcp' | 'skill' | 'worktree' | 'plugins'
-type PersistedPanelTabType = Exclude<PanelTabType, 'terminal'>
+//
+// 'file' = 单个打开的文件（点击目录树里的文件后在标签栏开一个新标签，全高显示）。
+export type PanelTabType =
+  | 'terminal'
+  | 'files'
+  | 'file'
+  | 'changes'
+  | 'context'
+  | 'mcp'
+  | 'skill'
+  | 'worktree'
+  | 'plugins'
+/** 'file' 标签是会话内的临时状态（重载后不恢复），不参与布局持久化 */
+type PersistedPanelTabType = Exclude<PanelTabType, 'terminal' | 'file'>
 
 // 统一的面板标签
 export interface PanelTab {
   id: string
   type: PanelTabType
   position: PanelPosition
+  /** type='file' 时：这一页展示的文件 */
   previewFile?: PreviewFile | null
-  previewFiles?: PreviewFile[]
+  /** type='file' 时：打开它时所在的标签（关掉文件标签后回到那里） */
+  openedFromTabId?: string
   // Terminal 特有属性
   ptyId?: string
   /** 终端所属服务器（PTY 创建时记录；连接/恢复时用该服务器，而不是当前焦点服务器） */
@@ -40,20 +54,19 @@ export interface PreviewFile {
   /** 打开时所属工作区目录（规范化正斜杠）——预览状态按工作区作用域，
    *  切工作区后另一个工作区的预览不再串到当前文件面板（官方按 session tab 作用域的等价物） */
   directory?: string
+  /** 打开时所属服务器：切服务器后这个文件仍然读原来的服务器 */
+  serverId?: string
   targetLine?: number
   targetKey?: string
   targetRanges?: Array<{ from: number; to: number }>
 }
 
-/** 预览条目身份 = 相对路径 + 工作区目录（同一路径在不同工作区是不同文件） */
-function samePreviewIdentity(a: { path: string; directory?: string }, b: { path: string; directory?: string }) {
-  return a.path === b.path && (a.directory ?? '') === (b.directory ?? '')
-}
-
-/** 条目是否属于当前工作区：无目录信息（旧数据/无工作区上下文）时始终可见 */
-export function previewMatchesDirectory(file: { directory?: string }, directory: string | undefined): boolean {
-  if (!file.directory || !directory) return true
-  return isSameDirectory(file.directory, directory)
+/**
+ * 文件标签页 id：同一面板 + 同一服务器 + 同一工作区下的同一路径复用同一个标签。
+ * （面板位置参与身份：同一个文件可以在右侧和底部各开一个标签）
+ */
+export function fileTabId(position: PanelPosition, file: Pick<PreviewFile, 'path' | 'directory' | 'serverId'>): string {
+  return `file:${position}::${file.serverId ?? ''}::${file.directory ?? ''}::${file.path}`
 }
 
 const MAX_RIGHT_PANEL_WIDTH = 1280
@@ -237,17 +250,6 @@ function isPersistedPanelTabType(value: unknown): value is PersistedPanelTabType
 }
 
 function normalizePersistedPanelTab(tab: PersistedPanelTab): PanelTab {
-  if (tab.type === 'files') {
-    return {
-      id: tab.id,
-      type: 'files',
-      position: tab.position,
-      title: tab.title,
-      previewFile: null,
-      previewFiles: [],
-    }
-  }
-
   return {
     id: tab.id,
     type: tab.type,
@@ -362,7 +364,7 @@ export class LayoutStore {
   private state: LayoutState = {
     panelTabs: [
       // 默认 tabs: 文件、变更、上下文都在右侧面板
-      { id: 'files', type: 'files', position: 'right', previewFile: null, previewFiles: [] },
+      { id: 'files', type: 'files', position: 'right' },
       { id: 'changes', type: 'changes', position: 'right' },
       { id: 'context', type: 'context', position: 'right' },
     ],
@@ -390,7 +392,7 @@ export class LayoutStore {
       const persisted: PersistedPanelLayout = {
         version: 2,
         panelTabs: this.state.panelTabs
-          .filter((tab): tab is PanelTab & { type: PersistedPanelTabType } => tab.type !== 'terminal')
+          .filter((tab): tab is PanelTab & { type: PersistedPanelTabType } => isPersistedPanelTabType(tab.type))
           .map(tab => ({
             id: tab.id,
             type: tab.type,
@@ -700,7 +702,7 @@ export class LayoutStore {
 
   // 添加 Files 标签
   addFilesTab(position: PanelPosition) {
-    return this.addTab({ type: 'files', position, previewFile: null, previewFiles: [] })
+    return this.addTab({ type: 'files', position })
   }
 
   // 添加 Changes 标签
@@ -744,9 +746,17 @@ export class LayoutStore {
 
     // 如果关闭的是当前活动 tab，切换到同位置的相邻 tab
     if (this.state.activeTabId[position] === tabId) {
-      const remainingTabs = this.getTabsForPosition(position)
-      const newIndex = Math.min(index, remainingTabs.length - 1)
-      this.state.activeTabId[position] = remainingTabs[newIndex]?.id ?? null
+      // 文件标签回到它被打开的地方（目录树 / 变更面板），而不是跳到右邻标签
+      const origin = tab.openedFromTabId
+      const originStillExists =
+        !!origin && this.state.panelTabs.some(item => item.id === origin && item.position === position)
+      if (originStillExists) {
+        this.state.activeTabId[position] = origin!
+      } else {
+        const remainingTabs = this.getTabsForPosition(position)
+        const newIndex = Math.min(index, remainingTabs.length - 1)
+        this.state.activeTabId[position] = remainingTabs[newIndex]?.id ?? null
+      }
     }
 
     // 如果该位置没有 tab 了，关闭面板
@@ -885,114 +895,50 @@ export class LayoutStore {
   }
 
   // ============================================
-  // File Preview Actions
+  // File Tab Actions
   // ============================================
 
-  openFilePreview(file: PreviewFile, position?: PanelPosition) {
-    const targetTab = this.getTargetFilesTab(position)
-    if (!targetTab) return
-
-    // 目录规范化（正斜杠）：身份比较是字符串级，避免同目录不同写法产生重复条目
+  /**
+   * 打开一个文件：在目标面板的标签栏里开一个 'file' 标签并激活。
+   *
+   * 同一工作区的同一路径永远复用同一个标签（重复点击只是切回来），
+   * 不同工作区的同名文件是两个标签。
+   */
+  openFileTab(file: PreviewFile, position: PanelPosition) {
+    // 目录规范化（正斜杠）：标签 id 是字符串级的，同目录不同写法不能产生两个标签
     const normalizedFile = file.directory ? { ...file, directory: normalizeToForwardSlash(file.directory) } : file
+    const id = fileTabId(position, normalizedFile)
 
-    // 按身份（path+工作区）去重；已存在则移到末尾——列表顺序即「最近使用序」，
-    // FileExplorer 用它推导每个工作区自己的最近预览
-    const rest = (targetTab.previewFiles ?? []).filter(item => !samePreviewIdentity(item, normalizedFile))
-
-    targetTab.previewFiles = [...rest, normalizedFile]
-    targetTab.previewFile = normalizedFile
-    this.state.activeTabId[targetTab.position] = targetTab.id
-    this.setPanelOpen(targetTab.position, true)
-    this.notify()
-  }
-
-  activateFilePreview(tabId: string, path: string, directory?: string) {
-    const tab = this.state.panelTabs.find(item => item.id === tabId && item.type === 'files')
-    const files = tab?.previewFiles
-    if (!tab || !files) return
-    const identity = { path, directory }
-    const file = files.find(item => samePreviewIdentity(item, identity))
-    if (!file) return
-    // 激活即最近：移到末尾，保持每个工作区的最近序
-    tab.previewFiles = [...files.filter(item => !samePreviewIdentity(item, identity)), file]
-    tab.previewFile = file
-    this.notify()
-  }
-
-  closeFilePreview(tabId: string, path?: string, directory?: string) {
-    const tab = this.state.panelTabs.find(item => item.id === tabId && item.type === 'files')
-    const previewFiles = tab?.previewFiles
-    const targetPath = path ?? tab?.previewFile?.path
-    if (!tab || !previewFiles || !targetPath) return
-    const identity = { path: targetPath, directory: directory ?? tab.previewFile?.directory }
-
-    if (!previewFiles.some(item => samePreviewIdentity(item, identity))) return
-
-    const isActive = !!tab.previewFile && samePreviewIdentity(tab.previewFile, identity)
-    const nextPreviewFiles = previewFiles.filter(item => !samePreviewIdentity(item, identity))
-
-    tab.previewFiles = nextPreviewFiles
-
-    if (nextPreviewFiles.length === 0) {
-      tab.previewFile = null
-    } else if (isActive) {
-      // 关闭活跃预览后回退到最近使用的条目（末尾 = 最近）
-      tab.previewFile = nextPreviewFiles[nextPreviewFiles.length - 1] ?? null
+    const existing = this.state.panelTabs.find(tab => tab.id === id)
+    if (existing) {
+      this.state.activeTabId[position] = id
+      this.setPanelOpen(position, true)
+      this.notify()
+      return id
     }
 
-    this.notify()
-  }
-
-  closeAllFilePreviews(tabId: string) {
-    const tab = this.state.panelTabs.find(item => item.id === tabId && item.type === 'files')
-    if (!tab) return
-    tab.previewFile = null
-    tab.previewFiles = []
-    this.notify()
-  }
-
-  reorderFilePreviews(tabId: string, draggedPath: string, targetPath: string, directory?: string) {
-    const tab = this.state.panelTabs.find(item => item.id === tabId && item.type === 'files')
-    const previewFiles = tab?.previewFiles
-    if (!tab || !previewFiles) return
-
-    const draggedIndex = previewFiles.findIndex(item => samePreviewIdentity(item, { path: draggedPath, directory }))
-    const targetIndex = previewFiles.findIndex(item => samePreviewIdentity(item, { path: targetPath, directory }))
-
-    if (draggedIndex === -1 || targetIndex === -1 || draggedIndex === targetIndex) return
-
-    const nextPreviewFiles = [...previewFiles]
-    const [dragged] = nextPreviewFiles.splice(draggedIndex, 1)
-    nextPreviewFiles.splice(targetIndex, 0, dragged)
-    tab.previewFiles = nextPreviewFiles
-    this.notify()
-  }
-
-  private getTargetFilesTab(position?: PanelPosition): PanelTab | null {
-    if (position) {
-      const activeId = this.state.activeTabId[position]
-      const activeFilesTab = this.state.panelTabs.find(
-        t => t.id === activeId && t.type === 'files' && t.position === position,
-      )
-      if (activeFilesTab) return activeFilesTab
-
-      const filesTab = this.state.panelTabs.find(t => t.type === 'files' && t.position === position)
-      if (filesTab) return filesTab
-
-      const id = this.addFilesTab(position)
-      return this.state.panelTabs.find(t => t.id === id) ?? null
+    const newTab: PanelTab = {
+      id,
+      type: 'file',
+      position,
+      previewFile: normalizedFile,
+      // 记住是从哪个标签打开的：关掉文件标签后回到那里（一般是目录树 / 变更面板）
+      openedFromTabId: this.state.activeTabId[position] ?? undefined,
     }
+    this.state.panelTabs.splice(this.getFileTabInsertIndex(position), 0, newTab)
+    this.state.activeTabId[position] = id
+    this.setPanelOpen(position, true)
+    this.notify()
+    return id
+  }
 
-    const preferred = (['right', 'bottom'] as const)
-      .map(pos =>
-        this.state.panelTabs.find(
-          t => t.id === this.state.activeTabId[pos] && t.type === 'files' && t.position === pos,
-        ),
-      )
-      .find(Boolean)
-    if (preferred) return preferred
-
-    return this.state.panelTabs.find(t => t.type === 'files') ?? null
+  /** 新文件标签插在哪：紧跟最后一个文件标签；没有文件标签则紧跟「文件」目录树标签 */
+  private getFileTabInsertIndex(position: PanelPosition): number {
+    const positionTabs = this.state.panelTabs.filter(tab => tab.position === position)
+    const lastFile = positionTabs.findLastIndex(tab => tab.type === 'file')
+    const anchor = lastFile >= 0 ? positionTabs[lastFile] : positionTabs.findLast(tab => tab.type === 'files')
+    if (!anchor) return this.state.panelTabs.length
+    return this.state.panelTabs.findIndex(tab => tab.id === anchor.id) + 1
   }
 
   // ============================================
@@ -1312,7 +1258,7 @@ function buildPersistedPanelLayout(state: LayoutState): PersistedPanelLayout {
   return {
     version: 2,
     panelTabs: state.panelTabs
-      .filter((tab): tab is PanelTab & { type: PersistedPanelTabType } => tab.type !== 'terminal')
+      .filter((tab): tab is PanelTab & { type: PersistedPanelTabType } => isPersistedPanelTabType(tab.type))
       .map(tab => ({
         id: tab.id,
         type: tab.type,
@@ -1396,7 +1342,7 @@ export function importLayoutBackup(raw: unknown): void {
 // ============================================
 
 import { useSyncExternalStore } from 'react'
-import { isSameDirectory, normalizeToForwardSlash } from '../utils'
+import { normalizeToForwardSlash } from '../utils'
 
 // 兼容的 snapshot 类型，包含派生属性
 interface LayoutSnapshot extends LayoutState {

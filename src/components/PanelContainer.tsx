@@ -3,7 +3,7 @@
 // 支持 tabs、右键菜单移动、拖拽排序
 // ============================================
 
-import { memo, useState, useCallback, useRef, useEffect } from 'react'
+import { memo, useState, useCallback, useRef, useEffect, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 import { createPortal } from 'react-dom'
 import {
@@ -12,6 +12,7 @@ import {
   ChevronRightIcon,
   TerminalIcon,
   FolderIcon,
+  FileIcon,
   GitCommitIcon,
   PlugIcon,
   TeachIcon,
@@ -22,6 +23,7 @@ import { layoutStore, useLayoutStore, type PanelTab, type PanelPosition, type Pa
 import { updatePtySession } from '../api/pty'
 import { useTheme } from '../hooks'
 import { uiErrorHandler } from '../utils'
+import { fileEditorId, isFileEditorDirty, requestCloseFileEditor, subscribeFileEditorDirty } from '../store/unsavedFileStore'
 import {
   getInternalDragSnapshot,
   startInternalDrag,
@@ -47,6 +49,7 @@ interface PanelContainerProps {
 const TAB_ICONS: Record<PanelTabType, React.ReactNode> = {
   terminal: <TerminalIcon size={12} />,
   files: <FolderIcon size={12} />,
+  file: <FileIcon size={12} />,
   changes: <GitCommitIcon size={12} />,
   context: <CpuIcon size={12} />,
   mcp: <PlugIcon size={12} />,
@@ -59,6 +62,9 @@ const TAB_ICONS: Record<PanelTabType, React.ReactNode> = {
 function getTabLabel(tab: PanelTab, tabs: PanelTab[], t: (key: string) => string): string {
   if (tab.type === 'terminal') {
     return tab.title ?? t('terminal.terminal')
+  }
+  if (tab.type === 'file') {
+    return tab.previewFile?.name ?? tab.title ?? t('panelContainer.file')
   }
   switch (tab.type) {
     case 'files': {
@@ -214,6 +220,11 @@ export const PanelContainer = memo(function PanelContainer({
       if (tab.type === 'terminal' && onCloseTerminal) {
         void onCloseTerminal(tab)
         return
+      }
+      // 文件标签有未保存改动时，交给文件视图确认（别静默丢改动）
+      if (tab.type === 'file' && tab.previewFile) {
+        const editorId = fileEditorId(tab.previewFile.serverId, tab.previewFile.directory, tab.previewFile.path)
+        if (requestCloseFileEditor(editorId)) return
       }
       layoutStore.removeTab(tabId)
     },
@@ -617,12 +628,26 @@ const PanelTabButton = memo(function PanelTabButton({
     [onClose],
   )
 
+  // 文件标签的提示是完整路径（标签上只显示文件名）
+  const tooltip = tab.type === 'file' ? tab.previewFile?.path : tab.type === 'terminal' ? label : undefined
+
+  // 文件标签上的脏标记：这一页有未保存的改动
+  const editorId =
+    tab.type === 'file' && tab.previewFile
+      ? fileEditorId(tab.previewFile.serverId, tab.previewFile.directory, tab.previewFile.path)
+      : null
+  const isDirty = useSyncExternalStore(
+    subscribeFileEditorDirty,
+    () => (editorId ? isFileEditorDirty(editorId) : false),
+    () => false,
+  )
+
   return (
     <div
       data-tab-id={tab.id}
       data-panel-tab-id={tab.id}
-      title={tab.type === 'terminal' ? label : undefined}
-      aria-label={tab.type === 'terminal' ? label : undefined}
+      title={tooltip}
+      aria-label={tooltip ?? label}
       onPointerDown={handlePointerDragStart}
       onMouseDown={handleMiddleClose}
       onClick={onClick}
@@ -641,8 +666,11 @@ const PanelTabButton = memo(function PanelTabButton({
         ${isDragOver ? 'border-accent-main-100 bg-accent-main-100/10' : ''}
       `}
     >
-      {/* Status indicator for terminals */}
+      {/* 状态指示器（终端） / 脏标记（文件） */}
       {statusColor && <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusColor}`} />}
+      {isDirty && (
+        <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-accent-main-100" title={t('fileExplorer.discardUnsaved')} />
+      )}
 
       {/* Icon */}
       <span className="opacity-60 shrink-0">{TAB_ICONS[tab.type]}</span>

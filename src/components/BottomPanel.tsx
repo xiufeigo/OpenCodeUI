@@ -15,6 +15,7 @@ const SessionChangesPanel = lazy(() =>
 )
 const ContextPanel = lazy(() => import('./ContextPanel').then(module => ({ default: module.ContextPanel })))
 const FileExplorer = lazy(() => import('./FileExplorer').then(module => ({ default: module.FileExplorer })))
+const FileViewer = lazy(() => import('./FileViewer').then(module => ({ default: module.FileViewer })))
 const McpPanel = lazy(() => import('./McpPanel').then(module => ({ default: module.McpPanel })))
 const SkillPanel = lazy(() => import('./SkillPanel').then(module => ({ default: module.SkillPanel })))
 const WorktreePanel = lazy(() => import('./WorktreePanel').then(module => ({ default: module.WorktreePanel })))
@@ -84,7 +85,6 @@ export const BottomPanel = memo(function BottomPanel({ directory, serverId, term
               <FilesContent
                 activeTab={activeTab}
                 directory={directory ?? ''}
-                isPanelResizing={isPanelResizing}
                 sessionId={sessionId}
                 serverId={serverId}
               />
@@ -114,6 +114,13 @@ export const BottomPanel = memo(function BottomPanel({ directory, serverId, term
               <ContextPanel sessionId={sessionId} serverId={serverId} />
             </Suspense>
           ) : null}
+
+          {/* 打开的文件保持挂载：切走再切回来，编辑态与滚动位置都还在 */}
+          <div className={activeTab.type === 'file' ? 'h-full' : 'hidden'}>
+            <Suspense fallback={<PanelFallback />}>
+              <FileContent activeTab={activeTab} serverId={serverId} sessionId={sessionId} isPanelResizing={isPanelResizing} />
+            </Suspense>
+          </div>
 
           {activeTab.type === 'terminal' ? (
             <Suspense fallback={<PanelFallback />}>
@@ -206,7 +213,6 @@ const TerminalContent = memo(function TerminalContent({ activeTab }: TerminalCon
 interface FilesContentProps {
   activeTab: PanelTab
   directory?: string
-  isPanelResizing?: boolean
   sessionId?: string | null
   serverId?: string
 }
@@ -214,7 +220,6 @@ interface FilesContentProps {
 const FilesContent = memo(function FilesContent({
   activeTab,
   directory,
-  isPanelResizing = false,
   sessionId,
   serverId,
 }: FilesContentProps) {
@@ -229,12 +234,45 @@ const FilesContent = memo(function FilesContent({
             panelTabId={tab.id}
             directory={directory}
             serverId={serverId}
-            previewFile={tab.previewFile ?? null}
-            previewFiles={tab.previewFiles ?? []}
             position="bottom"
-            isPanelResizing={isPanelResizing}
             sessionId={sessionId}
           />
+        </div>
+      ))}
+    </>
+  )
+})
+
+interface FileContentProps {
+  activeTab: PanelTab
+  serverId?: string
+  sessionId?: string | null
+  isPanelResizing?: boolean
+}
+
+/** 打开的文件：每个文件一个标签页，内容整页展示 */
+const FileContent = memo(function FileContent({
+  activeTab,
+  serverId,
+  sessionId,
+  isPanelResizing = false,
+}: FileContentProps) {
+  const { panelTabs } = useLayoutStore()
+  const fileTabs = panelTabs.filter(t => t.position === 'bottom' && t.type === 'file')
+
+  return (
+    <>
+      {fileTabs.map(tab => (
+        <div key={tab.id} className={tab.id === activeTab.id ? 'h-full' : 'hidden'}>
+          {tab.previewFile && (
+            <FileViewer
+              tabId={tab.id}
+              file={tab.previewFile}
+              serverId={serverId}
+              sessionId={sessionId}
+              isPanelResizing={isPanelResizing}
+            />
+          )}
         </div>
       ))}
     </>

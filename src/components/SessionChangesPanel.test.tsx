@@ -270,8 +270,8 @@ describe('SessionChangesPanel', () => {
     expect(screen.getByText(/not.*git|git.*repository/i)).toBeInTheDocument()
   })
 
-  it('opens the selected change file in the files panel from the context menu', async () => {
-    const openFilePreview = vi.spyOn(layoutStore, 'openFilePreview')
+  it('opens the selected change file in a new file tab from the context menu', async () => {
+    const openFileTab = vi.spyOn(layoutStore, 'openFileTab')
 
     render(
       <FullscreenProvider>
@@ -290,7 +290,7 @@ describe('SessionChangesPanel', () => {
     fireEvent.contextMenu(fileButtons[0])
     fireEvent.click(screen.getByRole('button', { name: 'Open in Files' }))
 
-    // 预览条目带工作区目录标签（按工作区作用域隔离预览）
-    expect(openFilePreview).toHaveBeenCalledWith({ path: 'src/git.ts', name: 'git.ts', directory: '/repo' }, 'bottom')
+    // 文件标签带工作区目录（按工作区隔离同名文件）
+    expect(openFileTab).toHaveBeenCalledWith({ path: 'src/git.ts', name: 'git.ts', directory: '/repo' }, 'bottom')
   })
 })

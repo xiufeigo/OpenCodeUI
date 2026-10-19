@@ -288,64 +288,82 @@ describe('LayoutStore panel and terminal layout', () => {
   })
 })
 
-// 文件预览按工作区作用域：不同工作区的同名相对路径互不干扰（官方 session tab 作用域的等价物）
-describe('LayoutStore file preview workspace scoping', () => {
+// 打开的文件 = 面板里的一个 'file' 标签页
+describe('LayoutStore file tab', () => {
   beforeEach(() => {
     localStorage.clear()
   })
 
-  it('同一路径在不同工作区是独立条目', () => {
+  it('同一路径在不同工作区是两个独立标签', () => {
     const store = new LayoutStore()
-    store.openFilePreview({ path: 'src/app.ts', name: 'app.ts', directory: '/repo-a' })
-    store.openFilePreview({ path: 'src/app.ts', name: 'app.ts', directory: '/repo-b' })
+    store.openFileTab({ path: 'src/app.ts', name: 'app.ts', directory: '/repo-a' }, 'right')
+    store.openFileTab({ path: 'src/app.ts', name: 'app.ts', directory: '/repo-b' }, 'right')
 
-    const tab = store.getState().panelTabs.find(item => item.id === 'files')
-    expect(tab?.previewFiles).toHaveLength(2)
-    expect(tab?.previewFile).toMatchObject({ path: 'src/app.ts', directory: '/repo-b' })
+    const fileTabs = store.getState().panelTabs.filter(item => item.type === 'file')
+    expect(fileTabs).toHaveLength(2)
+    expect(store.getState().activeTabId.right).toBe(fileTabs[1].id)
   })
 
-  it('同一工作区内重复打开只保留一个条目', () => {
+  it('同一工作区内重复打开复用同一个标签', () => {
     const store = new LayoutStore()
-    store.openFilePreview({ path: 'src/app.ts', name: 'app.ts', directory: '/repo-a' })
-    store.openFilePreview({ path: 'src/app.ts', name: 'app.ts', directory: '/repo-a' })
+    const first = store.openFileTab({ path: 'src/app.ts', name: 'app.ts', directory: '/repo-a' }, 'right')
+    const second = store.openFileTab({ path: 'src/app.ts', name: 'app.ts', directory: '/repo-a' }, 'right')
 
-    const tab = store.getState().panelTabs.find(item => item.id === 'files')
-    expect(tab?.previewFiles).toHaveLength(1)
+    expect(second).toBe(first)
+    expect(store.getState().panelTabs.filter(item => item.type === 'file')).toHaveLength(1)
   })
 
-  it('目录写法不同（反斜杠）仍视为同一工作区条目', () => {
+  it('目录写法不同（反斜杠）仍视为同一工作区的同一个文件', () => {
     const store = new LayoutStore()
-    store.openFilePreview({ path: 'src/app.ts', name: 'app.ts', directory: 'C:\\repo\\a' })
-    store.openFilePreview({ path: 'src/app.ts', name: 'app.ts', directory: 'C:/repo/a' })
+    store.openFileTab({ path: 'src/app.ts', name: 'app.ts', directory: 'C:\\repo\\a' }, 'right')
+    store.openFileTab({ path: 'src/app.ts', name: 'app.ts', directory: 'C:/repo/a' }, 'right')
 
-    const tab = store.getState().panelTabs.find(item => item.id === 'files')
-    expect(tab?.previewFiles).toHaveLength(1)
-    expect(tab?.previewFiles?.[0]?.directory).toBe('C:/repo/a')
+    const fileTabs = store.getState().panelTabs.filter(item => item.type === 'file')
+    expect(fileTabs).toHaveLength(1)
+    expect(fileTabs[0].previewFile?.directory).toBe('C:/repo/a')
   })
 
-  it('关闭活跃预览回退到最近使用的条目', () => {
+  it('文件标签插在目录树标签之后，并成为活动标签', () => {
     const store = new LayoutStore()
-    store.openFilePreview({ path: 'a.ts', name: 'a.ts', directory: '/repo' })
-    store.openFilePreview({ path: 'b.ts', name: 'b.ts', directory: '/repo' })
-    store.activateFilePreview('files', 'a.ts', '/repo')
+    const id = store.openFileTab({ path: 'a.ts', name: 'a.ts', directory: '/repo' }, 'right')
 
-    // a.ts 是活跃（且因激活移到末尾=最近）
-    expect(store.getState().panelTabs.find(t => t.id === 'files')?.previewFile?.path).toBe('a.ts')
-
-    store.closeFilePreview('files', 'a.ts', '/repo')
-    const tab = store.getState().panelTabs.find(t => t.id === 'files')
-    expect(tab?.previewFile?.path).toBe('b.ts')
-    expect(tab?.previewFiles).toHaveLength(1)
+    const tabs = store.getState().panelTabs
+    const filesIndex = tabs.findIndex(item => item.type === 'files')
+    const fileIndex = tabs.findIndex(item => item.id === id)
+    expect(fileIndex).toBe(filesIndex + 1)
+    expect(store.getState().activeTabId.right).toBe(id)
   })
 
-  it('关闭一个工作区的预览不影响另一个工作区', () => {
+  it('关闭一个工作区的文件标签不影响另一个工作区', () => {
     const store = new LayoutStore()
-    store.openFilePreview({ path: 'src/app.ts', name: 'app.ts', directory: '/repo-a' })
-    store.openFilePreview({ path: 'src/app.ts', name: 'app.ts', directory: '/repo-b' })
+    const a = store.openFileTab({ path: 'src/app.ts', name: 'app.ts', directory: '/repo-a' }, 'right')
+    const b = store.openFileTab({ path: 'src/app.ts', name: 'app.ts', directory: '/repo-b' }, 'right')
 
-    store.closeFilePreview('files', 'src/app.ts', '/repo-b')
-    const tab = store.getState().panelTabs.find(t => t.id === 'files')
-    expect(tab?.previewFiles).toHaveLength(1)
-    expect(tab?.previewFiles?.[0]?.directory).toBe('/repo-a')
+    store.removeTab(b)
+    const fileTabs = store.getState().panelTabs.filter(item => item.type === 'file')
+    expect(fileTabs).toHaveLength(1)
+    expect(fileTabs[0].id).toBe(a)
+  })
+
+  it('关闭文件标签后回到打开它的那一页（目录树）', () => {
+    const store = new LayoutStore()
+    // 目录树是活动标签时打开文件
+    store.setActiveTab('right', 'files')
+    const id = store.openFileTab({ path: 'a.ts', name: 'a.ts', directory: '/repo' }, 'right')
+    expect(store.getState().activeTabId.right).toBe(id)
+
+    store.removeTab(id)
+    expect(store.getState().activeTabId.right).toBe('files')
+  })
+
+  it('同一个文件在右侧和底部是两个独立标签', () => {
+    const store = new LayoutStore()
+    const right = store.openFileTab({ path: 'a.ts', name: 'a.ts', directory: '/repo' }, 'right')
+    const bottom = store.openFileTab({ path: 'a.ts', name: 'a.ts', directory: '/repo' }, 'bottom')
+
+    expect(bottom).not.toBe(right)
+    expect(store.getState().panelTabs.filter(item => item.type === 'file')).toHaveLength(2)
+    expect(store.getState().activeTabId.right).toBe(right)
+    expect(store.getState().activeTabId.bottom).toBe(bottom)
   })
 })
