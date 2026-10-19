@@ -916,7 +916,7 @@ function App() {
     handleToggleFocusedPaneFullscreen,
   ])
 
-  const { showCloseDialog, handleCloseDialogConfirm, handleCloseDialogCancel } = useCloseServiceDialog()
+  const { showCloseDialog, handleCloseDialogConfirm, handleCloseDialogCancel, hasUnsavedChanges } = useCloseServiceDialog()
 
   return (
     <div className="relative flex h-full flex-col bg-bg-100 overflow-hidden">
@@ -1112,6 +1112,7 @@ function App() {
             isOpen={showCloseDialog}
             onConfirm={handleCloseDialogConfirm}
             onCancel={handleCloseDialogCancel}
+            hasUnsavedChanges={hasUnsavedChanges}
           />
         </Suspense>
       </ChatViewportProvider>

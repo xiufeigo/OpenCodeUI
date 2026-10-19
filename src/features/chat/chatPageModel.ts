@@ -1,5 +1,6 @@
 import type { AssistantMessage, SessionMessageInfo, ToolState, UserMessage } from '../../types/api/message'
-import { contentEntries, isAssistantMessage, isUserMessage, userMessageText } from '../../types/api/message'
+import { contentEntries, isAssistantMessage, isFailedIdleMessage, isUserMessage, userMessageText } from '../../types/api/message'
+import { isInterruptedError } from '../../utils/errorMessage'
 
 export const PAGE_MESSAGE_COUNT = 20
 export const PAGE_EXTREME_RENDER_WEIGHT = 700
@@ -900,6 +901,11 @@ export function buildProcessTimeline(
     assistants: AssistantMessage[]
     /** 独立成行的消息（shell 命令等）：不进任何回合壳，按原位平铺 */
     standalone?: SessionMessageInfo
+    /**
+     * 会话级失败的 idle 标记（pre-promotion failure 等，官方 isFailedIdle）。
+     * 不结束回合分组（重试的后续 assistant 仍归本回合），回合转换时追加成错误卡片。
+     */
+    failedIdle?: SessionMessageInfo
   }
 
   const turns: TurnBag[] = []
@@ -919,6 +925,13 @@ export function buildProcessTimeline(
         current = null
       }
       turns.push({ user: null, assistants: [], standalone: message })
+      continue
+    }
+    // 失败的 idle 标记：会话级错误（如 prompt 没能提升成 assistant 工作）只在这条
+    // 标记里，跳过它错误就永远不渲染。记到当前回合（没有就独立平铺），转换时追加。
+    if (isFailedIdleMessage(message)) {
+      if (current) current.failedIdle = message
+      else items.push({ kind: 'message', key: message.id, message })
       continue
     }
     if (!isAssistantMessage(message)) continue
@@ -958,9 +971,12 @@ export function buildProcessTimeline(
       // 空回合：idle 结束；或后面已有 assistant（被跳过）
       return !sessionIsStreaming || laterHasAssistant(index)
     }
-    // 全 completed 且无 live → 锁定 Worked。
-    // 不要再用 sessionIsStreaming 重开：发送时 busy 常早于新 user 入列，会闪一下。
-    // 工具循环间隙若下一助手还没到，会短暂 Worked；下一助手 live 后自然回到 Working。
+    // 全 completed 但会话还 busy（服务端 session.status busy/retry）且这是最后一个用户回合：
+    // 只是同一回合「上一步已收尾、下一步还没到」的间隙（多步 agent 的常态），
+    // 不能判成 Worked —— 否则壳会先收起、等下一步内容到了再展开。
+    // 等 idle 把 busy 摘掉，或下一轮 user 接手（index 不再是最后一个）才收。
+    if (sessionIsStreaming && index === userTurns.length - 1) return false
+    // 确实收工（busy 已清 / 后面已有新一轮）
     return assistants.every(m => m.time.completed != null)
   }
 
@@ -979,6 +995,16 @@ export function buildProcessTimeline(
     }
   }
 
+  // 回合末尾追加失败 idle 的错误卡片；错误已在末尾 assistant 上显示过就不重复
+  // （官方 session-ui projection.ts:276 的同款去重：assistant.error 已渲染则跳过 idle 卡）
+  const appendFailedIdle = (turn: TurnBag) => {
+    const failedIdle = turn.failedIdle
+    if (!failedIdle) return
+    const last = turn.assistants.at(-1)
+    if (last?.error && !isInterruptedError(last.error)) return
+    items.push({ kind: 'message', key: failedIdle.id, message: failedIdle })
+  }
+
   for (const turn of turns) {
     if (turn.standalone) {
       items.push({ kind: 'message', key: turn.standalone.id, message: turn.standalone })
@@ -989,13 +1015,17 @@ export function buildProcessTimeline(
     }
 
     const assistants = turn.assistants
-    if (!turn.user && assistants.length === 0) continue
+    if (!turn.user && assistants.length === 0) {
+      appendFailedIdle(turn)
+      continue
+    }
 
     // 无 user 的续段：平铺
     if (!turn.user) {
       for (const m of assistants) {
         items.push({ kind: 'message', key: m.id, message: m })
       }
+      appendFailedIdle(turn)
       continue
     }
 
@@ -1055,6 +1085,8 @@ export function buildProcessTimeline(
         items.push({ kind: 'message', key: m.id, message: m })
       }
     }
+
+    appendFailedIdle(turn)
   }
 
   return items

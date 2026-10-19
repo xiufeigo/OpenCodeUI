@@ -2,11 +2,9 @@ import { memo, useState, useRef, useEffect, useLayoutEffect, useMemo, useCallbac
 import { useTranslation } from 'react-i18next'
 import { diffLines } from 'diff'
 import { animate } from 'motion/mini'
-import { ChevronDownIcon, ChevronRightIcon, SplitIcon, SpinnerIcon, UndoIcon } from '../../components/Icons'
+import { ChevronDownIcon, ChevronRightIcon } from '../../components/Icons'
 import { CopyButton, SmoothHeight } from '../../components/ui'
-import { MarkdownRenderer } from '../../components/MarkdownRenderer'
 import { useCompositorExpand, useDisclosureScrollLock } from '../../hooks'
-import { useInputCapabilities } from '../../hooks/useInputCapabilities'
 import { useNow } from '../../hooks/useNow'
 import { useTheme } from '../../hooks/useTheme'
 import { useDirectory } from '../../hooks'
@@ -29,12 +27,14 @@ import {
   MessageErrorView,
   type StepFinishInfo,
 } from './parts'
+import { CollapsibleUserText, USER_HTML_ARTIFACT_PATTERN } from './CollapsibleUserText'
 import { extractToolData, type ToolViewPart } from './tools'
+import { ForkActionButton, UndoActionButton, useMessageActionBarClass } from './MessageActionBar'
 import { MSG_SPACING } from './messageSpacing'
 import { MessageExpandPanel, useMessageExpandRender } from './messageExpand'
 import type { AssistantContent, AssistantMessage, SessionMessageInfo, UserMessage } from '../../types/api/message'
 import type { JsonValue } from '@opencode/client/promise'
-import { contentEntries, hasVisibleText, userMessageText, type ContentEntry } from '../../types/api/message'
+import { contentEntries, hasVisibleText, idleMessageError, userMessageText, type ContentEntry } from '../../types/api/message'
 import { currentToolFailed } from '../../types/api/toolState'
 import { resolveTaskChildSessionRef } from '../../utils/taskChildBinding'
 import { expandCodeModeSubCalls } from './parts/executeSubCallSummary'
@@ -273,6 +273,12 @@ interface MessageRendererProps {
   isTurnLatestAssistant?: boolean
   /** 过程折叠时的内容范围 */
   processContentScope?: ProcessContentScope
+  /**
+   * 本条消息的 step 完成信息是否由本实例渲染。
+   * 过程折叠时，末尾助手的「过程」截在壳内渲染、正文在壳外单独渲染一份，
+   * 这时壳内那份传 false，避免同一条消息出现两行用量。
+   */
+  stepFinishVisible?: boolean
   onUndo?: (userMessageId: string) => void
   onFork?: (message: SessionMessageInfo, forkMessageId?: string) => Promise<void> | void
   forkMessageId?: string
@@ -287,6 +293,7 @@ export const MessageRenderer = memo(function MessageRenderer({
   turnDuration,
   isTurnLatestAssistant = true,
   processContentScope = 'all',
+  stepFinishVisible = true,
   onUndo,
   onFork,
   forkMessageId,
@@ -310,7 +317,13 @@ export const MessageRenderer = memo(function MessageRenderer({
   if (message.type === 'compaction') {
     return (
       <div className="flex flex-col w-full">
-        <CompactionPartView message={message} />
+        <CompactionPartView
+          message={message}
+          onUndo={onUndo}
+          onFork={onFork}
+          forkMessageId={forkMessageId}
+          canUndo={canUndo}
+        />
       </div>
     )
   }
@@ -318,6 +331,21 @@ export const MessageRenderer = memo(function MessageRenderer({
   // `!` shell 命令消息（官方 SessionShellMessage：投影成 shell 工具调用）
   if (message.type === 'shell') {
     return <ShellMessageView message={message} />
+  }
+
+  // 失败的 idle 标记：会话级错误（pre-promotion failure 等）渲染成错误卡片
+  // （官方 session-ui projection.ts 的 isFailedIdle → Error 卡片）。
+  // 这类失败没有任何 assistant 消息，不渲染的话错误永远不可见。
+  if (message.type === 'idle') {
+    const idleError = idleMessageError(message)
+    if (message.outcome === 'failed' && idleError) {
+      return (
+        <div className="flex flex-col w-full">
+          <MessageErrorView error={idleError} stateKey={`message:${message.id}:error`} />
+        </div>
+      )
+    }
+    return null
   }
 
   if (message.type !== 'assistant') return null
@@ -329,6 +357,7 @@ export const MessageRenderer = memo(function MessageRenderer({
       turnDuration={turnDuration}
       isTurnLatestAssistant={isTurnLatestAssistant}
       processContentScope={processContentScope}
+      stepFinishVisible={stepFinishVisible}
       onFork={onFork}
       forkMessageId={forkMessageId}
     />
@@ -482,146 +511,6 @@ function useEntryGrowAnimation(
 // Collapsible User Text
 // ============================================
 
-/** 默认预览 8 行 */
-const COLLAPSE_PREVIEW_LINES = 8
-const LEADING_RELAXED = 1.625
-const USER_HTML_ARTIFACT_PATTERN =
-  /(?:```(?:html|htm)\b|<!doctype\s+html\b|<html\b|<style\b|<script\b|<canvas\b|\son[a-z]+\s*=)/i
-
-// 折叠状态缓存：消息是否溢出
-const overflowStateCache = new Map<string, boolean>()
-
-const CollapsibleUserText = memo(function CollapsibleUserText({
-  text,
-  collapseEnabled,
-  renderMarkdown,
-  messageId,
-}: {
-  text: string
-  collapseEnabled: boolean
-  renderMarkdown: boolean
-  messageId: string
-}) {
-  const { t } = useTranslation('message')
-  const contentRef = useRef<HTMLDivElement>(null)
-  const { rootRef, headerRef, withScrollLock } = useDisclosureScrollLock()
-  const overflowCacheKey = `${messageId}:${renderMarkdown ? 'markdown' : 'plain'}`
-  const [expanded, setExpanded] = useUiDisclosureState(`message:${messageId}:user-text`, false)
-  const [isOverflow, setIsOverflow] = useState(() => overflowStateCache.get(overflowCacheKey) ?? false)
-
-  useLayoutEffect(() => {
-    const el = contentRef.current
-    if (!el) return
-
-    let disposed = false
-    const measure = () => {
-      if (disposed) return
-      const fsBase = Number.parseFloat(window.getComputedStyle(el).getPropertyValue('--fs-base'))
-      if (!Number.isFinite(fsBase) || fsBase <= 0) return
-      const collapsedHeight = fsBase * LEADING_RELAXED * COLLAPSE_PREVIEW_LINES
-      const next = el.scrollHeight > collapsedHeight + 1
-      overflowStateCache.set(overflowCacheKey, next)
-      setIsOverflow(prev => (prev === next ? prev : next))
-    }
-
-    measure()
-    const resizeObserver = new ResizeObserver(measure)
-    resizeObserver.observe(el)
-    document.fonts?.ready?.then(measure)
-
-    return () => {
-      disposed = true
-      resizeObserver.disconnect()
-    }
-  }, [text, overflowCacheKey])
-
-  const hasHtmlArtifact = renderMarkdown && USER_HTML_ARTIFACT_PATTERN.test(text)
-  const showCollapse = collapseEnabled && !hasHtmlArtifact && isOverflow
-  const isCollapsed = collapseEnabled && !hasHtmlArtifact && !expanded
-
-  return (
-    <div
-      ref={rootRef}
-      className={`px-4 py-2.5 bg-bg-300 rounded-2xl max-w-full ${hasHtmlArtifact ? 'w-full max-w-2xl' : ''}`}
-    >
-      <div className="relative">
-        <div
-          ref={node => {
-            contentRef.current = node
-            headerRef(node)
-          }}
-          className={`m-0 break-words text-[length:var(--fs-base)] text-text-100 leading-relaxed${
-            renderMarkdown ? '' : ' whitespace-pre-wrap'
-          }${isCollapsed ? ' overflow-hidden' : ''}`}
-          style={
-            isCollapsed
-              ? {
-                  maxHeight: `calc(var(--fs-base) * ${LEADING_RELAXED} * ${COLLAPSE_PREVIEW_LINES})`,
-                  contain: 'layout paint',
-                }
-              : undefined
-          }
-        >
-          {renderMarkdown ? <MarkdownRenderer content={text} /> : text}
-        </div>
-        {/* 底部渐变遮罩 */}
-        {showCollapse && isCollapsed && (
-          <div className="absolute bottom-0 left-0 right-0 h-12 bg-gradient-to-t from-bg-300 to-transparent pointer-events-none" />
-        )}
-      </div>
-      {showCollapse && (
-        <button
-          type="button"
-          onClick={() => withScrollLock(() => setExpanded(prev => !prev))}
-          className="mt-1 text-[length:var(--fs-sm)] text-text-400 hover:text-text-200 transition-colors"
-          aria-expanded={expanded}
-        >
-          {expanded ? t('showLess') : t('showMore')}
-        </button>
-      )}
-    </div>
-  )
-})
-
-interface ForkActionButtonProps {
-  message: SessionMessageInfo
-  onFork?: (message: SessionMessageInfo, forkMessageId?: string) => Promise<void> | void
-  forkMessageId?: string
-}
-
-const ForkActionButton = memo(function ForkActionButton({ message, onFork, forkMessageId }: ForkActionButtonProps) {
-  const { t } = useTranslation('message')
-  const [isForking, setIsForking] = useState(false)
-
-  const handleFork = useCallback(async () => {
-    if (!onFork || isForking) return
-
-    setIsForking(true)
-
-    try {
-      await onFork(message, forkMessageId)
-    } catch {
-      // 业务错误由上层统一处理
-    } finally {
-      setIsForking(false)
-    }
-  }, [forkMessageId, isForking, message, onFork])
-
-  if (!onFork) return null
-
-  return (
-    <button
-      onClick={() => void handleFork()}
-      disabled={isForking}
-      className="p-1.5 rounded-md transition-colors duration-150 text-text-400 hover:text-text-200 disabled:cursor-default disabled:text-text-500"
-      title={isForking ? t('forkingFromHere') : t('forkFromHere')}
-      aria-label={isForking ? t('forkingFromHere') : t('forkFromHere')}
-    >
-      {isForking ? <SpinnerIcon className="animate-spin" /> : <SplitIcon />}
-    </button>
-  )
-})
-
 // ============================================
 // User Message View
 // ============================================
@@ -635,14 +524,6 @@ interface UserMessageViewProps {
   onEntryGrowComplete?: (messageId: string) => void
 }
 
-/** PC 精细指针：默认隐藏，悬浮消息/聚焦时显示；触控优先设备始终显示 */
-function useMessageActionBarClass() {
-  const { preferTouchUi } = useInputCapabilities()
-  return preferTouchUi
-    ? 'flex items-center gap-1 transition-opacity'
-    : 'flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100 pointer-events-none group-hover:pointer-events-auto group-focus-within:pointer-events-auto focus-within:pointer-events-auto transition-opacity'
-}
-
 const UserMessageView = memo(function UserMessageView({
   message,
   onUndo,
@@ -651,7 +532,6 @@ const UserMessageView = memo(function UserMessageView({
   canUndo,
   onEntryGrowComplete,
 }: UserMessageViewProps) {
-  const { t } = useTranslation('message')
   const { collapseUserMessages, renderUserMarkdown } = useTheme()
   const actionBarClass = useMessageActionBarClass()
 
@@ -694,16 +574,7 @@ const UserMessageView = memo(function UserMessageView({
 
         {/* Action buttons — PC 悬浮消息显示；触控设备始终显示 */}
         <div className={actionBarClass}>
-          {/* Undo button */}
-          {canUndo && onUndo && (
-            <button
-              onClick={() => onUndo(message.id)}
-              className="p-1.5 rounded-md transition-colors duration-150 text-text-400 hover:text-text-200"
-              title={t('undoFromHere')}
-            >
-              <UndoIcon />
-            </button>
-          )}
+          <UndoActionButton messageId={message.id} onUndo={onUndo} canUndo={canUndo} />
           <ForkActionButton message={message} onFork={onFork} forkMessageId={forkMessageId} />
           {/* Copy button */}
           {messageText && <CopyButton text={messageText} position="static" />}
@@ -723,6 +594,7 @@ const AssistantMessageView = memo(function AssistantMessageView({
   turnDuration,
   isTurnLatestAssistant = true,
   processContentScope = 'all',
+  stepFinishVisible = true,
   onFork,
   forkMessageId,
 }: {
@@ -731,6 +603,7 @@ const AssistantMessageView = memo(function AssistantMessageView({
   turnDuration?: number
   isTurnLatestAssistant?: boolean
   processContentScope?: ProcessContentScope
+  stepFinishVisible?: boolean
   onFork?: (message: SessionMessageInfo, forkMessageId?: string) => Promise<void> | void
   forkMessageId?: string
 }) {
@@ -799,10 +672,9 @@ const AssistantMessageView = memo(function AssistantMessageView({
   const agent = message.agent || undefined
   const modelLabel = message.model?.id || undefined
 
-  // v2 没有 step-finish part：tokens / cost / finish 都在消息上，
-  // 因此「步骤完成」信息由消息级数据合成，只有一份。
+  // step 完成信息（v2 一个 assistant 消息 = 一个 step，tokens / cost / finish 全在消息上）
   const stepFinish = useMemo(() => toStepFinishInfo(message), [message])
-  const showStepFinish = allowStepFinishOnMessage && stepFinish != null
+  const showStepFinish = allowStepFinishOnMessage && stepFinishVisible && stepFinish != null
   const hasStepFinishData = stepFinish != null
 
   const showTurnDurationFooter =
@@ -834,9 +706,6 @@ const AssistantMessageView = memo(function AssistantMessageView({
     return null
   }
 
-  // step 完成信息只挂在本条消息最后一个可见条目上
-  const lastRenderIdx = findLastRenderableIndex(renderItems)
-
   return (
     <div ref={wrapperRef} className={`flex flex-col ${MSG_SPACING.stack} w-full group`}>
       {/* 流式增高走 SmoothHeight 0.12s 补间：贴底跟随时内容丝滑生长。
@@ -844,27 +713,14 @@ const AssistantMessageView = memo(function AssistantMessageView({
           否则壳内文本每 chunk 瞬时撑开，行高抖动且丢失生长动画 */}
       <SmoothHeight isActive={isStreaming && allowStreamingLayoutAnimation}>
         <div className={`flex flex-col ${MSG_SPACING.stack}`}>
-          {renderItems.map((item: RenderItem, idx: number) => {
-            const isLastItem = idx === lastRenderIdx
-            // latestOnly 开：整轮最后一条 assistant 的 step 才显示
-            // latestOnly 关：本消息也显示（旧行为）
-            const itemShowsStepFinish = showStepFinish && isLastItem
-            // duration / turnDuration / completedAt 始终只挂在本消息最后一个 step
-            const showTiming = itemShowsStepFinish
-
+          {renderItems.map((item: RenderItem) => {
             if (item.type === 'tool-group') {
               return (
                 <ToolGroup
                   key={item.tools[0].id}
                   tools={item.tools}
                   messageContext={{ messageID: message.id, created, completed }}
-                  stepFinish={itemShowsStepFinish ? stepFinish : undefined}
-                  duration={showTiming ? duration : undefined}
-                  turnDuration={showTiming ? turnDuration : undefined}
                   isStreaming={isStreaming}
-                  agent={itemShowsStepFinish ? agent : undefined}
-                  modelLabel={itemShowsStepFinish ? modelLabel : undefined}
-                  completedAt={showTiming ? completed : undefined}
                 />
               )
             }
@@ -888,6 +744,22 @@ const AssistantMessageView = memo(function AssistantMessageView({
                 return null
             }
           })}
+
+          {/* step 完成信息：v2 里一个助手消息就是一整个 step，tokens / cost / finish
+              全挂在消息上，所以固定放在本消息内容末尾一行。
+
+              以前挂「最后一个可见条目」：末尾是正文（最常见）时整块数据跟着丢，
+              只有工具组收尾才显示，过程折叠时还会藏在壳里。 */}
+          {stepFinish && showStepFinish && (
+            <StepFinishPartView
+              part={stepFinish}
+              duration={duration}
+              turnDuration={turnDuration}
+              agent={agent}
+              modelLabel={modelLabel}
+              completedAt={completed}
+            />
+          )}
         </div>
       </SmoothHeight>
 
@@ -931,13 +803,7 @@ const AssistantMessageView = memo(function AssistantMessageView({
 interface ToolGroupProps {
   tools: ToolEntry[]
   messageContext: { messageID: string; created: number; completed?: number }
-  stepFinish?: StepFinishInfo
-  duration?: number
-  turnDuration?: number
   isStreaming?: boolean
-  agent?: string
-  modelLabel?: string
-  completedAt?: number
 }
 
 /** 用户需要阅读/交互的工具：沉浸模式下这些工具完成后保持展开 */
@@ -947,17 +813,7 @@ function isReadableTool(toolName: string): boolean {
   return READABLE_TOOL_PATTERNS.test(toolName.toLowerCase())
 }
 
-const ToolGroup = memo(function ToolGroup({
-  tools,
-  messageContext,
-  stepFinish,
-  duration,
-  turnDuration,
-  isStreaming,
-  agent,
-  modelLabel,
-  completedAt,
-}: ToolGroupProps) {
+const ToolGroup = memo(function ToolGroup({ tools, messageContext, isStreaming }: ToolGroupProps) {
   const { t } = useTranslation('message')
   const { descriptiveToolSteps, inlineToolRequests, immersiveMode, processCollapseEnabled } = useTheme()
   const { serverId, pendingPermissions, pendingQuestions } = useInlineToolRequests()
@@ -1142,11 +998,6 @@ const ToolGroup = memo(function ToolGroup({
                   ? t('stepsCount', { done: totalCount, total: totalCount })
                   : t('stepsCount', { done: doneCount, total: totalCount })}
               </span>
-              {!effectiveExpanded && stepFinish && (
-                <span className="text-[length:var(--fs-sm)] text-text-500 font-mono opacity-70">
-                  {formatTokens(stepFinish.tokens, t)}
-                </span>
-              )}
             </span>
           </button>
         ))}
@@ -1164,19 +1015,6 @@ const ToolGroup = memo(function ToolGroup({
       ) : (
         <div className="flex flex-col">{toolParts}</div>
       )}
-
-      {stepFinish && (
-        <div className={MSG_SPACING.finish}>
-          <StepFinishPartView
-            part={stepFinish}
-            duration={duration}
-            turnDuration={turnDuration}
-            agent={agent}
-            modelLabel={modelLabel}
-            completedAt={completedAt}
-          />
-        </div>
-      )}
     </div>
   )
 })
@@ -1184,17 +1022,6 @@ const ToolGroup = memo(function ToolGroup({
 // ============================================
 // Helpers
 // ============================================
-
-function formatTokens(
-  tokens: StepFinishInfo['tokens'],
-  t: (key: string, opts?: Record<string, unknown>) => string,
-): string {
-  const total = tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write
-  if (total >= 1000) {
-    return t('tokensK', { count: (total / 1000).toFixed(1) })
-  }
-  return `${total} ${t('tokens')}`
-}
 
 /**
  * 消息级「步骤完成」信息。
@@ -1511,17 +1338,4 @@ function groupContentForRender(message: AssistantMessage): RenderItem[] {
 
   flushToolGroup()
   return result
-}
-
-/**
- * 最后一个「会真正渲染出内容」的条目下标。
- * step 完成信息只挂在它上面（对齐旧行为：只挂在本消息最后一个 step-finish）。
- */
-function findLastRenderableIndex(items: RenderItem[]): number {
-  for (let i = items.length - 1; i >= 0; i--) {
-    const item = items[i]
-    if (item.type === 'tool-group') return i
-    if (hasVisibleText(item.content)) return i
-  }
-  return -1
 }

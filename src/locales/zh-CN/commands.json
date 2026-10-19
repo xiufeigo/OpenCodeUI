@@ -63,6 +63,12 @@
     "permission": "权限"
   },
   "sessions": {
+    "shell": {
+      "outputTitle": "后台 shell 输出",
+      "stop": "停止",
+      "stopTitle": "停止该 shell",
+      "exitCode": "退出码 {{code}}"
+    },
     "searchChats": "搜索对话...",
     "newChat": "新对话",
     "noChatsYet": "暂无对话",
@@ -111,6 +117,8 @@
   },
   "attachment": {
     "removeAttachment": "移除附件",
+    "uploading": "上传中",
+    "retryUpload": "重试上传",
     "category": "类别",
     "context": "上下文",
     "source": "来源",

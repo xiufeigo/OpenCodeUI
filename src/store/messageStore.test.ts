@@ -680,12 +680,13 @@ describe('messageStore（原生 v2 消息）', () => {
       expect(idle).toMatchObject({ id: 'msg_done', type: 'idle', outcome: 'succeeded', time: { created: 200 } })
     })
 
-    it('failed → outcome=failed', () => {
+    it('failed → outcome=failed + 错误挂到 idle 标记上（官方 idle("failed", error)，丢了就永不渲染）', () => {
       messageStore.handleExecutionFailed({ sessionID: SESSION, error: { type: 'x', message: 'boom' } })
 
       expect(messageStore.getSessionState(SESSION)?.messages.at(-1)).toMatchObject({
         type: 'idle',
         outcome: 'failed',
+        error: { type: 'x', message: 'boom' },
       })
     })
 
@@ -875,6 +876,37 @@ describe('messageStore（原生 v2 消息）', () => {
     messageStore.setMessages(SESSION, [createAssistantMessage('message-1', textContent('one'))])
     messageStore.applyRevertCommitted(SESSION, 'message-99')
     expect(messageIds(SESSION)).toEqual(['message-1'])
+  })
+
+  it('deep undo：边界不在首屏时按 id 隐藏已撤销消息，翻页补齐后重建逐条 redo 历史', () => {
+    // 首屏只有最近三条（m3/m4/m5），回退边界 m2 在更深的历史里
+    messageStore.setMessages(
+      SESSION,
+      [createUserMessage('m3', 3), createUserMessage('m4', 4), createUserMessage('m5', 5)],
+      { revertState: { messageID: 'm2' } },
+    )
+
+    // 边界没加载也要存边界标记，并按 id 比较隐藏已撤销消息（不「复活」）
+    expect(messageStore.getRevertState(SESSION)?.messageId).toBe('m2')
+    expect(messageStore.getRevertState(SESSION)?.history).toEqual([])
+    expect(messageStore.getVisibleMessages(SESSION).map(m => m.id)).toEqual([])
+    // 有边界标记即可 redo（全恢复兜底，不需要边界本体）
+    expect(messageStore.canRedo(SESSION)).toBe(true)
+
+    // 边界消息没翻进来前，rebuildRevertHistory 返回 false（还需继续翻）
+    expect(messageStore.rebuildRevertHistory(SESSION)).toBe(false)
+
+    // 往回翻一页，把 m1/m2 补进内存
+    messageStore.prependMessages(SESSION, [createUserMessage('m1', 1), createUserMessage('m2', 2)], false, null)
+
+    // 重建逐条 redo 历史
+    expect(messageStore.rebuildRevertHistory(SESSION)).toBe(true)
+    expect(messageStore.getRevertState(SESSION)?.history.map(h => h.messageId)).toEqual(['m2', 'm3', 'm4', 'm5'])
+
+    // 边界加载后：可见 = 边界之前（m1），边界及之后（m2 起）仍隐藏
+    expect(messageStore.getVisibleMessages(SESSION).map(m => m.id)).toEqual(['m1'])
+    expect(messageStore.getRedoSteps(SESSION)).toBe(4)
+    expect(messageStore.getCurrentRevertedContent(SESSION)?.messageId).toBe('m2')
   })
 
   it('prependMessages 去重后前插历史页', () => {

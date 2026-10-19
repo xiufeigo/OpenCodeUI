@@ -10,6 +10,8 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { logger } from '../utils/logger'
 import { messageStore, type RevertState } from '../store'
+import { LOCAL_SERVER_ID } from '../store/serverStore'
+import { useServiceStore } from '../store/serviceStore'
 import { sessionKeyToServerId } from '../utils/sessionKey'
 import { getSessionMessagesPage, getSession, revertMessage, unrevertSession } from '../api'
 import { sessionErrorHandler } from '../utils'
@@ -35,6 +37,8 @@ export function leadingTurnNeedsParent(messages: SessionMessageInfo[]): boolean 
 /** enrichLeadingTurn 的上限与节奏（官方 leadingTurnPageLimit / Delay 同款） */
 const LEADING_TURN_PAGE_LIMIT = 3
 const LEADING_TURN_PAGE_DELAY = 200
+// deep undo 往回翻页补边界的安全上限；正常靠 hasMoreHistory 耗尽提前终止，这只是兜底
+const REVERT_BOUNDARY_PAGE_LIMIT = 50
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
 /**
@@ -46,10 +50,12 @@ const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 function toLoadMessageError(error: unknown): APIError {
   const message = error instanceof Error ? error.message : String(error || 'Failed to load session')
   const stack = error instanceof Error ? error.stack : undefined
+  // 截断堆栈：完整堆栈整段塞进 UI 详情太吓人，留前几帧足够定位问题
+  const shortStack = stack?.split('\n').slice(0, 6).join('\n')
   return {
     type: 'APIError',
     message,
-    ...(stack ? { response: { body: stack } } : {}),
+    ...(shortStack ? { response: { body: shortStack } } : {}),
   }
 }
 
@@ -76,6 +82,10 @@ export function useSessionManager({
   /** 每个 session 的历史翻页 in-flight 守卫（官方 messageLoads 同款，防止并发翻页） */
   const historyLoadsRef = useRef<Map<string, Promise<boolean>>>(new Map())
   const loadSessionRef = useRef<(sid: string, options?: { force?: boolean }) => Promise<void>>(async () => {})
+  // 桌面端本地 serve 的拉起 / registry 地址回写状态（main.tsx 的
+  // initializeNativeDesktopService 期间为 true）。此刻本地地址未就绪，
+  // 向本地服务器发请求必在传输层失败。
+  const { starting: localServiceStarting } = useServiceStore()
 
   /**
    * 用游标翻一页更老的历史并前插（官方 message.loadMore 同款）。
@@ -226,9 +236,9 @@ export function useSessionManager({
           title: sessionInfo?.title,
           hasMoreHistory: nextCursor !== null,
           historyCursor: nextCursor,
-          // v2 的 SessionInfo 不再携带 revert / share：
-          // 回退状态由 session.revert 接口与事件维护，分享改为导出
-          revertState: null,
+          // 服务端把回退边界持久化在 Session.Info.revert（schema session.ts），
+          // 刷新后据此重建 redo 历史，否则刷新就像没 undo 过。
+          revertState: sessionInfo?.revert ?? null,
           // 会话级 agent/model 的 durable 来源（官方 selection.tsx 同款）：
           // 新鲜客户端没有 live SSE 历史时，composer 从这里恢复
           agent: sessionInfo?.agent,
@@ -242,6 +252,21 @@ export function useSessionManager({
           for (let pages = 0; pages < LEADING_TURN_PAGE_LIMIT; pages++) {
             const state = messageStore.getSessionState(sid)
             if (!state || !leadingTurnNeedsParent(state.messages) || !state.hasMoreHistory) break
+            await pause(LEADING_TURN_PAGE_DELAY)
+            if (isStale()) return
+            const more = await prependHistoryPage(sid).catch(() => false)
+            if (!more) break
+          }
+        }
+
+        // deep undo：回退边界不在首屏时（undo 的消息很深），往回翻页把边界补进内存，
+        // 重建逐条 redo 历史 + 预填内容。边界一加载 rebuildRevertHistory 就返回 true 提前终止；
+        // 正常情况下同一页里边界之前的消息也一并带出来，当前（撤销后的）视图就有了。
+        if (sessionInfo?.revert?.messageID) {
+          for (let pages = 0; pages < REVERT_BOUNDARY_PAGE_LIMIT; pages++) {
+            if (messageStore.rebuildRevertHistory(sid)) break
+            const state = messageStore.getSessionState(sid)
+            if (!state?.hasMoreHistory) break
             await pause(LEADING_TURN_PAGE_DELAY)
             if (isStale()) return
             const more = await prependHistoryPage(sid).catch(() => false)
@@ -340,11 +365,17 @@ export function useSessionManager({
     if (!state?.revertState) return
 
     const { history } = state.revertState
-    if (history.length === 0) return
-
     const dir = state.directory || directoryRef.current
 
     try {
+      // 边界还没加载进来（deep undo 翻页失败/进行中）：没有逐条历史可退，
+      // 退化为全恢复（revert.clear，官方 redo 同款，不需要边界消息本体）。
+      if (history.length === 0) {
+        await unrevertSession(sessionId, dir, sessionKeyToServerId(sessionId))
+        messageStore.setRevertState(sessionId, null)
+        return
+      }
+
       // 移除第一条历史记录（最早撤销的）
       const newHistory = history.slice(1)
 
@@ -402,22 +433,30 @@ export function useSessionManager({
   // focused pane / URL 的同步由 App 顶层统一负责，
   // 这里不再写任何“全局当前 session”状态。
   useEffect(() => {
-    if (sessionId) {
-      const cached = messageStore.getSessionState(sessionId)
-      const canUseCached = !!cached && cached.loadState === 'loaded' && !cached.isStale && cached.messages.length > 0
+    if (!sessionId) return
 
-      if (canUseCached) {
-        logger.log('[SessionManager] switch:use-cached', {
-          sessionId,
-          cachedCount: cached.messages.length,
-        })
-        return
-      }
+    const cached = messageStore.getSessionState(sessionId)
+    const canUseCached = !!cached && cached.loadState === 'loaded' && !cached.isStale && cached.messages.length > 0
 
-      logger.log('[SessionManager] switch:fetch-session', { sessionId })
-      void loadSessionRef.current(sessionId)
+    if (canUseCached) {
+      logger.log('[SessionManager] switch:use-cached', {
+        sessionId,
+        cachedCount: cached.messages.length,
+      })
+      return
     }
-  }, [sessionId])
+
+    // 本地 serve 还在拉起 / registry 地址回写：此刻向本地服务器发请求必在
+    // 传输层失败（ClientError: Transport），且失败态没有重试入口会卡住。
+    // 等 starting 翻回 false（地址已就绪）再加载。
+    if (localServiceStarting && sessionKeyToServerId(sessionId) === LOCAL_SERVER_ID) {
+      logger.log('[SessionManager] switch:wait-local-service', { sessionId })
+      return
+    }
+
+    logger.log('[SessionManager] switch:fetch-session', { sessionId })
+    void loadSessionRef.current(sessionId)
+  }, [sessionId, localServiceStarting])
 
   return {
     loadSession,

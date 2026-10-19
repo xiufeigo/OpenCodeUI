@@ -22,7 +22,7 @@
 // store 只读负载里的 sessionID，**从不**读事件信封上的 sessionID —— 读原始
 // id 会让两个服务器上的同 id 会话串台。
 
-import type { ModelRef } from '@opencode/client/promise'
+import type { ModelRef, SessionStructuredError } from '@opencode/client/promise'
 import type {
   AssistantContent,
   AssistantMessage,
@@ -427,8 +427,11 @@ class MessageStore {
     const { messages, revertState } = state
     if (!revertState) return messages
 
-    const revertIndex = messages.findIndex(message => message.id === revertState.messageId)
-    return revertIndex === -1 ? messages : messages.slice(0, revertIndex)
+    // 消息 id 单调递增（msg_ + 大端时间戳前缀），字符串比较即时间比较。
+    // 边界之前（id 更小）的可见，边界及之后的已撤销隐藏。
+    // 用 id 比较而非 findIndex：边界消息还没加载进内存时（undo 很深）也能正确隐藏，
+    // 否则刷新后已撤销的消息会全部「复活」（对齐官方 selectVisibleSessionUserMessages）。
+    return messages.filter(message => message.id < revertState.messageId)
   }
 
   getIsStreaming(sessionId: string | null): boolean {
@@ -737,16 +740,12 @@ class MessageStore {
     // Revert 状态
     const revert = options?.revertState
     if (revert?.messageID) {
-      const revertIndex = state.messages.findIndex(message => message.id === revert.messageID)
-      if (revertIndex !== -1) {
-        const revertedUserMessages = state.messages.slice(revertIndex).filter(isUserMessage)
-        state.revertState = {
-          messageId: revert.messageID,
-          // buildRevertHistoryItem 在 session 不存在时返回 undefined；此处 state 必然存在
-          history: revertedUserMessages
-            .map(message => this.buildRevertHistoryItem(sessionId, message))
-            .filter((item): item is RevertHistoryItem => item !== undefined),
-        }
+      // 始终先存边界标记：可见性（id 比较）与 redo 全恢复（revert.clear）只依赖 messageId，
+      // 不需要边界消息本体。边界不在首屏时（undo 很深）history 先留空，
+      // 由 loadSession 往回翻页补齐后调 rebuildRevertHistory 重建。
+      state.revertState = {
+        messageId: revert.messageID,
+        history: this.computeRevertHistory(state, sessionId, revert.messageID),
       }
     } else {
       state.revertState = null
@@ -1194,7 +1193,10 @@ class MessageStore {
   }
 
   handleExecutionFailed(data: EventPayload<'session.execution.failed'>, facts?: EventFacts) {
-    this.closeExecution(data.sessionID, 'failed', facts)
+    // 官方 idle("failed", event.data.error)：错误必须挂到 idle 标记上。
+    // 会话级失败（pre-promotion failure）没有任何 assistant 消息，
+    // 错误只在这条标记里——丢了它，错误就永远不渲染。
+    this.closeExecution(data.sessionID, 'failed', facts, false, data.error)
   }
 
   handleExecutionInterrupted(data: EventPayload<'session.execution.interrupted'>, facts?: EventFacts) {
@@ -1209,7 +1211,13 @@ class MessageStore {
    * 它是服务端投影里就有的轮次边界，不补的话本地要等下一次 message.list
    * 才能对齐（期间轮次分组会错位）。
    */
-  private closeExecution(sessionID: string, outcome: ExecutionOutcome, facts?: EventFacts, skipIdle = false) {
+  private closeExecution(
+    sessionID: string,
+    outcome: ExecutionOutcome,
+    facts?: EventFacts,
+    skipIdle = false,
+    error?: SessionStructuredError,
+  ) {
     const state = this.ensureSession(sessionID)
     state.isStreaming = false
 
@@ -1224,8 +1232,10 @@ class MessageStore {
         id: messageIDFromFacts(facts),
         type: 'idle',
         outcome,
+        // 服务端投影的 idle 带 error（客户端类型漏了该字段），与官方对齐
+        ...(error ? { error } : {}),
         time: { created: facts?.created ?? Date.now() },
-      })
+      } as SessionMessageInfo)
     }
 
     this.notify([sessionID])
@@ -1601,7 +1611,9 @@ class MessageStore {
     if (!sessionId) return false
     const state = this.sessions.get(sessionId)
     if (!state || state.isStreaming) return false
-    return (state.revertState?.history.length ?? 0) > 0
+    // 有边界标记就能 redo：逐条 redo 依赖 history（边界已加载）；history 为空时
+    // （deep undo 边界还没翻进来）退化为全恢复（revert.clear，官方 redo 同款，不需要边界本体）。
+    return state.revertState !== null
   }
 
   getRedoSteps(sessionId: string | null): number {
@@ -1695,6 +1707,33 @@ class MessageStore {
       variant: model?.variant,
       agent: state.agent,
     }
+  }
+
+  /** 从已加载消息里构建逐条 redo 历史；边界消息还没加载进来（undo 很深）时返回空数组 */
+  private computeRevertHistory(state: SessionState, sessionId: string, messageID: string): RevertHistoryItem[] {
+    const revertIndex = state.messages.findIndex(message => message.id === messageID)
+    if (revertIndex === -1) return []
+    return state.messages
+      .slice(revertIndex)
+      .filter(isUserMessage)
+      .map(message => this.buildRevertHistoryItem(sessionId, message))
+      .filter((item): item is RevertHistoryItem => item !== undefined)
+  }
+
+  /**
+   * deep undo 往回翻页把边界消息补进内存后，重建逐条 redo 历史。
+   * 返回 true 表示无需再翻（没有 undo / 历史已建好 / 刚建好），false 表示边界仍未加载。
+   */
+  rebuildRevertHistory(sessionId: string): boolean {
+    const state = this.sessions.get(sessionId)
+    const revertState = state?.revertState
+    if (!state || !revertState) return true
+    if (revertState.history.length > 0) return true
+    const history = this.computeRevertHistory(state, sessionId, revertState.messageId)
+    if (history.length === 0) return false
+    revertState.history = history
+    this.notify([sessionId])
+    return true
   }
 
   /** 官方 `message.append`：按 id 去重后追加（保持创建顺序） */

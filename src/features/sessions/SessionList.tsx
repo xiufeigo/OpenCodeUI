@@ -9,6 +9,8 @@ import { useInputCapabilities } from '../../hooks/useInputCapabilities'
 import { useSessionActiveEntry } from '../../store/activeSessionStore'
 import { notificationStore, useHasUnreadCompletedNotification } from '../../store/notificationStore'
 import { SessionChildrenSlot } from '../chat/sidebar/SessionChildrenSlot'
+import { SessionShellsSlot } from '../chat/sidebar/SessionShellsSlot'
+import { useHasBackgroundShells } from '../../store/shellInventoryStore'
 import type { ApiSession } from '../../api'
 import { startInternalDrag } from '../../lib/internalDragCore'
 import { makeSessionKey, splitSessionKey } from '../../utils/sessionKey'
@@ -98,6 +100,7 @@ export function SessionList({
     isOpen: false,
     sessionId: null,
   })
+
 
   // 滚动加载
   const handleScroll = useCallback(() => {
@@ -268,6 +271,7 @@ export function SessionList({
                                 onToggleSessionSelection={onToggleSessionSelection}
                               />
                             )}
+                          <SessionShellsSlot parentSession={session} serverId={serverId} />
                         </div>
                       )
                     })}
@@ -334,6 +338,7 @@ export function SessionList({
                       onToggleSessionSelection={onToggleSessionSelection}
                     />
                   )}
+                  <SessionShellsSlot parentSession={session} serverId={serverId} />
                   {showUnavailableAfter &&
                     unavailablePinnedEntries.map(entry => (
                       <UnavailablePinnedSessionItem key={entry.sessionId} entry={entry} density={density} preferTouchUi={preferTouchUi} />
@@ -431,6 +436,9 @@ export function SessionListItem({
   // 单服务器模式 session.id 是原始 id，需用活动服务器合成复合 key 查询）
   const activeQueryKey = activeSessionKey ?? makeSessionKey(serverStore.getActiveServerId(), session.id)
   const activeEntry = useSessionActiveEntry(activeQueryKey)
+  // 后台 shell 活着 = 会话仍活跃（store 自己订阅，不用列表层层喂 props；
+  // 库存按工作区目录隔离，用会话自己的 location.directory 查）
+  const hasBackgroundWork = useHasBackgroundShells(session.id, session.location?.directory)
   const activeStatus = activeEntry
     ? activeEntry.pendingAction?.type === 'permission'
       ? { dot: 'bg-warning-100', label: t('chat:activeSession.awaitingPermission'), pulse: false }
@@ -439,7 +447,10 @@ export function SessionListItem({
         : activeEntry.status.type === 'retry'
           ? { dot: 'bg-warning-100', label: t('chat:activeSession.retrying'), pulse: false }
           : { dot: 'bg-success-100', label: t('chat:activeSession.working'), pulse: true }
-    : null
+    : // 会话本身 idle 但有后台 shell 在跑 → 仍算活跃（绿点脉冲，标签区分）
+      hasBackgroundWork
+      ? { dot: 'bg-success-100', label: t('chat:activeSession.backgroundRunning'), pulse: true }
+      : null
   const hasUnreadCompletedNotification = useHasUnreadCompletedNotification(activeQueryKey)
   const itemRef = useRef<HTMLDivElement>(null)
   const isCompact = density === 'compact'

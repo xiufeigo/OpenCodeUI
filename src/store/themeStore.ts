@@ -147,6 +147,9 @@ const DEFAULT_COMPLETED_AT_FORMAT: CompletedAtFormat = 'time'
 
 const DEFAULT_REASONING_DISPLAY_MODE: ReasoningDisplayMode = 'markdown'
 const DEFAULT_RENDER_USER_MARKDOWN = false
+// 默认不渲染：AI 输出里的 HTML 一律按源码展示（要活预览可在设置里显式打开）。
+// HTML 活渲染是个有副作用的开关（iframe / 脚本），默认开的风险大于收益。
+const DEFAULT_RENDER_HTML_CONTENT = false
 const DEFAULT_DIFF_STYLE: DiffStyle = 'markers'
 const DEFAULT_DESCRIPTIVE_TOOL_STEPS = true
 const DEFAULT_INLINE_TOOL_REQUESTS = true
@@ -159,6 +162,8 @@ export type ToolCardStyle = 'classic' | 'compact'
 const DEFAULT_TOOL_CARD_STYLE: ToolCardStyle = 'compact'
 const DEFAULT_IMMERSIVE_MODE = true
 const DEFAULT_COMPACT_INLINE_PERMISSION = true
+const DEFAULT_COMPACTION_AUTO_COLLAPSE = true
+const DEFAULT_QUEUE_AUTO_COLLAPSE = true
 const DEFAULT_GLASS_EFFECT = true
 const DEFAULT_QUEUE_FOLLOWUP_MESSAGES = false
 /** 输入框 busy 投递 chip（插队/排队）默认显示 */
@@ -190,6 +195,8 @@ export interface ThemeState {
   collapseUserMessages: boolean
   /** 是否将用户消息渲染为 Markdown */
   renderUserMarkdown: boolean
+  /** 是否渲染 AI 输出中的 HTML（关闭后 HTML 一律按源码展示） */
+  renderHtmlContent: boolean
   /** step-finish 信息栏显示开关 */
   stepFinishDisplay: StepFinishDisplay
   /** 完成时刻显示格式 */
@@ -198,6 +205,10 @@ export interface ThemeState {
   reasoningDisplayMode: ReasoningDisplayMode
   /** 宽模式 */
   wideMode: boolean
+  /** 对话列自定义宽度（px，左缘拖拽设置；null = 跟随宽屏模式默认） */
+  chatContentWidth: number | null
+  /** 输入框自定义宽度（px，左缘拖拽设置；null = 默认 3xl=768） */
+  chatInputWidth: number | null
   /** Diff 行标记风格 */
   diffStyle: DiffStyle
   /** 是否启用带工具描述的 steps 摘要 */
@@ -216,6 +227,10 @@ export interface ThemeState {
   immersiveMode: boolean
   /** 内嵌权限精简模式：ToolBody 有内容时只显示操作按钮 */
   compactInlinePermission: boolean
+  /** 压缩结果流式输出结束后自动收起（可在设置中关闭） */
+  compactionAutoCollapse: boolean
+  /** 队列消息默认折叠成一行摘要（可在设置中关闭，关闭则默认展开） */
+  queueAutoCollapse: boolean
   /** 毛玻璃效果开关（backdrop-filter blur） */
   glassEffect: boolean
   /** 忙碌时后续消息是否进入队列 */
@@ -255,10 +270,13 @@ const STORAGE_KEY_CUSTOM_CSS_SNIPPETS = 'theme-custom-css-snippets'
 const STORAGE_KEY_ACTIVE_CUSTOM_CSS_SNIPPET_ID = 'theme-active-custom-css-snippet-id'
 const STORAGE_KEY_COLLAPSE_USER_MESSAGES = 'collapse-user-messages'
 const STORAGE_KEY_RENDER_USER_MARKDOWN = 'render-user-markdown'
+const STORAGE_KEY_RENDER_HTML_CONTENT = 'render-html-content'
 const STORAGE_KEY_STEP_FINISH_DISPLAY = 'step-finish-display'
 const STORAGE_KEY_COMPLETED_AT_FORMAT = 'completed-at-format'
 const STORAGE_KEY_REASONING_DISPLAY_MODE = 'reasoning-display-mode'
 const STORAGE_KEY_WIDE_MODE = 'chat-wide-mode'
+const STORAGE_KEY_CHAT_CONTENT_WIDTH = 'chat-content-width'
+const STORAGE_KEY_CHAT_INPUT_WIDTH = 'chat-input-width'
 const STORAGE_KEY_DIFF_STYLE = 'diff-style'
 const STORAGE_KEY_DESCRIPTIVE_TOOL_STEPS = 'descriptive-tool-steps'
 const STORAGE_KEY_INLINE_TOOL_REQUESTS = 'inline-tool-requests'
@@ -268,6 +286,8 @@ const STORAGE_KEY_CODE_FONT_SCALE = 'code-font-scale'
 const STORAGE_KEY_TOOL_CARD_STYLE = 'tool-card-style'
 const STORAGE_KEY_IMMERSIVE_MODE = 'immersive-mode'
 const STORAGE_KEY_COMPACT_INLINE_PERMISSION = 'compact-inline-permission'
+const STORAGE_KEY_COMPACTION_AUTO_COLLAPSE = 'compaction-auto-collapse'
+const STORAGE_KEY_QUEUE_AUTO_COLLAPSE = 'queue-auto-collapse'
 const STORAGE_KEY_GLASS_EFFECT = 'glass-effect'
 const STORAGE_KEY_QUEUE_FOLLOWUP_MESSAGES = 'queue-followup-messages'
 const STORAGE_KEY_QUEUE_DELIVERY_CHIP_VISIBLE = 'queue-delivery-chip-visible'
@@ -336,6 +356,10 @@ class ThemeStore {
     const savedRenderUserMarkdown = localStorage.getItem(STORAGE_KEY_RENDER_USER_MARKDOWN)
     const renderUserMarkdown =
       savedRenderUserMarkdown === null ? DEFAULT_RENDER_USER_MARKDOWN : savedRenderUserMarkdown === 'true'
+
+    const savedRenderHtmlContent = localStorage.getItem(STORAGE_KEY_RENDER_HTML_CONTENT)
+    const renderHtmlContent =
+      savedRenderHtmlContent === null ? DEFAULT_RENDER_HTML_CONTENT : savedRenderHtmlContent === 'true'
     const savedReasoningDisplay = localStorage.getItem(STORAGE_KEY_REASONING_DISPLAY_MODE)
     const reasoningDisplayMode: ReasoningDisplayMode =
       savedReasoningDisplay === 'italic' || savedReasoningDisplay === 'markdown'
@@ -355,6 +379,12 @@ class ThemeStore {
       savedCompletedAtFormat === 'dateTime' ? 'dateTime' : DEFAULT_COMPLETED_AT_FORMAT
 
     const savedWideMode = localStorage.getItem(STORAGE_KEY_WIDE_MODE) === 'true'
+    const rawChatContentWidth = Number(localStorage.getItem(STORAGE_KEY_CHAT_CONTENT_WIDTH))
+    const savedChatContentWidth =
+      Number.isFinite(rawChatContentWidth) && rawChatContentWidth > 0 ? rawChatContentWidth : null
+    const rawChatInputWidth = Number(localStorage.getItem(STORAGE_KEY_CHAT_INPUT_WIDTH))
+    const savedChatInputWidth =
+      Number.isFinite(rawChatInputWidth) && rawChatInputWidth > 0 ? rawChatInputWidth : null
     const savedDiffStyle = localStorage.getItem(STORAGE_KEY_DIFF_STYLE) as DiffStyle | null
     const diffStyle: DiffStyle = savedDiffStyle === 'changeBars' ? 'changeBars' : DEFAULT_DIFF_STYLE
 
@@ -390,6 +420,14 @@ class ThemeStore {
       savedCompactInlinePermission === null
         ? DEFAULT_COMPACT_INLINE_PERMISSION
         : savedCompactInlinePermission === 'true'
+
+    const savedCompactionAutoCollapse = localStorage.getItem(STORAGE_KEY_COMPACTION_AUTO_COLLAPSE)
+    const compactionAutoCollapse =
+      savedCompactionAutoCollapse === null ? DEFAULT_COMPACTION_AUTO_COLLAPSE : savedCompactionAutoCollapse === 'true'
+
+    const savedQueueAutoCollapse = localStorage.getItem(STORAGE_KEY_QUEUE_AUTO_COLLAPSE)
+    const queueAutoCollapse =
+      savedQueueAutoCollapse === null ? DEFAULT_QUEUE_AUTO_COLLAPSE : savedQueueAutoCollapse === 'true'
 
     const savedGlassEffect = localStorage.getItem(STORAGE_KEY_GLASS_EFFECT)
     const glassEffect = savedGlassEffect === null ? DEFAULT_GLASS_EFFECT : savedGlassEffect === 'true'
@@ -457,10 +495,13 @@ class ThemeStore {
       activeCustomCSSSnippetId,
       collapseUserMessages,
       renderUserMarkdown,
+      renderHtmlContent,
       stepFinishDisplay,
       completedAtFormat,
       reasoningDisplayMode,
       wideMode: savedWideMode,
+      chatContentWidth: savedChatContentWidth,
+      chatInputWidth: savedChatInputWidth,
       diffStyle,
       descriptiveToolSteps,
       inlineToolRequests,
@@ -470,6 +511,8 @@ class ThemeStore {
       toolCardStyle,
       immersiveMode,
       compactInlinePermission,
+      compactionAutoCollapse,
+      queueAutoCollapse,
       glassEffect,
       queueFollowupMessages,
       queueDeliveryChipVisible,
@@ -512,6 +555,9 @@ class ThemeStore {
   get renderUserMarkdown() {
     return this.state.renderUserMarkdown
   }
+  get renderHtmlContent() {
+    return this.state.renderHtmlContent
+  }
   get stepFinishDisplay() {
     return this.state.stepFinishDisplay
   }
@@ -523,6 +569,12 @@ class ThemeStore {
   }
   get wideMode() {
     return this.state.wideMode
+  }
+  get chatContentWidth() {
+    return this.state.chatContentWidth
+  }
+  get chatInputWidth() {
+    return this.state.chatInputWidth
   }
   get diffStyle() {
     return this.state.diffStyle
@@ -550,6 +602,12 @@ class ThemeStore {
   }
   get compactInlinePermission() {
     return this.state.compactInlinePermission
+  }
+  get compactionAutoCollapse() {
+    return this.state.compactionAutoCollapse
+  }
+  get queueAutoCollapse() {
+    return this.state.queueAutoCollapse
   }
   get glassEffect() {
     return this.state.glassEffect
@@ -759,6 +817,13 @@ class ThemeStore {
     this.emit()
   }
 
+  setRenderHtmlContent(enabled: boolean) {
+    if (this.state.renderHtmlContent === enabled) return
+    this.state = { ...this.state, renderHtmlContent: enabled }
+    localStorage.setItem(STORAGE_KEY_RENDER_HTML_CONTENT, String(enabled))
+    this.emit()
+  }
+
   setStepFinishDisplay(display: Partial<StepFinishDisplay>) {
     const next = { ...this.state.stepFinishDisplay, ...display }
     this.state = { ...this.state, stepFinishDisplay: next }
@@ -782,8 +847,29 @@ class ThemeStore {
 
   setWideMode(enabled: boolean) {
     if (this.state.wideMode === enabled) return
-    this.state = { ...this.state, wideMode: enabled }
+    // 切换宽屏模式（开或关都算）会重置左缘拖拽的自定义宽度（对话列 + 输入框），回到所选模式的默认宽度
+    this.state = { ...this.state, wideMode: enabled, chatContentWidth: null, chatInputWidth: null }
     localStorage.setItem(STORAGE_KEY_WIDE_MODE, String(enabled))
+    localStorage.removeItem(STORAGE_KEY_CHAT_CONTENT_WIDTH)
+    localStorage.removeItem(STORAGE_KEY_CHAT_INPUT_WIDTH)
+    this.emit()
+  }
+
+  setChatContentWidth(width: number | null) {
+    const next = width !== null && Number.isFinite(width) && width > 0 ? Math.round(width) : null
+    if (this.state.chatContentWidth === next) return
+    this.state = { ...this.state, chatContentWidth: next }
+    if (next === null) localStorage.removeItem(STORAGE_KEY_CHAT_CONTENT_WIDTH)
+    else localStorage.setItem(STORAGE_KEY_CHAT_CONTENT_WIDTH, String(next))
+    this.emit()
+  }
+
+  setChatInputWidth(width: number | null) {
+    const next = width !== null && Number.isFinite(width) && width > 0 ? Math.round(width) : null
+    if (this.state.chatInputWidth === next) return
+    this.state = { ...this.state, chatInputWidth: next }
+    if (next === null) localStorage.removeItem(STORAGE_KEY_CHAT_INPUT_WIDTH)
+    else localStorage.setItem(STORAGE_KEY_CHAT_INPUT_WIDTH, String(next))
     this.emit()
   }
 
@@ -867,6 +953,20 @@ class ThemeStore {
     if (this.state.compactInlinePermission === enabled) return
     this.state = { ...this.state, compactInlinePermission: enabled }
     localStorage.setItem(STORAGE_KEY_COMPACT_INLINE_PERMISSION, String(enabled))
+    this.emit()
+  }
+
+  setCompactionAutoCollapse(enabled: boolean) {
+    if (this.state.compactionAutoCollapse === enabled) return
+    this.state = { ...this.state, compactionAutoCollapse: enabled }
+    localStorage.setItem(STORAGE_KEY_COMPACTION_AUTO_COLLAPSE, String(enabled))
+    this.emit()
+  }
+
+  setQueueAutoCollapse(enabled: boolean) {
+    if (this.state.queueAutoCollapse === enabled) return
+    this.state = { ...this.state, queueAutoCollapse: enabled }
+    localStorage.setItem(STORAGE_KEY_QUEUE_AUTO_COLLAPSE, String(enabled))
     this.emit()
   }
 
@@ -1161,6 +1261,8 @@ function normalizeThemeBackup(raw: unknown): ThemeBackup {
     collapseUserMessages: typeof parsed?.collapseUserMessages === 'boolean' ? parsed.collapseUserMessages : true,
     renderUserMarkdown:
       typeof parsed?.renderUserMarkdown === 'boolean' ? parsed.renderUserMarkdown : DEFAULT_RENDER_USER_MARKDOWN,
+    renderHtmlContent:
+      typeof parsed?.renderHtmlContent === 'boolean' ? parsed.renderHtmlContent : DEFAULT_RENDER_HTML_CONTENT,
     stepFinishDisplay:
       parsed?.stepFinishDisplay && typeof parsed.stepFinishDisplay === 'object'
         ? { ...DEFAULT_STEP_FINISH_DISPLAY, ...(parsed.stepFinishDisplay as Partial<StepFinishDisplay>) }
@@ -1171,6 +1273,12 @@ function normalizeThemeBackup(raw: unknown): ThemeBackup {
         ? parsed.reasoningDisplayMode
         : DEFAULT_REASONING_DISPLAY_MODE,
     wideMode: parsed?.wideMode === true,
+    chatContentWidth:
+      typeof parsed?.chatContentWidth === 'number' && parsed.chatContentWidth > 0
+        ? parsed.chatContentWidth
+        : null,
+    chatInputWidth:
+      typeof parsed?.chatInputWidth === 'number' && parsed.chatInputWidth > 0 ? parsed.chatInputWidth : null,
     diffStyle: parsed?.diffStyle === 'changeBars' ? 'changeBars' : DEFAULT_DIFF_STYLE,
     descriptiveToolSteps:
       typeof parsed?.descriptiveToolSteps === 'boolean' ? parsed.descriptiveToolSteps : DEFAULT_DESCRIPTIVE_TOOL_STEPS,
@@ -1190,6 +1298,12 @@ function normalizeThemeBackup(raw: unknown): ThemeBackup {
       typeof parsed?.compactInlinePermission === 'boolean'
         ? parsed.compactInlinePermission
         : DEFAULT_COMPACT_INLINE_PERMISSION,
+    compactionAutoCollapse:
+      typeof parsed?.compactionAutoCollapse === 'boolean'
+        ? parsed.compactionAutoCollapse
+        : DEFAULT_COMPACTION_AUTO_COLLAPSE,
+    queueAutoCollapse:
+      typeof parsed?.queueAutoCollapse === 'boolean' ? parsed.queueAutoCollapse : DEFAULT_QUEUE_AUTO_COLLAPSE,
     glassEffect: typeof parsed?.glassEffect === 'boolean' ? parsed.glassEffect : DEFAULT_GLASS_EFFECT,
     queueFollowupMessages:
       typeof parsed?.queueFollowupMessages === 'boolean'
@@ -1259,6 +1373,10 @@ export function importThemeBackup(raw: unknown): void {
   localStorage.setItem(STORAGE_KEY_COMPLETED_AT_FORMAT, backup.completedAtFormat)
   localStorage.setItem(STORAGE_KEY_REASONING_DISPLAY_MODE, backup.reasoningDisplayMode)
   localStorage.setItem(STORAGE_KEY_WIDE_MODE, String(backup.wideMode))
+  if (backup.chatContentWidth === null) localStorage.removeItem(STORAGE_KEY_CHAT_CONTENT_WIDTH)
+  else localStorage.setItem(STORAGE_KEY_CHAT_CONTENT_WIDTH, String(backup.chatContentWidth))
+  if (backup.chatInputWidth === null) localStorage.removeItem(STORAGE_KEY_CHAT_INPUT_WIDTH)
+  else localStorage.setItem(STORAGE_KEY_CHAT_INPUT_WIDTH, String(backup.chatInputWidth))
   localStorage.setItem(STORAGE_KEY_DIFF_STYLE, backup.diffStyle)
   localStorage.setItem(STORAGE_KEY_DESCRIPTIVE_TOOL_STEPS, String(backup.descriptiveToolSteps))
   localStorage.setItem(STORAGE_KEY_INLINE_TOOL_REQUESTS, String(backup.inlineToolRequests))
@@ -1268,6 +1386,8 @@ export function importThemeBackup(raw: unknown): void {
   localStorage.setItem(STORAGE_KEY_TOOL_CARD_STYLE, backup.toolCardStyle)
   localStorage.setItem(STORAGE_KEY_IMMERSIVE_MODE, String(backup.immersiveMode))
   localStorage.setItem(STORAGE_KEY_COMPACT_INLINE_PERMISSION, String(backup.compactInlinePermission))
+  localStorage.setItem(STORAGE_KEY_COMPACTION_AUTO_COLLAPSE, String(backup.compactionAutoCollapse))
+  localStorage.setItem(STORAGE_KEY_QUEUE_AUTO_COLLAPSE, String(backup.queueAutoCollapse))
   localStorage.setItem(STORAGE_KEY_GLASS_EFFECT, String(backup.glassEffect))
   localStorage.setItem(STORAGE_KEY_QUEUE_FOLLOWUP_MESSAGES, String(backup.queueFollowupMessages))
   localStorage.setItem(STORAGE_KEY_QUEUE_DELIVERY_CHIP_VISIBLE, String(backup.queueDeliveryChipVisible))

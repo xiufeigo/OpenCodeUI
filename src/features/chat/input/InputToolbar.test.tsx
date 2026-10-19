@@ -101,6 +101,26 @@ describe('InputToolbar file selection', () => {
     readFileMock.mockReset()
   })
 
+  it('always offers the attach control and does not filter the file input by accept', () => {
+    // Issue #182：白名单外的文件会走服务端上传，所以附件入口不再受模型能力控制，
+    // 文件选择器也不能按 accept 过滤，否则用户根本选不到 zip/docx。
+    const { container } = render(
+      <InputToolbar
+        agents={[]}
+        fileCapabilities={{ image: false, pdf: false, audio: false, video: false }}
+        onFilesSelected={vi.fn()}
+        canSend={false}
+        onSend={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole('button', { name: 'Attach file' })).toBeTruthy()
+
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement
+    expect(input).toBeTruthy()
+    expect(input.hasAttribute('accept')).toBe(false)
+  })
+
   it('uses the browser file input on Tauri mobile', () => {
     useIsMobileMock.mockReturnValue(true)
     isTauriMock.mockReturnValue(true)
@@ -162,6 +182,35 @@ describe('InputToolbar file selection', () => {
     expect(files[0].type).toBe('image/png')
   })
 
+  it('hands native paths to onPickedPaths instead of reading bytes', async () => {
+    isTauriMock.mockReturnValue(true)
+    isTauriMobileMock.mockReturnValue(false)
+    openMock.mockResolvedValue(['C:\\dl\\piui-source.zip', 'C:\\dl\\notes.txt'])
+
+    // Issue #182：桌面端选择器与拖入共用一条判定链（本机 → @ 引用 / 远端 → 上传），
+    // 所以要把路径原样交上去；读字节拼 File 会丢掉路径
+    const onPickedPaths = vi.fn()
+    const onFilesSelected = vi.fn()
+
+    render(
+      <InputToolbar
+        agents={[]}
+        onFilesSelected={onFilesSelected}
+        onPickedPaths={onPickedPaths}
+        canSend={false}
+        onSend={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Attach file' }))
+
+    await waitFor(() => {
+      expect(onPickedPaths).toHaveBeenCalledWith(['C:\\dl\\piui-source.zip', 'C:\\dl\\notes.txt'])
+    })
+    expect(readFileMock).not.toHaveBeenCalled()
+    expect(onFilesSelected).not.toHaveBeenCalled()
+  })
+
   it('moves focus into the opened agent menu and exposes menu semantics', async () => {
     render(
       <InputToolbar
@@ -207,7 +256,8 @@ describe('InputToolbar file selection', () => {
 
     await waitFor(() => {
       expect(trigger).toHaveAttribute('aria-expanded', 'false')
-      expect(screen.getByRole('button', { name: 'Send message' })).toHaveFocus()
+      // 下一个可聚焦控件是附件按钮（它现在恒常渲染，Issue #182）
+      expect(screen.getByRole('button', { name: 'Attach file' })).toHaveFocus()
     })
   })
 

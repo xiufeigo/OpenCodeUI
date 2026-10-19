@@ -20,16 +20,32 @@ import { useMobileCollapse } from './input/useMobileCollapse'
 import { useAttachmentRail } from './input/useAttachmentRail'
 import { useInputHistory } from './input/useInputHistory'
 import { promptHistoryStore } from '../../store/promptHistoryStore'
+import { useCurrentSessionId, useSessionPromptHistory } from '../../store/messageStoreHooks'
 import { usePersistedDraft, draftStorageKey, clearPersistedDraft, readPersistedDraft } from './input/usePersistedDraft'
 import {
   TEXT_STYLE,
+  MAX_UPLOAD_BYTES,
   bytesToDataUrl,
   detectSlashTrigger,
   ensureFileMime,
   getMimeFromPath,
-  isFileSupported,
   readFileAsDataUrl,
+  routeAttachment,
 } from './input/inputUtils'
+import { formatFileSize } from '../../utils/formatUtils'
+import {
+  canReferenceLocalPath,
+  splitDroppedItems,
+  uploadFileAsAttachment,
+  uploadPathAsAttachment,
+  decideNativeFileRoute,
+  type NativeFileDecision,
+  type UploadFailure,
+} from './input/attachmentUpload'
+import { createUploadId } from '../../api/file'
+import { notificationStore } from '../../store/notificationStore'
+import { LOCAL_SERVER_ID, serverStore } from '../../store/serverStore'
+import { sessionKeyToServerId } from '../../utils/sessionKey'
 import { keybindingStore, matchesKeybinding } from '../../store/keybindingStore'
 import { themeStore } from '../../store/themeStore'
 import { useChatViewport } from './chatViewport'
@@ -118,6 +134,30 @@ export interface CollapsedDialogInfo {
   onExpand: () => void
 }
 
+/**
+ * 一次待上传的来源。
+ *
+ * 浏览器/粘贴只能给 `File`；桌面端拖入与选择器给的是**本机绝对路径**——
+ * 那条走 Rust 流式上传（不读进渲染进程，也有进度）。
+ */
+type PendingUpload =
+  | {
+      kind: 'file'
+      file: File
+      filename: string
+      mime: string
+      size: number
+      pathOnly: boolean
+    }
+  | {
+      kind: 'path'
+      path: string
+      filename: string
+      mime: string
+      size: number
+      pathOnly: boolean
+    }
+
 export interface InputBoxProps {
   paneId: string
   onSend: (
@@ -148,6 +188,8 @@ export interface InputBoxProps {
   modelSelectorRef?: React.RefObject<ModelSelectorHandle | null>
   rootPath?: string
   sessionId?: string | null
+  /** pane 绑定的服务器 id（附件上传目标；缺省回落到活动服务器） */
+  serverId?: string
   // Undo/Redo
   revertedText?: string
   revertedAttachments?: Attachment[]
@@ -185,6 +227,7 @@ export interface InputBoxProps {
   // Collapsed dialog capsules
   collapsedPermission?: CollapsedDialogInfo
   collapsedQuestion?: CollapsedDialogInfo
+  collapsedWebsearch?: CollapsedDialogInfo
 }
 
 // ============================================
@@ -216,6 +259,7 @@ function InputBoxComponent({
   modelSelectorRef,
   rootPath = '',
   sessionId,
+  serverId: serverIdProp,
   revertedText,
   revertedAttachments,
   composerDraft,
@@ -235,6 +279,7 @@ function InputBoxComponent({
   onScrollToBottom,
   collapsedPermission,
   collapsedQuestion,
+  collapsedWebsearch,
 }: InputBoxProps) {
   const { t } = useTranslation('chat')
   // 合并文件能力：优先用 fileCapabilities，回退到 supportsImages
@@ -250,8 +295,162 @@ function InputBoxComponent({
   )
   const { externalFileDropMode, queueDeliveryChipVisible } = useSyncExternalStore(themeStore.subscribe, themeStore.getSnapshot)
 
-  // 是否有任何文件附件能力
-  const supportsAnyFile = fileCaps.image || fileCaps.pdf || fileCaps.audio || fileCaps.video
+  // 注意：这里**不再**有「模型无原生文件能力就丢弃文件」的闸门（旧 supportsAnyFile）。
+  // 白名单外的文件现在会走服务端上传（Issue #182），能不能内联只影响形态，不影响能否添加。
+
+  // ============================================
+  // 附件上传（Issue #182）
+  // ============================================
+
+  /** 上传目标：pane 绑定的服务器 + 当前工作目录 */
+  const uploadTarget = useMemo(
+    () => ({
+      serverId: serverIdProp ?? (sessionId ? sessionKeyToServerId(sessionId) : undefined),
+      directory: rootPath || undefined,
+    }),
+    [rootPath, serverIdProp, sessionId],
+  )
+
+  /**
+   * 服务端是否与客户端同机（需求二）。
+   *
+   * 同机时**不走上传**：桌面端拖入的文件直接沿用原有的引用方式
+   * （原生媒体内联；其余退化成 `@` 引用，服务端自己能读到那个路径）。
+   * 浏览器里永远拿不到真实路径，所以同机也照旧上传（issue #182 的主场景）。
+   */
+  const serverIsLocal = useMemo(() => serverStore.isLocalServer(uploadTarget.serverId), [uploadTarget.serverId])
+
+  /** 应用自己拉起的服务（`local` 条目）：必然同机，引用时免探测 */
+  const pinnedLocalServer = useMemo(
+    () => (uploadTarget.serverId ?? serverStore.getActiveServerId()) === LOCAL_SERVER_ID,
+    [uploadTarget.serverId],
+  )
+
+  /** 在途上传（id → 完成信号）。发送前必须清空，避免把半个附件发出去 */
+  const pendingUploadsRef = useRef(new Map<string, Promise<void>>())
+  /** 失败后可重试的上传源（id → 源 + 路由结果） */
+  const uploadSourcesRef = useRef(new Map<string, PendingUpload>())
+  const [uploadingCount, setUploadingCount] = useState(0)
+
+  const notifyAttachmentError = useCallback(
+    (title: string, body: string) => {
+      notificationStore.push('error', title, body, sessionId ?? '', rootPath || undefined)
+    },
+    [rootPath, sessionId],
+  )
+
+  /** 失败原因文案（拿不到具体原因时回落成服务端/浏览器给的原文） */
+  const uploadFailureBody = useCallback(
+    (name: string, failure: UploadFailure) =>
+      t('attachment.uploadFailed.body', {
+        name,
+        reason: t(`attachment.uploadFailed.reason.${failure.reason}`, { defaultValue: failure.message }),
+      }),
+    [t],
+  )
+
+  /**
+   * 跑一次上传：完成后把占位附件**原地替换**成路径型附件（保持 id，chip 不跳），
+   * 失败则标记 failed 并弹出可见错误——issue #182 明确要求不静默吞掉。
+   */
+  const runAttachmentUpload = useCallback(
+    (attachmentId: string, entry: PendingUpload) => {
+      const task = (async () => {
+        const options = {
+          ...uploadTarget,
+          pathOnly: entry.pathOnly,
+          // 浏览器走 XHR、桌面端走 Rust 命令，两条都能推真实进度；
+          // 拿不到进度时回调不触发 → 胶囊保持不确定态转圈
+          onProgress: (fraction: number) => {
+            setAttachments(prev =>
+              prev.map(item => {
+                if (item.id !== attachmentId) return item
+                // 百分比没变就不换引用，避免每个 progress 事件都触发重渲染
+                if (item.progress !== undefined && Math.round(item.progress * 100) === Math.round(fraction * 100)) {
+                  return item
+                }
+                return { ...item, progress: fraction }
+              }),
+            )
+          },
+        }
+
+        const { attachment, failure } =
+          entry.kind === 'file'
+            ? await uploadFileAsAttachment(entry.file, options)
+            : await uploadPathAsAttachment(entry.path, entry.filename, entry.mime, options)
+
+        if (attachment) {
+          setAttachments(prev =>
+            prev.map(item => (item.id === attachmentId ? { ...attachment, id: attachmentId } : item)),
+          )
+          return
+        }
+
+        setAttachments(prev =>
+          prev.map(item => (item.id === attachmentId ? { ...item, uploadStatus: 'failed' as const } : item)),
+        )
+        notifyAttachmentError(
+          t('attachment.uploadFailed.title', { name: entry.filename }),
+          uploadFailureBody(entry.filename, failure ?? { reason: 'unknown', message: '' }),
+        )
+      })()
+
+      const settled = task.finally(() => {
+        pendingUploadsRef.current.delete(attachmentId)
+        setUploadingCount(count => Math.max(0, count - 1))
+      })
+
+      pendingUploadsRef.current.set(attachmentId, settled)
+      setUploadingCount(count => count + 1)
+      void settled
+    },
+    [notifyAttachmentError, t, uploadFailureBody, uploadTarget],
+  )
+
+  /**
+   * 插入占位附件并开始上传。
+   *
+   * 顺序很重要：**先把占位插进 state，再开上传**。上传进度用的是函数式
+   * `setAttachments`，React 会按入队顺序应用，因此这里不会出现"进度先到、
+   * 占位还没落地 → 进度丢失"的竞态。
+   */
+  const startAttachmentUpload = useCallback(
+    (entry: PendingUpload) => {
+      const attachmentId = createUploadId()
+      uploadSourcesRef.current.set(attachmentId, entry)
+
+      setAttachments(prev => [
+        ...prev,
+        {
+          id: attachmentId,
+          type: 'file',
+          displayName: entry.filename,
+          mime: entry.mime,
+          size: entry.size,
+          uploadStatus: 'uploading',
+          ...(entry.pathOnly ? { pathOnly: true } : {}),
+        },
+      ])
+
+      runAttachmentUpload(attachmentId, entry)
+    },
+    [runAttachmentUpload],
+  )
+
+  /** 重试失败的上传（保留同一个 chip 与 id） */
+  const retryAttachmentUpload = useCallback(
+    (attachmentId: string) => {
+      const entry = uploadSourcesRef.current.get(attachmentId)
+      if (!entry) return
+
+      setAttachments(prev =>
+        prev.map(item => (item.id === attachmentId ? { ...item, uploadStatus: 'uploading' as const } : item)),
+      )
+      runAttachmentUpload(attachmentId, entry)
+    },
+    [runAttachmentUpload],
+  )
 
   // 文本状态
   const [text, setText] = useState('')
@@ -260,7 +459,6 @@ function InputBoxComponent({
   const [shellMode, setShellMode] = useState(false)
   // 附件状态（图片、文件、文件夹、agent）
   const [attachments, setAttachments] = useState<Attachment[]>([])
-  const [isSubmitting, setIsSubmitting] = useState(false)
 
   // @ Mention 状态
   const [mentionOpen, setMentionOpen] = useState(false)
@@ -310,16 +508,23 @@ function InputBoxComponent({
 
   // ============================================
   // 历史消息导航（类终端体验，逻辑在 useInputHistory hook 中）
-  // 数据源：全局持久化 prompt 历史（官方 composer/history 同款）
+  // 数据源：当前会话自己的历史用户输入（在该会话里翻这个会话发过的内容），
+  // 新会话/无消息时回退全局持久化 prompt 历史（官方 composer/history 同款）
   // + 当前会话/工作区的持久化草稿（空输入按 ↑ 先召回草稿）
   // ============================================
   const draftKey = useMemo(() => draftStorageKey(sessionId, rootPath), [sessionId, rootPath])
   const draftKeyRef = useRef<string | null>(null)
   draftKeyRef.current = draftKey
+  const focusedSessionId = useCurrentSessionId()
+  const sessionPromptHistory = useSessionPromptHistory()
+  // shell 轨道没有会话内来源（shell 命令是独立消息类型），保持全局轨道
+  const historyEntries =
+    !shellMode && sessionId && sessionId === focusedSessionId ? sessionPromptHistory : null
   const { handleHistoryKeyDown, handleHistoryChange, resetHistoryIndex } = useInputHistory({
     textareaRef,
     mode: shellMode ? 'shell' : 'normal',
     recallDraft: useCallback(() => readPersistedDraft(draftKeyRef.current), []),
+    sessionEntries: historyEntries,
   })
 
   // 草稿持久化（按会话/工作区作用域，官方 composer persistence 的存储维度；
@@ -342,6 +547,7 @@ function InputBoxComponent({
       registerInputBox,
       collapsedPermission,
       collapsedQuestion,
+      collapsedWebsearch,
     })
 
   // 处理 revert 恢复
@@ -362,7 +568,7 @@ function InputBoxComponent({
           textareaRef.current.setSelectionRange(revertedText.length, revertedText.length)
         }
       })
-    } else if (prevRevertedTextRef.current !== undefined && revertedText === undefined && !isSubmitting) {
+    } else if (prevRevertedTextRef.current !== undefined && revertedText === undefined) {
       frameId = requestAnimationFrame(() => {
         setText('')
         setAttachments([])
@@ -376,7 +582,7 @@ function InputBoxComponent({
         cancelAnimationFrame(frameId)
       }
     }
-  }, [revertedText, revertedAttachments, isSubmitting])
+  }, [revertedText, revertedAttachments])
 
   // 队列编辑草稿：装载（暂存当前输入）/ 恢复（取消编辑），nonce 为触发键
   const draftStashRef = useRef<{ text: string; attachments: Attachment[] } | null>(null)
@@ -491,7 +697,10 @@ function InputBoxComponent({
 
   // 计算
   const inputDisabled = !!disabled
-  const canSend = (text.trim().length > 0 || attachments.length > 0) && !inputDisabled
+  // 有在途上传时不允许发送：附件还没落到服务端，发出去的 prompt 会缺文件
+  //（官方 composer 也是等 uploads.pending 清空才提交）
+  const hasPendingUploads = uploadingCount > 0
+  const canSend = (text.trim().length > 0 || attachments.length > 0) && !inputDisabled && !hasPendingUploads
 
   // ============================================
   // Handlers
@@ -561,29 +770,42 @@ function InputBoxComponent({
     [attachments, onClearRevert, onCommand, resetDraft, restoreDraft, text],
   )
 
-  const runSubmit = useCallback(
-    async (submit: () => Promise<boolean | void> | boolean | void, onSuccess?: () => void, onFailure?: () => void) => {
-      if (isSubmitting) return false
-
-      setIsSubmitting(true)
-      try {
-        const result = await submit()
-        if (result === false) {
-          onFailure?.()
-          return false
+  /**
+   * 提交即清空、后台发送、失败恢复（官方 composer submit.ts 同款时序：
+   * clearSubmission → void sending → failSubmission(restore)）。
+   *
+   * 之前用 runSubmit 等 POST 落定（switchModel → switchAgent → prompt 三个
+   * 串行 RTT）才清输入框，按回车后文本要在框里「粘」几百毫秒——不优雅的
+   * 体感来源。现在提交瞬间清空，发送在后台跑；失败时输入框还没被新内容
+   * 占用才恢复旧草稿（sendMessageNow 另有失败通知）。
+   */
+  const submitOptimistically = useCallback(
+    (submit: () => Promise<boolean | void> | boolean | void, opts?: { onSuccess?: () => void; onFailure?: () => void }) => {
+      const draftSnapshot: HistoryEntry = { text, attachments: [...attachments] }
+      resetDraft()
+      void (async () => {
+        let ok: boolean
+        try {
+          ok = (await submit()) !== false
+        } catch {
+          ok = false
         }
-
-        onSuccess?.()
-        return true
-      } finally {
-        setIsSubmitting(false)
-      }
+        if (ok) {
+          opts?.onSuccess?.()
+          return
+        }
+        opts?.onFailure?.()
+        const currentDraft = latestDraftRef.current
+        if (currentDraft.text.length === 0 && currentDraft.attachments.length === 0) {
+          restoreDraft(draftSnapshot)
+        }
+      })()
     },
-    [isSubmitting],
+    [attachments, resetDraft, restoreDraft, text],
   )
 
   const handleSend = useCallback(() => {
-    if (!canSend || isSubmitting) return
+    if (!canSend) return
 
     // shell mode：原样提交命令给 session.shell，保持 shell mode（类终端连续输入）
     if (shellMode) {
@@ -591,11 +813,9 @@ function InputBoxComponent({
       if (!command || !onShell) return
       // shell 轨道历史记账（官方 history.add 同款：发送即记账、失败移除）
       promptHistoryStore.add(command, [], 'shell')
-      void runSubmit(
-        () => onShell(command),
-        () => setText(''),
-        () => promptHistoryStore.remove(command, [], 'shell'),
-      )
+      submitOptimistically(() => onShell(command), {
+        onFailure: () => promptHistoryStore.remove(command, [], 'shell'),
+      })
       return
     }
 
@@ -626,20 +846,21 @@ function InputBoxComponent({
 
       // normal 轨道历史记账（官方 history.add 同款：发送即记账、失败移除）
       promptHistoryStore.add(text, attachments, 'normal')
-      void runSubmit(
+      submitOptimistically(
         () =>
           onSend(text, attachments, {
             agent: agentObj?.id ?? agentRef,
             variant: selectedVariant,
           }),
-        () => {
-          // 队列编辑草稿发送成功 → 丢弃暂存（官方 confirmEdit 同款：
-          // 发送的内容就是编辑结果，不再恢复旧输入）
-          draftStashRef.current = null
-          resetDraft()
-          onClearRevert?.()
+        {
+          onSuccess: () => {
+            // 队列编辑草稿发送成功 → 丢弃暂存（官方 confirmEdit 同款：
+            // 发送的内容就是编辑结果，不再恢复旧输入）
+            draftStashRef.current = null
+            onClearRevert?.()
+          },
+          onFailure: () => promptHistoryStore.remove(text, attachments, 'normal'),
         },
-        () => promptHistoryStore.remove(text, attachments, 'normal'),
       )
     }
 
@@ -655,8 +876,7 @@ function InputBoxComponent({
         .catch(() => false)
         .then(isCommand => {
           if (isCommand) {
-            void onCommand(trimmedText)
-            resetDraft()
+            submitCommandOptimistically(trimmedText)
           } else {
             // 不是已知命令 → 按普通消息发送
             sendCurrent()
@@ -670,18 +890,16 @@ function InputBoxComponent({
     agents,
     attachments,
     canSend,
-    isSubmitting,
     onCommand,
     onClearRevert,
     onSend,
     onShell,
-    resetDraft,
-    runSubmit,
+    rootPath,
     selectedAgent,
     selectedVariant,
     shellMode,
     submitCommandOptimistically,
-    rootPath,
+    submitOptimistically,
     text,
   ])
 
@@ -715,7 +933,7 @@ function InputBoxComponent({
 
       if (isImeComposing && (e.key === 'Enter' || e.key === 'Tab')) return
 
-      // shell mode（官方 machine.ts:203 + submit.ts:147）：Enter 直接执行，
+      // shell mode（官方 machine.ts:232 + submit.ts:147）：Enter 直接执行，
       // esc / 空文本退格退回普通模式
       if (shellMode) {
         if (e.key === 'Escape') {
@@ -727,6 +945,14 @@ function InputBoxComponent({
         if (e.key === 'Backspace' && text.length === 0) {
           e.preventDefault()
           setShellMode(false)
+          // 「其实想输入 !」的退路：删掉 shell 模式，把进入时被消费的 `!` 还回来，
+          // 光标放到末尾好继续打（官方只退模式不还原，这里比官方宽容）
+          setText('!')
+          requestAnimationFrame(() => {
+            if (!textareaRef.current) return
+            textareaRef.current.focus()
+            textareaRef.current.setSelectionRange(1, 1)
+          })
           return
         }
         if (e.key === 'Enter' && !e.shiftKey && !isImeComposing) {
@@ -843,8 +1069,10 @@ function InputBoxComponent({
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       const newText = e.target.value
 
-      // `!` 进入 shell mode（官方 machine.ts:203 同款：`!` 被消费，不进文本）
-      if (!shellMode && newText === '!' && onShell) {
+      // 空输入框敲入 `!` 进入 shell mode（官方 machine.ts:109 同款：`!` 被消费，不进文本）。
+      // 额外要求之前是空文本（官方是 value === "!" 就触发）：从 `!x` 删除回 `!`
+      // 不该重新进 shell——那是编辑普通文本，不是想跑命令。
+      if (!shellMode && newText === '!' && text === '' && onShell) {
         setShellMode(true)
         setText('')
         setMentionOpen(false)
@@ -905,7 +1133,7 @@ function InputBoxComponent({
         }
       }
     },
-    [handleHistoryChange, shellMode, onShell],
+    [handleHistoryChange, shellMode, onShell, text],
   )
 
   const handleCompositionStart = useCallback(() => {
@@ -955,13 +1183,16 @@ function InputBoxComponent({
       const newText = beforeAt + mentionText + ' ' + afterQuery
 
       // 创建附件（reference 按目录附件插入，值为引用目录的绝对路径——官方 mime 是 application/x-directory）
+      // url 必须是合法 file:// URL（服务端 readFileAttachment 用 new URL + protocol==='file:' 校验，
+      // 裸绝对路径 `E:/...` 会被解析成 `e:` 协议直接 400——侧边栏拖入走 toFileUrl 所以没事，
+      // 这里对齐官方 request.ts:109 的 `file://${encodeFilePath(path)}`）
       const attachType = item.type === 'reference' ? 'folder' : item.type
       const attachment: Attachment = {
         id: crypto.randomUUID(),
         type: attachType,
         displayName: item.displayName,
         relativePath: item.type === 'reference' ? item.value : item.relativePath,
-        url: item.type !== 'agent' && item.type !== 'skill' ? item.value : undefined,
+        url: item.type !== 'agent' && item.type !== 'skill' ? toFileUrl(item.value) : undefined,
         mime: item.type === 'reference' ? 'application/x-directory' : item.type !== 'agent' ? 'text/plain' : undefined,
         agentName: item.type === 'agent' ? item.displayName : undefined,
         skillId: item.type === 'skill' ? item.value : undefined,
@@ -1053,46 +1284,73 @@ function InputBoxComponent({
     textareaRef.current?.focus()
   }, [])
 
-  // 通用文件上传 — 根据模型能力判断是否接受
+  // 通用文件分发 — 原生媒体内联；其余（白名单外 / 超限）上传到服务端临时目录
+  // 并以路径附件发送（Issue #182）。三路规则见 inputUtils.routeAttachment。
   const handleFilesSelected = useCallback(
     async (files: File[]) => {
-      if (files.length === 0 || !supportsAnyFile || isSubmitting) return
+      if (files.length === 0) return
 
-      const nextAttachments: Attachment[] = []
+      const inlineAttachments: Attachment[] = []
 
       for (const rawFile of files) {
         const file = ensureFileMime(rawFile)
+        const mime = file.type || getMimeFromPath(file.name) || 'application/octet-stream'
 
-        // 按 MIME 类型检查模型能力
-        if (!isFileSupported(file.type, fileCaps)) continue
+        // 浏览器里永远拿不到文件的真实路径（安全边界），所以即使服务端在本机
+        // 也只能上传——references 需要 nativePath，这里不传自然落到 upload。
+        const route = routeAttachment({ mime, size: file.size, caps: fileCaps, serverIsLocal })
 
-        try {
-          const dataUrl = await readFileAsDataUrl(file)
+        if (route.kind === 'inline') {
+          try {
+            const dataUrl = await readFileAsDataUrl(file)
 
-          nextAttachments.push({
-            id: crypto.randomUUID(),
-            type: 'file',
-            displayName: file.name,
-            url: dataUrl,
-            mime: file.type,
-          })
-        } catch (err) {
-          console.warn('[InputBox] Failed to process file:', err)
+            inlineAttachments.push({
+              id: crypto.randomUUID(),
+              type: 'file',
+              displayName: file.name,
+              url: dataUrl,
+              mime: file.type,
+              size: file.size,
+            })
+          } catch (err) {
+            console.warn('[InputBox] Failed to process file:', err)
+            notifyAttachmentError(
+              t('attachment.readFailed.title', { name: file.name }),
+              t('attachment.readFailed.body'),
+            )
+          }
+          continue
         }
+
+        if (route.kind === 'reject') {
+          notifyAttachmentError(
+            t('attachment.tooLarge.title', { name: file.name }),
+            t('attachment.tooLarge.body', { max: formatFileSize(MAX_UPLOAD_BYTES) }),
+          )
+          continue
+        }
+
+        // 上传：占位与启动都在 startAttachmentUpload 里（保证进度不会先于占位落地）
+        startAttachmentUpload({
+          kind: 'file',
+          file,
+          filename: file.name,
+          mime,
+          size: file.size,
+          pathOnly: route.pathOnly,
+        })
       }
 
-      if (nextAttachments.length > 0) {
-        setAttachments(prev => [...prev, ...nextAttachments])
+      if (inlineAttachments.length > 0) {
+        setAttachments(prev => [...prev, ...inlineAttachments])
       }
     },
-    [supportsAnyFile, fileCaps, isSubmitting],
+    [fileCaps, notifyAttachmentError, serverIsLocal, startAttachmentUpload, t],
   )
 
   // 删除附件
   const handleRemoveAttachment = useCallback(
     (id: string) => {
-      if (isSubmitting) return
-
       const attachment = attachments.find(a => a.id === id)
       if (!attachment) return
 
@@ -1104,15 +1362,17 @@ function InputBoxComponent({
         setText(newText)
       }
 
+      // 失败/在途的上传源不再需要（在途任务完成时会自行丢弃结果）
+      uploadSourcesRef.current.delete(id)
       setAttachments(prev => prev.filter(a => a.id !== id))
     },
-    [attachments, isSubmitting, text],
+    [attachments, text],
   )
 
-  // 粘贴处理 — 根据模型能力过滤可粘贴的文件类型
+  // 粘贴处理 — 文件项交给三路分发（白名单外会上传到服务端，不再被丢弃）
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {
-      if (supportsAnyFile) {
+      {
         const items = e.clipboardData?.items
         const files: File[] = []
 
@@ -1120,7 +1380,7 @@ function InputBoxComponent({
           for (let i = 0; i < items.length; i++) {
             if (items[i].kind === 'file') {
               const file = items[i].getAsFile()
-              if (file && isFileSupported(ensureFileMime(file).type, fileCaps)) files.push(file)
+              if (file) files.push(file)
             }
           }
         }
@@ -1134,7 +1394,7 @@ function InputBoxComponent({
 
       // 文本粘贴：让 textarea 默认处理（天然支持换行和 undo）
     },
-    [supportsAnyFile, fileCaps, handleFilesSelected],
+    [handleFilesSelected],
   )
 
   // 拖拽文件到输入框
@@ -1143,11 +1403,11 @@ function InputBoxComponent({
       e.preventDefault()
       e.stopPropagation()
       dragCounterRef.current++
-      if (supportsAnyFile && e.dataTransfer.types.includes('Files')) {
+      if (e.dataTransfer.types.includes('Files')) {
         setIsDragging(true)
       }
     },
-    [supportsAnyFile],
+    [],
   )
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -1253,51 +1513,173 @@ function InputBoxComponent({
     [rootPath],
   )
 
+  /**
+   * 桌面端拖入的**本机文件** → 附件。
+   *
+   * 桌面端拿到的是本机绝对路径，服务端可能在远端，所以只有「服务端与本机
+   * 同机」时才谈得上直引（需求二）。本期一律走：原生媒体且未超限 → 读成
+   * data URL 内联；其余 → 上传到服务端临时目录后作路径附件（Issue #182）。
+   */
   const createUploadAttachmentFromDroppedPath = useCallback(
-    async (fileInfo: DroppedPathInfo): Promise<Attachment | null> => {
+    async (fileInfo: DroppedPathInfo): Promise<Attachment | 'skip' | null> => {
       if (fileInfo.type !== 'file') return null
 
+      const name = fileInfo.name || getFileName(fileInfo.path)
       const mime = getMimeFromPath(fileInfo.path)
-      if (!isFileSupported(mime, fileCaps)) return null
+
+      const rejectTooLarge = () => {
+        notifyAttachmentError(
+          t('attachment.tooLarge.title', { name }),
+          t('attachment.tooLarge.body', { max: formatFileSize(MAX_UPLOAD_BYTES) }),
+        )
+        return 'skip' as const
+      }
+
+      const inlineAttachment = (bytes: Uint8Array, byteLength: number): Attachment => ({
+        id: crypto.randomUUID(),
+        type: 'file',
+        displayName: name,
+        url: bytesToDataUrl(bytes, mime),
+        mime,
+        size: byteLength,
+      })
 
       try {
-        const { readFile } = await import('@tauri-apps/plugin-fs')
-        const bytes = await readFile(fileInfo.path)
-        return {
-          id: crypto.randomUUID(),
-          type: 'file',
-          displayName: fileInfo.name || getFileName(fileInfo.path),
-          url: bytesToDataUrl(bytes, mime),
-          mime,
+        const { readFile, stat } = await import('@tauri-apps/plugin-fs')
+
+        // 先探大小：内联判定与上传上限都要它，也避免把超大文件读进内存
+        let size = -1
+        try {
+          const info = await stat(fileInfo.path)
+          size = Number(info.size ?? -1)
+        } catch {
+          size = -1
         }
+
+        const decideRoute = (byteLength: number) =>
+          decideNativeFileRoute({
+            mime,
+            size: byteLength,
+            caps: fileCaps,
+            serverIsLocal,
+            nativePath: fileInfo.path,
+          })
+
+        // 判定 + 确认，只算一次：'mention' 分支还要问服务端「这个路径你读得到吗」，
+        // 读不到就不能沿用本机引用（容器转发 / 真远端），改走上传。
+        let decided: NativeFileDecision | null = null
+        const resolveRoute = async (byteLength: number) => {
+          if (!decided) {
+            const route = decideRoute(byteLength)
+            decided =
+              route.kind === 'mention' && !(await canReferenceLocalPath({
+                path: fileInfo.path,
+                pinnedLocal: pinnedLocalServer,
+                directory: uploadTarget.directory,
+                serverId: uploadTarget.serverId,
+              }))
+                ? { kind: 'upload', pathOnly: true }
+                : route
+          }
+          return decided
+        }
+
+        if (size >= 0) {
+          const route = await resolveRoute(size)
+          // 'mention' = 服务端读得到这个本机路径 → 交回调用方退化成 @ 引用（原行为）
+          if (route.kind === 'mention') return null
+          if (route.kind === 'reject') return rejectTooLarge()
+          if (route.kind === 'inline') return inlineAttachment(await readFile(fileInfo.path), size)
+        }
+
+        const bytes = await readFile(fileInfo.path)
+        size = size >= 0 ? size : bytes.byteLength
+
+        const route = await resolveRoute(size)
+        if (route.kind === 'mention') return null
+        if (route.kind === 'reject') return rejectTooLarge()
+        if (route.kind === 'inline') return inlineAttachment(bytes, size)
+
+        // 上传：不把字节交给渲染进程，直接把本机路径交给 Rust 流式发送
+        // （占位 chip 与进度都由 startAttachmentUpload 负责）
+        startAttachmentUpload({
+          kind: 'path',
+          path: fileInfo.path,
+          filename: name,
+          mime,
+          size,
+          pathOnly: route.pathOnly,
+        })
+        return 'skip'
       } catch (err) {
-        console.warn('[InputBox] Failed to read dropped file for upload:', err)
+        // 读取失败可能是权限/瞬时问题：退化为 @mention（本机服务端仍可能读到）
+        console.warn('[InputBox] Failed to process dropped file:', err)
         return null
       }
     },
-    [fileCaps],
+    [
+      fileCaps,
+      notifyAttachmentError,
+      pinnedLocalServer,
+      serverIsLocal,
+      startAttachmentUpload,
+      t,
+      uploadTarget,
+    ],
   )
 
-  const handleTauriExternalDrop = useCallback(
-    async (paths: string[]) => {
-      if (paths.length === 0 || isSubmitting) return
+  /**
+   * 桌面端「拿到本机路径」的统一入口：拖入与点回形针选文件共用同一条判定链
+   * （原生媒体内联 / 本机实例 `@` 引用 / 远端上传）。
+   *
+   * `respectMentionMode`：只有拖入响应「拖入文件始终使用 @」设置；选择器是显式
+   * 动作，一律按判定链走。
+   */
+  const addTauriPaths = useCallback(
+    async (paths: string[], options: { respectMentionMode: boolean }) => {
+      if (paths.length === 0) return
 
       try {
-        const droppedPaths = await getDroppedPathsInfo(paths)
+        const infos = await getDroppedPathsInfo(paths)
         const uploadAttachments: Attachment[] = []
         const mentionFiles: DraggedFileInfo[] = []
 
-        for (const droppedPath of droppedPaths) {
-          if (externalFileDropMode === 'mention') {
-            mentionFiles.push(buildDraggedFileInfo(droppedPath))
+        for (const info of infos) {
+          if (options.respectMentionMode && externalFileDropMode === 'mention') {
+            mentionFiles.push(buildDraggedFileInfo(info))
             continue
           }
 
-          const uploadAttachment = await createUploadAttachmentFromDroppedPath(droppedPath)
-          if (uploadAttachment) {
-            uploadAttachments.push(uploadAttachment)
+          const result = await createUploadAttachmentFromDroppedPath(info)
+          if (result === 'skip') {
+            // 两种「不用再加东西」的情况：
+            // 1) 走上传：占位 chip 已由 startAttachmentUpload 插入，进度也归它管
+            // 2) 超限 / 上传失败：已弹过可见提示，不能再退化成 @mention
+            //    （服务端在远端时那个本机路径读不到）
+            continue
+          }
+          if (result) {
+            uploadAttachments.push(result)
+          } else if (info.type === "folder") {
+            // 文件夹：不上传。只有服务端真能读到这个路径（本机实例）才退化为 @ 引用；
+            // 连远端实例时本机目录对它没有意义，明确拒绝，别塞一个没用的路径引用过去
+            const readable = await canReferenceLocalPath({
+              path: info.path,
+              pinnedLocal: serverIsLocal,
+              directory: uploadTarget.directory,
+              serverId: uploadTarget.serverId,
+            })
+            if (readable) {
+              mentionFiles.push(buildDraggedFileInfo(info))
+            } else {
+              notifyAttachmentError(
+                t('attachment.folderUnsupported.title'),
+                t('attachment.folderUnsupported.body', { names: info.name }),
+              )
+            }
           } else {
-            mentionFiles.push(buildDraggedFileInfo(droppedPath))
+            // 服务端读不到该路径：退化为 @ 引用
+            mentionFiles.push(buildDraggedFileInfo(info))
           }
         }
 
@@ -1307,10 +1689,30 @@ function InputBoxComponent({
 
         insertDraggedFiles(mentionFiles)
       } catch (err) {
-        console.warn('[InputBox] Failed to process Tauri dropped paths:', err)
+        console.warn('[InputBox] Failed to process dropped paths:', err)
       }
     },
-    [buildDraggedFileInfo, createUploadAttachmentFromDroppedPath, externalFileDropMode, insertDraggedFiles, isSubmitting],
+    [
+      buildDraggedFileInfo,
+      createUploadAttachmentFromDroppedPath,
+      externalFileDropMode,
+      insertDraggedFiles,
+      notifyAttachmentError,
+      serverIsLocal,
+      t,
+      uploadTarget,
+    ],
+  )
+
+  const handleTauriExternalDrop = useCallback(
+    (paths: string[]) => addTauriPaths(paths, { respectMentionMode: true }),
+    [addTauriPaths],
+  )
+
+  /** 桌面端点回形针选中的文件：与拖入同一条链路 */
+  const handlePickedPaths = useCallback(
+    (paths: string[]) => addTauriPaths(paths, { respectMentionMode: false }),
+    [addTauriPaths],
   )
 
   const handleTauriDragDropEvent = useCallback(
@@ -1348,12 +1750,27 @@ function InputBoxComponent({
       setIsDragging(false)
 
       // 原生文件拖拽（从操作系统拖入）
-      if (e.dataTransfer.files.length > 0) {
+      // 先按 entry 分流：文件夹（浏览器里表现为 size 0 的假 File）必须在上传前拦掉，
+      // 否则会得到一个空附件，请求还会被浏览器安全策略挡掉（ERR_ACCESS_DENIED）。
+      // 注意兜底只给"没有 items 可用"的环境，不能在拣完只剩文件夹时回退到 files
+      const dropped = splitDroppedItems(
+        Array.from(e.dataTransfer.items ?? []),
+        Array.from(e.dataTransfer.files),
+      )
+
+      if (dropped.folderNames.length > 0) {
+        notifyAttachmentError(
+          t('attachment.folderUnsupported.title'),
+          t('attachment.folderUnsupported.body', { names: dropped.folderNames.join(', ') }),
+        )
+      }
+
+      if (dropped.files.length > 0) {
         if (Date.now() - lastTauriDropAtRef.current < 750) return
-        void handleFilesSelected(Array.from(e.dataTransfer.files))
+        void handleFilesSelected(dropped.files)
       }
     },
-    [handleFilesSelected],
+    [handleFilesSelected, notifyAttachmentError, t],
   )
 
   // 滚动同步（备用，overlay 内部也监听了 scroll）
@@ -1399,7 +1816,7 @@ function InputBoxComponent({
   return (
     <div className="w-full">
       <div
-        className={`mx-auto max-w-3xl transition-[max-width] duration-300 ease-in-out ${isCompact ? 'px-2' : 'px-4'} ${
+        className={`mx-auto max-w-[min(100%,var(--oc-chat-input-width,48rem))] transition-[max-width] duration-300 ease-in-out ${isCompact ? 'px-2' : 'px-4'} ${
           isCollapsed ? 'pointer-events-none' : 'pointer-events-auto'
         }`}
         style={{ paddingBottom: bottomDockPadding }}
@@ -1437,6 +1854,7 @@ function InputBoxComponent({
                 onScrollToBottom={onScrollToBottom}
                 collapsedPermission={collapsedPermission}
                 collapsedQuestion={collapsedQuestion}
+                collapsedWebsearch={collapsedWebsearch}
               />
             </div>
           </div>
@@ -1530,17 +1948,18 @@ function InputBoxComponent({
                             <AttachmentPreview
                               attachments={attachments}
                               onRemove={handleRemoveAttachment}
+                              onRetry={retryAttachmentUpload}
                               variant="rail"
-                              className={isSubmitting ? 'pr-4 pointer-events-none opacity-70' : 'pr-4'}
+                              className="pr-4"
                             />
                           </div>
 
                           {attachmentsOverflowing && showAttachmentLeftFade && (
-                            <div className="pointer-events-none absolute inset-y-0 left-0 w-8 bg-gradient-to-r from-bg-000/50 to-transparent" />
+                            <div className="pointer-events-none absolute inset-y-0 left-0 w-8 bg-bg-000/50 [-webkit-mask-image:linear-gradient(to_right,black,transparent)] [mask-image:linear-gradient(to_right,black,transparent)]" />
                           )}
 
                           {attachmentsOverflowing && showAttachmentRightFade && (
-                            <div className="pointer-events-none absolute inset-y-0 right-0 w-10 bg-gradient-to-l from-bg-000/50 to-transparent" />
+                            <div className="pointer-events-none absolute inset-y-0 right-0 w-10 bg-bg-000/50 [-webkit-mask-image:linear-gradient(to_left,black,transparent)] [mask-image:linear-gradient(to_left,black,transparent)]" />
                           )}
                         </div>
                       </div>
@@ -1597,8 +2016,8 @@ function InputBoxComponent({
                       onVariantChange={onVariantChange}
                       fileCapabilities={fileCaps}
                       onFilesSelected={handleFilesSelected}
+                      onPickedPaths={handlePickedPaths}
                       isStreaming={isStreaming}
-                      isSending={isSubmitting}
                       busyDelivery={busyDelivery}
                       onBusyDeliveryChange={onBusyDeliveryChange}
                       deliveryChipVisible={queueDeliveryChipVisible}

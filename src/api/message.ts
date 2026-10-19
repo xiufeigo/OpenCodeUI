@@ -17,6 +17,7 @@
 import { getSDKClient } from './sdk'
 import type { JsonValue } from '@opencode/client/promise'
 import { resolveSessionTarget } from '../utils/sessionKey'
+import { absolutePathToFileUrl, fileBaseName } from '../utils/pathUtils'
 import type { SessionMessage, UserMessage } from './types'
 import type { Attachment, RevertedMessage, SendMessageParams } from './types'
 
@@ -108,11 +109,13 @@ export async function getSessionMessagesPage(
  */
 export function extractUserMessageContent(message: UserMessage): RevertedMessage {
   const attachments: Attachment[] = []
+  const seenPaths = new Set<string>()
 
   for (const file of message.files ?? []) {
     const source = file.source
     const uri = source?.type === 'uri' ? source.uri : ''
     const displayName = file.name || uri || file.mime || 'attachment'
+    if (uri) seenPaths.add(uri)
     attachments.push({
       id: crypto.randomUUID(),
       type: 'file',
@@ -120,6 +123,30 @@ export function extractUserMessageContent(message: UserMessage): RevertedMessage
       // inline 附件没有可回填的路径，只在有 uri 时带上
       url: uri,
       relativePath: uri || displayName,
+    })
+  }
+
+  // 只作路径引用的附件（超 20MB 未进 files[]）不在 message.files 里，
+  // 只能从 metadata.attachments 还原——否则回填后模型拿不到这个文件。
+  const metadata = message.metadata as Record<string, unknown> | undefined
+  const references = Array.isArray(metadata?.['attachments']) ? metadata['attachments'] : []
+  for (const reference of references) {
+    if (!reference || typeof reference !== 'object') continue
+    const { name, mime, path } = reference as { name?: unknown; mime?: unknown; path?: unknown }
+    if (typeof path !== 'string' || !path) continue
+
+    const url = absolutePathToFileUrl(path)
+    if (seenPaths.has(url)) continue
+    seenPaths.add(url)
+
+    attachments.push({
+      id: crypto.randomUUID(),
+      type: 'file',
+      displayName: typeof name === 'string' && name ? name : fileBaseName(path),
+      url,
+      mime: typeof mime === 'string' ? mime : undefined,
+      relativePath: path,
+      pathOnly: true,
     })
   }
 
@@ -132,7 +159,12 @@ export function extractUserMessageContent(message: UserMessage): RevertedMessage
     })
   }
 
-  return { text: message.text ?? '', attachments }
+  // 回填用户原始输入（不含我们追加的路径引用行）：再次发送时由
+  // applyAttachmentReferences 依据附件重新生成，不会丢也不会重复。
+  const displayText = metadata?.['displayText']
+  const text = typeof displayText === 'string' ? displayText : message.text ?? ''
+
+  return { text, attachments }
 }
 
 // ============================================
@@ -174,6 +206,10 @@ export function buildPromptParts(attachments: Attachment[]): {
       continue
     }
 
+    // 超过服务端 20MB 附件上限的文件只走路径引用（见 buildAttachmentReferences），
+    // 放进 files[] 会让整条 prompt 以 AttachmentError 失败。
+    if (attachment.pathOnly) continue
+
     const uri = attachment.url || ''
     if (!uri) {
       console.warn('Skipping attachment with empty URL:', attachment)
@@ -187,6 +223,139 @@ export function buildPromptParts(attachments: Attachment[]): {
   }
 
   return { files, agents, skills }
+}
+
+// ============================================
+// 路径引用（Issue #182）
+//
+// 服务端 materialize 附件时只做两件事：按 uri 读字节、嗅探 mime。
+// 转到 LLM 时**只有 text/plain 与 image/pdf 会进上下文**，其余 mime
+// （zip / docx / 二进制 → application/octet-stream）被整段丢弃——模型
+// 连路径都看不到。官方因此在 prompt 文本里补一行路径引用
+// （packages/app/src/composer/request.ts:173-182、comment-note.ts:52-54）：
+//
+//     Attached file: `<绝对路径>`
+//
+// 同时把 `{name, mime, path}` 写进 `metadata.attachments` 供 UI 还原。
+// 本项目照抄这一形状（queue.ts 的 queuedPromptAttachments 已经在按它读）。
+// ============================================
+
+/**
+ * 路径引用（写进 `metadata.attachments`，形状对齐官方 request.ts:189 的 attachments）。
+ *
+ * 交叉一个 `JsonValue` 索引签名，才能直接放进 `metadata: Record<string, JsonValue>`。
+ */
+export type PromptAttachmentReference = {
+  name: string
+  mime: string
+  path: string
+} & { [key: string]: JsonValue }
+
+const ATTACHMENT_REFERENCE_PREFIX = 'Attached file: '
+const ATTACHMENT_REFERENCE_LINE = /^Attached file: `(.+)`$/gm
+
+/** 路径比较用归一化：分隔符与首尾空白 */
+function normalizeReferencePath(path: string): string {
+  return path.replace(/\\/g, '/').trim()
+}
+
+/** `file://` URL → 绝对路径（反向于 features/mention 的 toFileUrl） */
+export function fileUrlToAbsolutePath(url: string): string | undefined {
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== 'file:') return undefined
+    const decoded = decodeURIComponent(parsed.pathname)
+    // Windows 盘符：/C:/dir/file → C:/dir/file
+    return /^\/[A-Za-z]:\//.test(decoded) ? decoded.slice(1) : decoded
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 路径型附件：`file://` 引用且**不带 mention**。
+ *
+ * 带 mention 的附件（`@` 提及、侧边栏拖入）路径已经在文本里，再补一行
+ * 路径引用纯属噪声——官方也是这么区分的（path 部件 vs file 部件）。
+ */
+export function isPathReferenceAttachment(attachment: Attachment): boolean {
+  if (attachment.type !== 'file') return false
+  if (attachment.textRange) return false
+  return Boolean(attachment.url?.startsWith('file://'))
+}
+
+/** 附件的服务端/本机绝对路径 */
+export function attachmentReferencePath(attachment: Attachment): string | undefined {
+  if (attachment.url?.startsWith('file://')) return fileUrlToAbsolutePath(attachment.url)
+  return attachment.relativePath || undefined
+}
+
+/** 收集路径引用（去重、保序） */
+export function buildAttachmentReferences(attachments: Attachment[]): PromptAttachmentReference[] {
+  const references: PromptAttachmentReference[] = []
+
+  for (const attachment of attachments) {
+    if (!isPathReferenceAttachment(attachment)) continue
+    const path = attachmentReferencePath(attachment)
+    if (!path) continue
+
+    references.push({
+      name: attachment.displayName,
+      mime: attachment.mime ?? 'text/plain',
+      path,
+    })
+  }
+
+  return dedupeAttachmentReferences(references)
+}
+
+/** 按归一化路径去重（保序、保留首次出现的 name/mime） */
+export function dedupeAttachmentReferences(
+  references: PromptAttachmentReference[],
+): PromptAttachmentReference[] {
+  const result: PromptAttachmentReference[] = []
+  const seen = new Set<string>()
+
+  for (const reference of references) {
+    const key = normalizeReferencePath(reference.path)
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    result.push(reference)
+  }
+
+  return result
+}
+
+/** 从文本里解析已存在的路径引用（用于 revert 重发时去重） */
+export function parseAttachmentReferencePaths(text: string): string[] {
+  const paths: string[] = []
+  ATTACHMENT_REFERENCE_LINE.lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = ATTACHMENT_REFERENCE_LINE.exec(text)) !== null) {
+    if (match[1]) paths.push(match[1])
+  }
+  return paths
+}
+
+/**
+ * 把路径引用追加到 prompt 文本末尾。
+ *
+ * 追加在**末尾**：文本中已有的 `@` mention 区间（mention.start/end）
+ * 因此不受影响。已经出现过的同路径引用会被跳过（revert / 队列编辑回填
+ * 会把上次追加的行带回文本）。
+ */
+export function applyAttachmentReferences(text: string, references: PromptAttachmentReference[]): string {
+  if (references.length === 0) return text
+
+  const existing = new Set(parseAttachmentReferencePaths(text).map(normalizeReferencePath))
+  const lines = references
+    .filter(reference => !existing.has(normalizeReferencePath(reference.path)))
+    .map(reference => `${ATTACHMENT_REFERENCE_PREFIX}\`${reference.path}\``)
+
+  if (lines.length === 0) return text
+
+  const separator = text.length === 0 || text.endsWith('\n') ? '' : '\n'
+  return `${text}${separator}${lines.join('\n')}`
 }
 
 /**
@@ -213,12 +382,15 @@ function buildPromptInput(
   metadata?: Record<string, JsonValue>
 } {
   const { files, agents, skills } = buildPromptParts(params.attachments)
+  // 路径型附件额外把绝对路径写进文本（官方 request.ts:173-182 同款）：
+  // files[].uri 只让服务端读到字节，模型能否看到取决于 mime（见文件顶部说明）。
+  const attachmentReferences = buildAttachmentReferences(params.attachments)
 
   return {
     sessionID,
     // 客户端铸造的 id：服务端原样采用，乐观行与 durable 行同 id 对账
     ...(params.id ? { id: params.id } : {}),
-    text: params.text,
+    text: applyAttachmentReferences(params.text, attachmentReferences),
     // 投递方式：busy 时 'queue' 排队（服务端排空后自动投递）或 'steer'
     // 插队注入当前回合；idle 时不传走服务端默认（steer）
     //（官方 packages/core/src/session/prompt.ts:50 默认 steer）
@@ -229,6 +401,7 @@ function buildPromptInput(
     // 选择快照 + 原始输入（官方 submit.ts:401-410 同款）
     metadata: {
       displayText: params.text,
+      ...(attachmentReferences.length > 0 ? { attachments: attachmentReferences } : {}),
       ...(params.agent ? { agent: params.agent } : {}),
       ...(params.model
         ? {

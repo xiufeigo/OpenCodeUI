@@ -100,6 +100,7 @@ const EMPTY_SESSION_STATE = {
   hasMoreHistory: false,
   directory: '',
   title: null,
+  model: undefined,
 } as const
 
 interface UseChatSessionOptions {
@@ -219,6 +220,8 @@ export function useChatSession({
   messagesRef.current = messages
   const isStreaming = perSessionState.isStreaming
   const sessionDirectory = perSessionState.directory
+  /** durable 会话级模型（进入会话时对齐输入框模型的权威来源） */
+  const sessionModel = perSessionState.model
   const canUndo = perSessionState.canUndo
   const canRedo = perSessionState.canRedo
   const redoSteps = perSessionState.redoSteps
@@ -1264,6 +1267,18 @@ export function useChatSession({
           return
         }
 
+        // compaction 分叉：新 session 包含这条压缩消息（即带着压缩后的上下文继续），
+        // 边界传它之后的第一条消息；已是末尾则不传，fork 整个 session。
+        if (message.type === 'compaction') {
+          const currentMessages = messagesRef.current
+          const idx = currentMessages.findIndex(m => m.id === targetMessageId)
+          const forkAtMessageId = idx >= 0 ? currentMessages[idx + 1]?.id : undefined
+          const forkedSession = await forkSession(routeSessionId, forkAtMessageId, effectiveDirectory, paneServerId)
+          setRestoredContent(null)
+          navigateToSession(forkedSession.id, forkedSession.location?.directory)
+          return
+        }
+
         if (!isUserMessage(message)) return
 
         // v2 的用户消息没有 model / agent（那是会话级状态），
@@ -1544,7 +1559,11 @@ export function useChatSession({
   }, [clearRevert])
 
   const activeRestoredContent = useMemo(() => {
-    if (!restoredContent || restoredContent.sessionId !== routeSessionId) return null
+    if (!restoredContent || !routeSessionId) return null
+    // restoredContent.sessionId 是 fork 接口返回的原始 id（ses_x），而 routeSessionId
+    // 是带服务器前缀的复合 key（local::ses_x），直接全等比较永远不匹配，导致 fork 后
+    // 输入框预填丢失。按原始 id 比较，对带前缀/不带前缀的 routeSessionId 都成立。
+    if (restoredContent.sessionId !== splitSessionKey(routeSessionId).sessionId) return null
     return restoredContent.content
   }, [restoredContent, routeSessionId])
 
@@ -1564,6 +1583,7 @@ export function useChatSession({
     restoredContent: activeRestoredContent,
     loadState,
     loadError,
+    sessionModel,
     hasMoreHistory,
     retryStatus,
     agents,
