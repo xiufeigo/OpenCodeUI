@@ -379,6 +379,13 @@
     "terminalCopyOnSelectDesc": "Automatically copy the terminal selection when the mouse is released. When off, selections are copied only with Ctrl/Cmd+C.",
     "terminalRightClickPaste": "Smart Right Click Copy/Paste",
     "terminalRightClickPasteDesc": "Right click copies the terminal selection when one exists, otherwise it reads clipboard text and pastes it. When enabled, this replaces the browser context menu.",
+    "terminalFontSize": "Terminal font size",
+    "terminalFontSizeDesc": "Terminal font size in pixels. Applies to open terminals immediately.",
+    "terminalFontSizeTouchHint": "On touch devices the size never goes below 14px (smaller is unreadable).",
+    "terminalFontFamily": "Terminal font",
+    "terminalFontFamilyDesc": "Monospace font used by the terminal. Leave empty to follow the theme font (--font-mono). Falls back to a generic monospace font when unavailable.",
+    "terminalFontFamilyPlaceholder": "Follow theme font",
+    "terminalFontFamilyReset": "Reset to default (follow theme font)",
     "sidebar": "Sidebar",
     "sidebarDesc": "Sidebar layout and recent chat organization"
   },

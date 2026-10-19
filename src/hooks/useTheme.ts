@@ -206,6 +206,16 @@ export function useTheme() {
     themeStore.setCodeFontScale(scale)
   }, [])
 
+  // ---- Terminal Font ----
+
+  const setTerminalFontSize = useCallback((size: number) => {
+    themeStore.setTerminalFontSize(size)
+  }, [])
+
+  const setTerminalFontFamily = useCallback((family: string) => {
+    themeStore.setTerminalFontFamily(family)
+  }, [])
+
   // ---- Tool Card Style ----
 
   const setToolCardStyle = useCallback((style: ToolCardStyle) => {
@@ -331,9 +341,15 @@ export function useTheme() {
     uiFontScale: state.uiFontScale,
     setUIFontScale,
 
-    // 代码 / diff / 终端字号偏移
+    // 代码 / diff 字号偏移
     codeFontScale: state.codeFontScale,
     setCodeFontScale,
+
+    // 终端字号 / 字体（独立设置，不跟随代码字号）
+    terminalFontSize: state.terminalFontSize,
+    setTerminalFontSize,
+    terminalFontFamily: state.terminalFontFamily,
+    setTerminalFontFamily,
 
     // 工具输出渲染风格
     toolCardStyle: state.toolCardStyle,

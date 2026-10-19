@@ -57,6 +57,31 @@ function describePtyConnectFailure(error: unknown): { message: string; hint?: st
 const TERMINAL_FONT_FALLBACK =
   "'Fira Code', 'Noto Sans Mono CJK SC', 'JetBrains Mono', 'Cascadia Code', 'SFMono-Regular', 'SF Mono', Menlo, Consolas, 'Liberation Mono', 'Noto Sans Mono', 'Ubuntu Mono', 'WenQuanYi Micro Hei Mono', 'DejaVu Sans Mono', 'Noto Sans CJK SC', ui-monospace, monospace"
 
+/** 终端行高（固定值，与字号无关） */
+const TERMINAL_LINE_HEIGHT = 1.4
+
+/** 触屏设备上字号有下限（太小点不准） */
+function effectiveTerminalFontSize(size: number, touchUi: boolean): number {
+  return touchUi ? Math.max(size, 14) : size
+}
+
+/**
+ * 解析终端字体族。
+ * 用户显式设置优先；没设置就跟随主题的 --font-mono（自定义 CSS 也能改）。
+ */
+function resolveTerminalFontFamily(configured: string): string {
+  const trimmed = configured.trim()
+  if (!trimmed) {
+    const themeFamily = getComputedStyle(document.documentElement).getPropertyValue('--font-mono').trim()
+    return themeFamily || TERMINAL_FONT_FALLBACK
+  }
+  // 用户填的是字体名：补一个通用等宽兜底，字体缺失时不要回落到比例字体
+  if (!/,\s*(monospace|ui-monospace|sans-serif|serif|cursive|fantasy|system-ui)\s*$/i.test(trimmed)) {
+    return `${trimmed}, monospace`
+  }
+  return trimmed
+}
+
 // ============================================
 // 终端主题 - 与应用主题配合
 // ============================================
@@ -412,12 +437,17 @@ export const Terminal = memo(function Terminal({
   const isPanelResizingRef = useRef(false)
   const [hasBeenActive, setHasBeenActive] = useState(isActive)
   const { preferTouchUi, hasTouch, hasCoarsePointer } = useInputCapabilities()
-  const { manualTerminalTitles } = useTheme()
+  const { manualTerminalTitles, terminalFontSize, terminalFontFamily } = useTheme()
   const { terminalCopyOnSelect, terminalRightClickPaste } = useLayoutStore()
   const touchCapable = hasTouch || hasCoarsePointer
   const manualTerminalTitlesRef = useRef(manualTerminalTitles)
   const terminalCopyOnSelectRef = useRef(terminalCopyOnSelect)
   const terminalRightClickPasteRef = useRef(terminalRightClickPaste)
+  // 字号 / 字体：初始化时读一次，之后改了要热更新到已打开的终端
+  const terminalFontSizeRef = useRef(terminalFontSize)
+  const terminalFontFamilyRef = useRef(terminalFontFamily)
+  /** 已经应用到终端上的字号 / 字体（用来跳过重复应用） */
+  const appliedFontRef = useRef<{ size: number; family: string } | null>(null)
 
   const clearStickyModifiers = useCallback(() => {
     const next = createStickyModifiers()
@@ -462,6 +492,14 @@ export const Terminal = memo(function Terminal({
   useEffect(() => {
     terminalRightClickPasteRef.current = terminalRightClickPaste
   }, [terminalRightClickPaste])
+
+  useEffect(() => {
+    terminalFontSizeRef.current = terminalFontSize
+  }, [terminalFontSize])
+
+  useEffect(() => {
+    terminalFontFamilyRef.current = terminalFontFamily
+  }, [terminalFontFamily])
 
   // 当 tab 第一次变为活动状态时，标记它
   useEffect(() => {
@@ -512,16 +550,16 @@ export const Terminal = memo(function Terminal({
     const touchUi = preferTouchUi
     const theme = getTerminalTheme(isDarkMode())
 
-    // 从 CSS 变量读取终端字号（跟随 fontScale 设置）
-    const rootStyle = getComputedStyle(document.documentElement)
-    const termFontSize = parseInt(rootStyle.getPropertyValue('--fs-terminal').trim(), 10) || 13
-    const termLineHeight = parseFloat(rootStyle.getPropertyValue('--fs-terminal-line-height').trim()) || 1.2
+    // 终端字号 / 字体来自设置（未设置字体时跟随主题 --font-mono）
+    const fontSize = effectiveTerminalFontSize(terminalFontSizeRef.current, touchUi)
+    const fontFamily = resolveTerminalFontFamily(terminalFontFamilyRef.current)
+    appliedFontRef.current = { size: fontSize, family: fontFamily }
 
     const terminal = new XTerm({
       theme,
-      fontFamily: rootStyle.getPropertyValue('--font-mono').trim() || TERMINAL_FONT_FALLBACK,
-      fontSize: touchUi ? Math.max(termFontSize, 14) : termFontSize,
-      lineHeight: touchUi ? Math.max(termLineHeight, 1.3) : termLineHeight,
+      fontFamily,
+      fontSize: fontSize,
+      lineHeight: touchUi ? Math.max(TERMINAL_LINE_HEIGHT, 1.3) : TERMINAL_LINE_HEIGHT,
       ...(restoreSize ? { cols: restoreSize.cols, rows: restoreSize.rows } : {}),
       cursorBlink: true,
       cursorStyle: 'block',
@@ -1085,6 +1123,38 @@ export const Terminal = memo(function Terminal({
     }
   }, [isActive, ptyId, serverId])
 
+  /**
+   * 把当前的字号 / 字体设置应用到已打开的终端。
+   *
+   * xterm 允许运行时改 options.fontSize / fontFamily：字符尺寸变了之后
+   * 必须重新 fit 算行列数，再把新尺寸同步给服务端（否则 TUI 排版错位）。
+   */
+  const applyFontOptions = useCallback(() => {
+    const terminal = terminalRef.current
+    const fitAddon = fitAddonRef.current
+    if (!terminal || !fitAddon) return
+
+    const size = effectiveTerminalFontSize(terminalFontSizeRef.current, preferTouchUi)
+    const family = resolveTerminalFontFamily(terminalFontFamilyRef.current)
+    const applied = appliedFontRef.current
+    if (applied && applied.size === size && applied.family === family) return
+    appliedFontRef.current = { size, family }
+
+    terminal.options.fontSize = size
+    terminal.options.fontFamily = family
+
+    fitAddon.fit()
+    const { cols, rows } = terminal
+    void updatePtySession(ptyId, { size: { cols, rows } }, terminalDirectoryRef.current, serverId).catch(error =>
+      logger.warn('[Terminal] Resize failed:', error),
+    )
+  }, [preferTouchUi, ptyId, serverId])
+
+  // 设置里改了字号 / 字体 → 立刻作用到已打开的终端
+  useEffect(() => {
+    applyFontOptions()
+  }, [applyFontOptions, terminalFontSize, terminalFontFamily])
+
   // 主题变化时更新
   useEffect(() => {
     const observer = new MutationObserver(mutations => {
@@ -1093,6 +1163,8 @@ export const Terminal = memo(function Terminal({
           if (terminalRef.current) {
             terminalRef.current.options.theme = getTerminalTheme(isDarkMode())
           }
+          // --font-mono 可能随主题变：跟着重新应用字体设置
+          applyFontOptions()
           break
         }
       }
@@ -1104,7 +1176,7 @@ export const Terminal = memo(function Terminal({
     })
 
     return () => observer.disconnect()
-  }, [])
+  }, [applyFontOptions])
 
   // 当 tab 变为活动状态时，聚焦并重新 fit
   useEffect(() => {
