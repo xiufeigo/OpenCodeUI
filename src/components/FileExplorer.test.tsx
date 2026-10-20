@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { FileExplorer } from './FileExplorer'
+import { layoutStore } from '../store/layoutStore'
 import type { DesktopPlatform } from '../utils/tauri'
 
 const {
@@ -19,16 +20,6 @@ const {
 
 vi.mock('../hooks', () => ({
   useFileExplorer: (options?: unknown) => useFileExplorerMock(options),
-}))
-
-vi.mock('../hooks/useVerticalSplitResize', () => ({
-  useVerticalSplitResize: () => ({
-    splitHeight: 200,
-    isResizing: false,
-    resetSplitHeight: vi.fn(),
-    handleResizeStart: vi.fn(),
-    handleTouchResizeStart: vi.fn(),
-  }),
 }))
 
 vi.mock('../utils/tauri', () => ({
@@ -66,13 +57,29 @@ describe('FileExplorer', () => {
       expandedPaths: new Set<string>(),
       toggleExpand: vi.fn(),
       refresh: vi.fn(),
-      previewContent: null,
-      previewLoading: false,
-      previewError: null,
-      loadPreview: vi.fn(),
-      clearPreview: vi.fn(),
+      effectiveDirectory: 'C:/repo',
       fileStatus: new Map(),
     })
+  })
+
+  it('opens a file in a new panel tab instead of pushing a preview from the bottom', () => {
+    const openFileTab = vi.spyOn(layoutStore, 'openFileTab')
+
+    render(
+      <FileExplorer
+        panelTabId="files-1"
+        directory="C:/repo"
+        serverId="server-1"
+        position="right"
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'app.ts' }))
+
+    expect(openFileTab).toHaveBeenCalledWith(
+      { path: 'src/app.ts', name: 'app.ts', directory: 'C:/repo', serverId: 'server-1' },
+      'right',
+    )
   })
 
   it('reveals the selected file in the system explorer from the context menu', async () => {
@@ -80,8 +87,6 @@ describe('FileExplorer', () => {
       <FileExplorer
         panelTabId="files-1"
         directory="C:/repo"
-        previewFile={null}
-        previewFiles={[]}
         position="right"
       />,
     )
@@ -101,8 +106,6 @@ describe('FileExplorer', () => {
       <FileExplorer
         panelTabId="files-1"
         directory="C:/repo"
-        previewFile={null}
-        previewFiles={[]}
         position="right"
       />,
     )
@@ -118,8 +121,6 @@ describe('FileExplorer', () => {
       <FileExplorer
         panelTabId="files-1"
         directory="C:/repo"
-        previewFile={null}
-        previewFiles={[]}
         position="right"
       />,
     )

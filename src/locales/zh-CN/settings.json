@@ -379,6 +379,13 @@
     "terminalCopyOnSelectDesc": "松开鼠标时自动复制终端选区。关闭时只在有选区并按 Ctrl/Cmd+C 时复制。",
     "terminalRightClickPaste": "智能右键复制/粘贴",
     "terminalRightClickPasteDesc": "终端有选区时右键复制选区，没有选区时右键读取剪贴板并粘贴。开启后会替代浏览器默认右键菜单。",
+    "terminalFontSize": "终端字号",
+    "terminalFontSizeDesc": "终端字体大小（px）。改动会立刻作用到已打开的终端。",
+    "terminalFontSizeTouchHint": "触屏设备上字号不会小于 14px（太小看不清）。",
+    "terminalFontFamily": "终端字体",
+    "terminalFontFamilyDesc": "终端使用的等宽字体。留空则跟随主题字体（--font-mono）。系统没装该字体时自动回落到通用等宽字体。",
+    "terminalFontFamilyPlaceholder": "跟随主题字体",
+    "terminalFontFamilyReset": "恢复默认（跟随主题字体）",
     "sidebar": "侧边栏",
     "sidebarDesc": "侧边栏布局和最近对话的组织方式"
   },

@@ -4,7 +4,16 @@ import { Button } from '../../../components/ui/Button'
 import { DropdownMenu } from '../../../components/ui/DropdownMenu'
 import { MenuItem } from '../../../components/ui/MenuItem'
 import { SunIcon, MoonIcon, SystemIcon, CheckIcon, GlobeIcon, UndoIcon, CloseIcon } from '../../../components/Icons'
-import { settingsFieldAreaClass, settingsFieldClass, Toggle, SegmentedControl, SettingRow, SettingField, SettingsSection } from './SettingsUI'
+import {
+  settingsFieldAreaClass,
+  settingsFieldClass,
+  Toggle,
+  SegmentedControl,
+  SettingRow,
+  SettingField,
+  SettingsSection,
+  RangeSlider,
+} from './SettingsUI'
 import { CodeBlockThemeSettings } from './CodeBlockThemeSettings'
 import { useTheme } from '../../../hooks'
 import { getThemePreset } from '../../../themes'
@@ -122,28 +131,6 @@ function PresetCard({
 // Font Scale Slider
 // ============================================
 
-const sliderCls = `flex-1 h-1.5 rounded-full appearance-none cursor-pointer
-  bg-bg-200
-  [&::-webkit-slider-thumb]:appearance-none
-  [&::-webkit-slider-thumb]:w-3.5
-  [&::-webkit-slider-thumb]:h-3.5
-  [&::-webkit-slider-thumb]:rounded-full
-  [&::-webkit-slider-thumb]:bg-accent-main-100
-  [&::-webkit-slider-thumb]:shadow-sm
-  [&::-webkit-slider-thumb]:border-2
-  [&::-webkit-slider-thumb]:border-bg-000
-  [&::-webkit-slider-thumb]:cursor-pointer
-  [&::-moz-range-thumb]:w-3.5
-  [&::-moz-range-thumb]:h-3.5
-  [&::-moz-range-thumb]:rounded-full
-  [&::-moz-range-thumb]:bg-accent-main-100
-  [&::-moz-range-thumb]:border-2
-  [&::-moz-range-thumb]:border-bg-000
-  [&::-moz-range-thumb]:cursor-pointer
-  [&::-moz-range-track]:bg-bg-200
-  [&::-moz-range-track]:rounded-full
-  [&::-moz-range-track]:h-1.5`
-
 function FontScaleSlider({
   value,
   onChange,
@@ -154,28 +141,16 @@ function FontScaleSlider({
   /** 偏移 0 对应的基准像素值，用于显示 */
   baseSize: number
 }) {
-  const displayPx = baseSize + value
   return (
-    <div className="flex items-center gap-3 w-full">
-      <span className="text-text-400 text-[length:var(--fs-xs)] select-none shrink-0" style={{ fontSize: 11 }}>
-        A
-      </span>
-      <input
-        type="range"
-        min={FONT_SCALE_MIN}
-        max={FONT_SCALE_MAX}
-        step={1}
-        value={value}
-        onChange={e => onChange(Number(e.target.value))}
-        className={sliderCls}
-      />
-      <span className="text-text-400 select-none shrink-0" style={{ fontSize: 16 }}>
-        A
-      </span>
-      <span className="text-[length:var(--fs-sm)] text-text-300 w-12 text-right tabular-nums shrink-0">
-        {displayPx}px
-      </span>
-    </div>
+    <RangeSlider
+      min={FONT_SCALE_MIN}
+      max={FONT_SCALE_MAX}
+      value={value}
+      onChange={onChange}
+      minLabel="A"
+      maxLabel="A"
+      formatValue={v => `${baseSize + v}px`}
+    />
   )
 }
 

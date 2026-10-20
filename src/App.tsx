@@ -248,7 +248,10 @@ function App() {
   const handlePaletteOpenFile = useCallback(
     (path: string) => {
       const name = path.split(/[\\/]/).pop() ?? path
-      layoutStore.openFilePreview({ path, name, directory: currentDirectory })
+      layoutStore.openFileTab(
+        { path, name, directory: currentDirectory, serverId: serverStore.getActiveServerId() },
+        'right',
+      )
     },
     [currentDirectory],
   )

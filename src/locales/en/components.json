@@ -68,6 +68,7 @@
   },
   "panelContainer": {
     "files": "Files",
+    "file": "File",
     "changes": "Changes",
     "context": "Context",
     "mcp": "MCP",

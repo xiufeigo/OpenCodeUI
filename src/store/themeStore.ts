@@ -157,6 +157,18 @@ const DEFAULT_CODE_WORD_WRAP = false
 const DEFAULT_UI_FONT_SCALE = 0
 const DEFAULT_CODE_FONT_SCALE = 0
 
+/** 终端字号范围（px）：太小看不清，太大一行放不下几个字 */
+export const TERMINAL_FONT_SIZE_MIN = 8
+export const TERMINAL_FONT_SIZE_MAX = 32
+export const DEFAULT_TERMINAL_FONT_SIZE = 13
+/** 空串 = 跟随主题的 --font-mono */
+export const DEFAULT_TERMINAL_FONT_FAMILY = ''
+
+function clampTerminalFontSize(n: number): number {
+  if (!Number.isFinite(n)) return DEFAULT_TERMINAL_FONT_SIZE
+  return Math.round(Math.max(TERMINAL_FONT_SIZE_MIN, Math.min(TERMINAL_FONT_SIZE_MAX, n)))
+}
+
 /** 工具输出渲染风格：classic = 经典（input+output 分离），compact = 精简（只展示 output，header 更矮） */
 export type ToolCardStyle = 'classic' | 'compact'
 const DEFAULT_TOOL_CARD_STYLE: ToolCardStyle = 'compact'
@@ -221,6 +233,10 @@ export interface ThemeState {
   uiFontScale: number
   /** 代码 / diff / 终端字号偏移 (px)，0 = 基准 */
   codeFontScale: number
+  /** 终端字号 (px) */
+  terminalFontSize: number
+  /** 终端字体族（CSS font-family 列表）；空串 = 跟随主题的 --font-mono */
+  terminalFontFamily: string
   /** 工具输出渲染风格 */
   toolCardStyle: ToolCardStyle
   /** 沉浸模式 */
@@ -283,6 +299,8 @@ const STORAGE_KEY_INLINE_TOOL_REQUESTS = 'inline-tool-requests'
 const STORAGE_KEY_CODE_WORD_WRAP = 'code-word-wrap'
 const STORAGE_KEY_FONT_SCALE = 'font-scale'
 const STORAGE_KEY_CODE_FONT_SCALE = 'code-font-scale'
+const STORAGE_KEY_TERMINAL_FONT_SIZE = 'terminal-font-size'
+const STORAGE_KEY_TERMINAL_FONT_FAMILY = 'terminal-font-family'
 const STORAGE_KEY_TOOL_CARD_STYLE = 'tool-card-style'
 const STORAGE_KEY_IMMERSIVE_MODE = 'immersive-mode'
 const STORAGE_KEY_COMPACT_INLINE_PERMISSION = 'compact-inline-permission'
@@ -406,6 +424,15 @@ class ThemeStore {
     const codeFontScale =
       savedCodeFontScale !== null ? clampFontScale(Number(savedCodeFontScale)) : DEFAULT_CODE_FONT_SCALE
 
+    const savedTerminalFontSize = localStorage.getItem(STORAGE_KEY_TERMINAL_FONT_SIZE)
+    const terminalFontSize =
+      savedTerminalFontSize !== null
+        ? clampTerminalFontSize(Number(savedTerminalFontSize))
+        : DEFAULT_TERMINAL_FONT_SIZE
+
+    const savedTerminalFontFamily = localStorage.getItem(STORAGE_KEY_TERMINAL_FONT_FAMILY)
+    const terminalFontFamily = savedTerminalFontFamily ?? DEFAULT_TERMINAL_FONT_FAMILY
+
     const savedToolCardStyle = localStorage.getItem(STORAGE_KEY_TOOL_CARD_STYLE) as ToolCardStyle | null
     const toolCardStyle: ToolCardStyle =
       savedToolCardStyle === 'classic' || savedToolCardStyle === 'compact'
@@ -508,6 +535,8 @@ class ThemeStore {
       codeWordWrap,
       uiFontScale,
       codeFontScale,
+      terminalFontSize,
+      terminalFontFamily,
       toolCardStyle,
       immersiveMode,
       compactInlinePermission,
@@ -593,6 +622,14 @@ class ThemeStore {
   }
   get codeFontScale() {
     return this.state.codeFontScale
+  }
+
+  get terminalFontSize() {
+    return this.state.terminalFontSize
+  }
+
+  get terminalFontFamily() {
+    return this.state.terminalFontFamily
   }
   get toolCardStyle() {
     return this.state.toolCardStyle
@@ -923,6 +960,22 @@ class ThemeStore {
     this.emit()
   }
 
+  setTerminalFontSize(size: number) {
+    const clamped = clampTerminalFontSize(size)
+    if (this.state.terminalFontSize === clamped) return
+    this.state = { ...this.state, terminalFontSize: clamped }
+    localStorage.setItem(STORAGE_KEY_TERMINAL_FONT_SIZE, String(clamped))
+    this.emit()
+  }
+
+  setTerminalFontFamily(family: string) {
+    const next = family.trim()
+    if (this.state.terminalFontFamily === next) return
+    this.state = { ...this.state, terminalFontFamily: next }
+    localStorage.setItem(STORAGE_KEY_TERMINAL_FONT_FAMILY, next)
+    this.emit()
+  }
+
   setToolCardStyle(style: ToolCardStyle) {
     if (this.state.toolCardStyle === style) return
     this.state = { ...this.state, toolCardStyle: style }
@@ -1140,7 +1193,10 @@ class ThemeStore {
    * 基准值（偏移 0）：
    *   UI:   xxs=11  xs=12  sm=13  md=13  base=14  lg=16
    *         heading-3=16  heading-2=18  heading-1=20
-   *   Code: code=13  code-line-height=24  terminal=13  terminal-line-height=1.4
+   *   Code: code=13  code-line-height=24
+   *
+   * 终端字号不在这里：它是独立设置（terminalFontSize / terminalFontFamily），
+   * 不跟着「代码字号」一起变。
    */
   private applyFontScale() {
     const { uiFontScale: ui, codeFontScale: code } = this.state
@@ -1177,13 +1233,9 @@ class ThemeStore {
       const codePx = 13 + code
       // 行高 = 基准 24 + 偏移 * 2（每 1px 字号对应 2px 行高增量）
       const lineH = 24 + code * 2
-      const termPx = 13 + code
-      const termLH = Math.round((1.4 + code * 0.05) * 100) / 100
       vars.push(
         `--fs-code: ${codePx}px`,
         `--fs-code-line-height: ${lineH}px`,
-        `--fs-terminal: ${termPx}px`,
-        `--fs-terminal-line-height: ${termLH}`,
       )
     }
 
@@ -1289,6 +1341,11 @@ function normalizeThemeBackup(raw: unknown): ThemeBackup {
     codeFontScale: clampFontScale(
       typeof parsed?.codeFontScale === 'number' ? parsed.codeFontScale : DEFAULT_CODE_FONT_SCALE,
     ),
+    terminalFontSize: clampTerminalFontSize(
+      typeof parsed?.terminalFontSize === 'number' ? parsed.terminalFontSize : DEFAULT_TERMINAL_FONT_SIZE,
+    ),
+    terminalFontFamily:
+      typeof parsed?.terminalFontFamily === 'string' ? parsed.terminalFontFamily : DEFAULT_TERMINAL_FONT_FAMILY,
     toolCardStyle:
       parsed?.toolCardStyle === 'classic' || parsed?.toolCardStyle === 'compact'
         ? parsed.toolCardStyle

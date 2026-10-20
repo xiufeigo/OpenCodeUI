@@ -44,12 +44,21 @@ export function useAutoRefresh(
      * 用于预览这类"不只是刷新列表"的消费方：例如编辑中的文件被外部改动。
      */
     onFilesystemChanged?: (data: { file: string; event: string }) => void
+    /**
+     * 消费方自己按文件粒度处理变更时置 true：文件变更不再触发泛化刷新。
+     * （文件预览只关心自己那个文件，别的文件变了不该把它重读一遍）
+     */
+    skipRefreshOnFileChange?: boolean
   },
 ): void {
   const refreshRef = useRef(refresh)
   refreshRef.current = refresh
 
   const pendingRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const skipRefreshOnFileChangeRef = useRef(options?.skipRefreshOnFileChange)
+  useEffect(() => {
+    skipRefreshOnFileChangeRef.current = options?.skipRefreshOnFileChange
+  }, [options?.skipRefreshOnFileChange])
 
   const scheduleRefresh = useCallback(() => {
     if (pendingRef.current !== null) return
@@ -79,6 +88,7 @@ export function useAutoRefresh(
         if (watchDirectory && !isWithinDirectory(watchDirectory, data.file)) return
         // 先给消费方（如文件预览判断"是不是我正在编辑的文件"），再照常刷新列表/状态
         filesystemChangedRef.current?.(data)
+        if (skipRefreshOnFileChangeRef.current) return
         scheduleRefresh()
       },
       onVcsBranchUpdated: () => scheduleRefresh(),

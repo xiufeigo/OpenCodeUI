@@ -128,6 +128,85 @@ export function SegmentedControl<T extends string>({ value, options, onChange }:
 }
 
 /**
+ * Range slider — 数值滑块（字号、透明度等）。
+ * 左右两侧是可选的对比标记（"A" 大小），右侧显示当前值。
+ */
+export interface RangeSliderProps {
+  min: number
+  max: number
+  step?: number
+  value: number
+  onChange: (value: number) => void
+  /** 左侧标记（如小号 "A"） */
+  minLabel?: React.ReactNode
+  /** 右侧标记（如大号 "A"） */
+  maxLabel?: React.ReactNode
+  /** 当前值的显示文本；缺省直接显示数值 */
+  formatValue?: (value: number) => string
+}
+
+const rangeSliderCls = `flex-1 h-1.5 rounded-full appearance-none cursor-pointer
+  bg-bg-200
+  [&::-webkit-slider-thumb]:appearance-none
+  [&::-webkit-slider-thumb]:w-3.5
+  [&::-webkit-slider-thumb]:h-3.5
+  [&::-webkit-slider-thumb]:rounded-full
+  [&::-webkit-slider-thumb]:bg-accent-main-100
+  [&::-webkit-slider-thumb]:shadow-sm
+  [&::-webkit-slider-thumb]:border-2
+  [&::-webkit-slider-thumb]:border-bg-000
+  [&::-webkit-slider-thumb]:cursor-pointer
+  [&::-moz-range-thumb]:w-3.5
+  [&::-moz-range-thumb]:h-3.5
+  [&::-moz-range-thumb]:rounded-full
+  [&::-moz-range-thumb]:bg-accent-main-100
+  [&::-moz-range-thumb]:shadow-sm
+  [&::-moz-range-thumb]:border-2
+  [&::-moz-range-thumb]:border-bg-000
+  [&::-moz-range-thumb]:cursor-pointer
+  [&::-moz-range-track]:bg-bg-200
+  [&::-moz-range-track]:rounded-full
+  [&::-moz-range-track]:h-1.5`
+
+export function RangeSlider({
+  min,
+  max,
+  step = 1,
+  value,
+  onChange,
+  minLabel,
+  maxLabel,
+  formatValue,
+}: RangeSliderProps) {
+  return (
+    <div className="flex items-center gap-3 w-full">
+      {minLabel !== undefined && (
+        <span className="text-text-400 text-[length:var(--fs-xs)] select-none shrink-0" style={{ fontSize: 11 }}>
+          {minLabel}
+        </span>
+      )}
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={e => onChange(Number(e.target.value))}
+        className={rangeSliderCls}
+      />
+      {maxLabel !== undefined && (
+        <span className="text-text-400 select-none shrink-0" style={{ fontSize: 16 }}>
+          {maxLabel}
+        </span>
+      )}
+      <span className="text-[length:var(--fs-sm)] text-text-300 w-12 text-right tabular-nums shrink-0">
+        {formatValue ? formatValue(value) : value}
+      </span>
+    </div>
+  )
+}
+
+/**
  * Setting row — 标题+描述左侧，控件右侧。
  * 无边框无圆角无背景色，纯行。有 icon 时标题与描述同一列对齐。
  */
