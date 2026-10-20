@@ -34,6 +34,7 @@ import { ChatViewportProvider, canUseSplitPane, useChatViewportMaybe, type ChatV
 import { useChatPageViewModel } from './useChatPageViewModel'
 import { findBlockingBackgroundTasks, mergeRunningShells, useRunningShells } from './backgroundTasks'
 import { projectQueueEchoes } from './chatAreaVisibility'
+import { isChatAreaMountReady } from './chatAreaUtils'
 import { backgroundSession } from '../../api/client'
 import { WebsearchDock } from './WebsearchDock'
 import { SessionNavigationContext } from '../../contexts/SessionNavigationContext'
@@ -402,7 +403,13 @@ export const ChatPane = memo(function ChatPane({
   )
   const renderedLoadState = loadState === 'loaded' && isRenderingDeferredMessages ? 'loading' : loadState
   // 对齐 oc：session 消息 ready 后再 mount ChatArea，避免空 virtualizer 先建再跳
-  const messagesReady = !routeSessionId || loadState === 'loaded' || loadState === 'error'
+  // 兜底：屏上已有内容时，loadState 被打回 loading 也不能卸载 ChatArea
+  //（卸载 → spinner → 重新挂载，视觉上就是「页面刷新了一下」；判据见 isChatAreaMountReady）
+  const messagesReady = isChatAreaMountReady({
+    hasSession: !!routeSessionId,
+    loadState,
+    messageCount: messages.length,
+  })
   const chatAreaMountKey = messagesReady ? (routeSessionId ?? 'home') : null
   const inputDisabled = !!routeSessionId && loadState === 'error' && messages.length === 0
   const chatPageViewModel = useChatPageViewModel(projectedMessages)

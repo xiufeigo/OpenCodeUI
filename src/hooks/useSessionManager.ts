@@ -189,7 +189,19 @@ export function useSessionManager({
         return
       }
 
-      messageStore.setLoadState(sid, 'loading')
+      // 屏上是否已经渲染出内容（与 ChatPane 的 messagesReady 同口径）：
+      // loaded / error 时 ChatArea 是挂载状态，其余（idle / loading）是转圈状态。
+      const hasRenderedContent = existingState?.loadState === 'loaded' || existingState?.loadState === 'error'
+
+      // force 模式（SSE 重连后的补偿拉取）时，屏上已经有内容，
+      // 不能再把 loadState 打回 loading —— 那会让 ChatArea 整块卸载成 spinner
+      // 再重新挂载，视觉上就是「页面刷新了一下」：
+      // Android 息屏/切后台或网络抖动后 SSE 必然重连 → 必然闪一次。
+      // 只有「屏上还没有内容」时才需要 loading 态。
+      // isStale 标记仍由 markAllSessionsStale 保留，「数据可能过期」的语义不丢。
+      if (!force || !hasRenderedContent) {
+        messageStore.setLoadState(sid, 'loading')
+      }
 
       try {
         // 并行加载 session 信息和消息（传递 directory）

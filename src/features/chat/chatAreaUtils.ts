@@ -44,3 +44,27 @@ export function mergeVirtualRangeIndexes(base: number[], ...pinnedGroups: number
   if (pinned.length === 0) return base
   return [...new Set([...pinned, ...base])].sort((a, b) => a - b)
 }
+
+/** 会话加载状态（与 messageStore 的 loadState 同形状） */
+export type ChatLoadState = 'idle' | 'loading' | 'loaded' | 'error'
+
+/**
+ * ChatArea 挂载条件。
+ *
+ * - 无会话（首页）：直接挂载
+ * - loaded / error：内容已落地，挂载
+ * - loading 且屏上已有内容：**保持挂载** —— 卸载成 spinner 再重新挂载，
+ *   视觉上就是「页面刷新了一下」。SSE 重连的补偿拉取、stale 会话的重新加载
+ *   都会把 loadState 短暂置回 loading，这时候不能动已经渲染出来的内容。
+ * - loading / idle 且没有内容：卸载，让转圈接管首次加载
+ */
+export function isChatAreaMountReady(params: {
+  hasSession: boolean
+  loadState: ChatLoadState
+  messageCount: number
+}): boolean {
+  const { hasSession, loadState, messageCount } = params
+  if (!hasSession) return true
+  if (loadState === 'loaded' || loadState === 'error') return true
+  return loadState === 'loading' && messageCount > 0
+}

@@ -144,4 +144,52 @@ describe('useSessionManager', () => {
 
     expect(getSessionMessagesPageMock).not.toHaveBeenCalled()
   })
+
+  it('force 重连刷新：屏上已有内容时不再把 loadState 打回 loading（防 ChatArea 卸载闪屏）', async () => {
+    const cachedState = {
+      messages: [{ id: 'msg-1', time: { created: 1 } }],
+      loadState: 'loaded',
+      isStale: false,
+    }
+    messageStoreMock.getSessionState.mockReturnValue(cachedState)
+
+    const { result } = renderHook(() =>
+      useSessionManager({ sessionId: 'local::session-1', directory: '/workspace/demo' }),
+    )
+
+    // 缓存命中：挂载时不发请求
+    await waitFor(() => {
+      expect(getSessionMessagesPageMock).not.toHaveBeenCalled()
+    })
+
+    // SSE 重连：markAllSessionsStale 之后走 force 补偿拉取
+    messageStoreMock.getSessionState.mockReturnValue({ ...cachedState, isStale: true })
+    messageStoreMock.setLoadState.mockClear()
+
+    await result.current.loadSession('local::session-1', { force: true })
+
+    // 不能打回 loading —— 那会让 ChatArea 整块卸载成 spinner 再重新挂载，
+    // 视觉上就是「页面刷新了一下」
+    expect(messageStoreMock.setLoadState).not.toHaveBeenCalledWith('local::session-1', 'loading')
+    // 但数据必须换新
+    expect(messageStoreMock.setMessages).toHaveBeenCalledWith('local::session-1', [], expect.anything())
+  })
+
+  it('force 重连刷新：屏上还没有内容时仍要打回 loading（首次加载要有转圈态）', async () => {
+    messageStoreMock.getSessionState.mockReturnValue({ messages: [], loadState: 'idle', isStale: false })
+
+    const { result } = renderHook(() =>
+      useSessionManager({ sessionId: 'local::session-1', directory: '/workspace/demo' }),
+    )
+
+    // 等挂载时的首次加载结束
+    await waitFor(() => {
+      expect(messageStoreMock.setMessages).toHaveBeenCalled()
+    })
+    messageStoreMock.setLoadState.mockClear()
+
+    await result.current.loadSession('local::session-1', { force: true })
+
+    expect(messageStoreMock.setLoadState).toHaveBeenCalledWith('local::session-1', 'loading')
+  })
 })
