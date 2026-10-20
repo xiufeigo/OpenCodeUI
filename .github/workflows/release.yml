@@ -67,13 +67,27 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          # libfuse2: linuxdeploy-*.AppImage 本身是 AppImage，跑它需要 FUSE
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libfuse2
+
+      # AppImage 打包要现下载 AppRun / linuxdeploy（tauri-apps/binary-releases），
+      # 源站偶发超时会让整个发版挂掉（上游为此关过 AppImage 目标）。
+      # 缓存 ~/.cache/tauri 后只有首次需要下载。
+      - name: Cache Tauri bundler tools
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/tauri
+          key: tauri-bundler-tools-linux-v1
 
       - run: npm ci
 
       # tauri-action 自动执行 beforeBuildCommand (npm run build) + cargo build
       - name: Build desktop app
         uses: tauri-apps/tauri-action@v0
+        env:
+          # 无 FUSE 环境下直接解包运行 linuxdeploy / appimagetool（CI 容器常无 /dev/fuse）
+          APPIMAGE_EXTRACT_AND_RUN: '1'
         with:
           args: ${{ matrix.args }}
 
