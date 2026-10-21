@@ -1,5 +1,24 @@
 # Changelog
 
+## [v1.0.9] - 2026-10-21
+
+- build: 去掉 Docker 镜像打包，Linux 改出 AppImage (2e3fba5a)
+- fix(android): SSE 重连时对话区不再闪一下（像页面刷新） (75bc5c8f)
+- chore: bump version to 0.7.21 (6e31eb01)
+- fix(server): 健康检查探当前生效地址，不再盯着列表第一行 (e846d751)
+- fix(settings): 地址列表默认收起，多入口不再把卡片撑成半屏 (46c1b259)
+- chore: bump version to 0.7.20 (16f72544)
+- refactor(settings): 地址列表成为唯一数据源，去掉重复的 URL 输入框 (82481049)
+- feat(settings): 地址列表可手动增删排序，多地址不再只能靠重新配对 (0ccecccf)
+- test(e2e): 真实服务端上的多地址探测、切换与延迟验证 (a6163db2)
+- feat(server): 同一服务器支持多地址，内网优先、不可达降级、恢复后切回 (720e6a25)
+- fix(reconnect): 网络恢复时主动重建半开连接，补齐面板补偿拉取 (35a7f7a8)
+- feat(terminal): 终端字号与字体可独立调节 (8a460855)
+- feat(panels): 文件改为在面板标签栏开新标签页打开 (965d35a1)
+- fix(mobile): 触摸目标改为显式 opt-in，手机不再把按钮单方面顶高 (8e02ce37)
+- style(markdown): 内联代码改用 0.875em/19px 的行内配比，修正垂直不居中 (08877a09)
+- fix(reasoning): 折叠行里的行内代码去掉盒子，不再被裁掉上下边框 (ef948762)
+
 ## [v1.0.8] - 2026-10-19
 
 - chore: bump version to 0.7.19 (81158b7e)
