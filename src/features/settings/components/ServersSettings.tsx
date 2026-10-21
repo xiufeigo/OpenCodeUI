@@ -4,14 +4,35 @@ import { Button } from '../../../components/ui/Button'
 import { ConfirmDialog } from '../../../components/ui/ConfirmDialog'
 import { DropdownMenu } from '../../../components/ui/DropdownMenu'
 import { MenuItem } from '../../../components/ui/MenuItem'
-import { TrashIcon, KeyIcon, PencilIcon, RetryIcon, PlugIcon, CircleIcon, QrCodeIcon } from '../../../components/Icons'
+import {
+  TrashIcon,
+  KeyIcon,
+  PencilIcon,
+  RetryIcon,
+  PlugIcon,
+  CircleIcon,
+  QrCodeIcon,
+  CheckIcon,
+  PinIcon,
+  PlusIcon,
+  ArrowUpIcon,
+  ArrowDownIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+} from '../../../components/Icons'
 import { useServerStore } from '../../../hooks'
 import { useServerSelection } from '../../../hooks/useServerSelection'
 import { useMultiServerStore, multiServerStore } from '../../../store/multiServerStore'
 import { useWslStore } from '../../../store/wslStore'
 import { settingsFieldClass, SettingsSection, SettingRow, Toggle } from './SettingsUI'
 import { ServerHealthButton } from './ServerHealthButton'
-import { serverStore, type ServerConfig, type ServerHealth } from '../../../store/serverStore'
+import {
+  serverStore,
+  type ServerConfig,
+  type ServerEndpoint,
+  type ServerHealth,
+  type EndpointRuntime,
+} from '../../../store/serverStore'
 import { paneLayoutStore } from '../../../store/paneLayoutStore'
 import { sessionKeyToServerId } from '../../../utils/sessionKey'
 import { PairServerDialog } from './PairServerDialog'
@@ -39,9 +60,181 @@ function isHttpsIpUrl(url: string): boolean {
   }
 }
 
+/**
+ * 表单里编辑中的地址项。`id` 只是 React key，不落库——
+ * 用下标当 key 在删除中间行时会让输入框内容错位。
+ */
+interface EditableEndpoint {
+  id: number
+  url: string
+}
+
+let editableEndpointSeq = 0
+
+function toEditable(urls: string[]): EditableEndpoint[] {
+  return urls.map(url => ({ id: ++editableEndpointSeq, url }))
+}
+
+/** 新建空地址行（添加表单初始状态 / 点「添加地址」） */
+function blankEditable(): EditableEndpoint {
+  return { id: ++editableEndpointSeq, url: '' }
+}
+
+/**
+ * 从编辑中的列表提取有效地址：去空白、去尾部斜杠、按顺序去重。
+ *
+ * 返回顺序就是优先级顺序——用户排第几就是第几，不需要另一个字段表达。
+ */
+function collectEndpointUrls(items: EditableEndpoint[]): string[] {
+  const urls: string[] = []
+  for (const item of items) {
+    const normalized = item.url.trim().replace(/\/+$/, '')
+    if (normalized && !urls.includes(normalized)) urls.push(normalized)
+  }
+  return urls
+}
+
+/**
+ * 把有序地址合成为落库的 endpoints。
+ *
+ * 只有一个地址时返回 undefined（退回单地址语义，不写多余字段）；
+ * 多地址时逐条递增 priority —— 顺序即优先级，支持任意层级。
+ */
+function toServerEndpoints(urls: string[]): ServerEndpoint[] | undefined {
+  if (urls.length <= 1) return undefined
+  return urls.map((url, index) => ({ url, priority: index }))
+}
+
+/**
+ * 地址列表编辑器（Issue #183）。
+ *
+ * **这是服务器地址的唯一数据源**：不再有一个单独的「URL」输入框与之并存。
+ * 同一台服务器的多个入口在概念上就是一张有序列表，第一行即主地址
+ * （同时写入 `server.url`，供旧逻辑与 SDK 兜底）。
+ *
+ * 顺序即优先级：只暴露「排第几」，不让用户手填 priority 数字。
+ */
+function EndpointListEditor({
+  items,
+  onChange,
+  onPairLinkPasted,
+}: {
+  items: EditableEndpoint[]
+  onChange: (next: EditableEndpoint[]) => void
+  /**
+   * 粘贴配对链接的拦截钩子：返回 true 表示已消费（走配对流程）。
+   * 地址输入框现在是唯一的地址入口，配对链接可能被粘到这里，
+   * 不认一下就会当成非法 URL 报错。
+   */
+  onPairLinkPasted?: (value: string) => boolean
+}) {
+  const { t } = useTranslation(['settings', 'common'])
+  const inputCls = settingsFieldClass
+
+  const update = (id: number, url: string) => {
+    onChange(items.map(item => (item.id === id ? { ...item, url } : item)))
+  }
+  const remove = (id: number) => {
+    // 至少保留一行：服务器必须有地址
+    if (items.length <= 1) return
+    onChange(items.filter(item => item.id !== id))
+  }
+  const move = (index: number, delta: -1 | 1) => {
+    const target = index + delta
+    if (target < 0 || target >= items.length) return
+    const next = [...items]
+    ;[next[index], next[target]] = [next[target], next[index]]
+    onChange(next)
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between">
+        <label className="block text-[length:var(--fs-xs)] font-medium text-text-300">
+          {t('servers.endpointsLabel')}
+        </label>
+        <button
+          type="button"
+          onClick={() => onChange([...items, blankEditable()])}
+          className="flex items-center gap-1 text-[length:var(--fs-xs)] text-accent-main-100 hover:text-accent-main-200 transition-colors"
+        >
+          <PlusIcon size={10} />
+          {t('servers.endpointAdd')}
+        </button>
+      </div>
+
+      {items.map((item, index) => (
+        <div key={item.id} className="flex items-center gap-1.5 min-w-0">
+          <span
+            className={`shrink-0 w-3 text-[length:var(--fs-xs)] ${index === 0 ? 'text-accent-main-100' : 'text-text-400'}`}
+          >
+            {index + 1}
+          </span>
+          <input
+            type="text"
+            value={item.url}
+            onChange={e => {
+              const value = e.target.value
+              // 配对链接粘到地址框 → 交给配对流程，不当作普通地址
+              if (onPairLinkPasted?.(value)) return
+              update(item.id, value)
+            }}
+            placeholder={t('servers.urlPlaceholder')}
+            className={`${inputCls} min-w-0 flex-1 font-mono`}
+            aria-label={t('servers.endpointNth', { index: index + 1 })}
+          />
+          <button
+            type="button"
+            onClick={() => move(index, -1)}
+            disabled={index === 0}
+            title={t('servers.endpointMoveUp')}
+            aria-label={t('servers.endpointMoveUp')}
+            className="shrink-0 p-1 rounded-md text-text-400 hover:text-text-200 hover:bg-bg-200/70 disabled:opacity-30 disabled:hover:bg-transparent"
+          >
+            <ArrowUpIcon size={11} />
+          </button>
+          <button
+            type="button"
+            onClick={() => move(index, 1)}
+            disabled={index === items.length - 1}
+            title={t('servers.endpointMoveDown')}
+            aria-label={t('servers.endpointMoveDown')}
+            className="shrink-0 p-1 rounded-md text-text-400 hover:text-text-200 hover:bg-bg-200/70 disabled:opacity-30 disabled:hover:bg-transparent"
+          >
+            <ArrowDownIcon size={11} />
+          </button>
+          <button
+            type="button"
+            onClick={() => remove(item.id)}
+            disabled={items.length <= 1}
+            title={t('servers.endpointRemove')}
+            aria-label={t('servers.endpointRemove')}
+            className="shrink-0 p-1 rounded-md text-text-400 hover:text-danger-100 hover:bg-danger-bg/40 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-text-400"
+          >
+            <TrashIcon size={11} />
+          </button>
+        </div>
+      ))}
+
+      <p className="text-[length:var(--fs-xxs)] text-text-400 leading-relaxed">{t('servers.endpointOrderHint')}</p>
+    </div>
+  )
+}
+
 // ============================================
 // Server Item
 // ============================================
+
+/**
+ * 该服务器当前实际显示 / 使用的地址。
+ *
+ * activeUrl 优先（用户手动选过或自动探测选过），否则退回 endpoints 主地址
+ * （priority 最小者），最后退回 `server.url`。与 serverStore.getActiveEndpointUrl
+ * 同语义，但在设置页直接由快照算出，避免逐行调用 getter。
+ */
+function effectiveEndpointUrl(server: ServerConfig, state: Readonly<EndpointRuntime>): string {
+  return state.activeUrl ?? server.endpoints?.[0]?.url ?? server.url
+}
 
 function ServerItem({
   server,
@@ -49,28 +242,49 @@ function ServerItem({
   isActive,
   subscribed,
   multiServerEnabled,
+  endpointState,
   onSelect,
   onDelete,
   onEdit,
   onCheckHealth,
   onPair,
   onToggleSubscribe,
+  onUseEndpoint,
+  onLockEndpoint,
 }: {
   server: ServerConfig
   health: ServerHealth | null
   isActive: boolean
   subscribed: boolean
   multiServerEnabled: boolean
+  /** 多地址运行时状态（生效/锁定） */
+  endpointState: Readonly<EndpointRuntime>
   onSelect: () => void
   onDelete: () => void
-  onEdit: (updates: { name: string; url: string; username?: string; password?: string }) => void
+  onEdit: (updates: {
+    name: string
+    url: string
+    username?: string
+    password?: string
+    endpoints?: ServerEndpoint[]
+  }) => void
   onCheckHealth: () => void
   onPair: () => void
   onToggleSubscribe: () => void
+  /** 切换生效地址（Issue #183） */
+  onUseEndpoint: (url: string) => void
+  /** 锁定到某地址；传 null 解除锁定 */
+  onLockEndpoint: (url: string | null) => void
 }) {
   const { t } = useTranslation(['settings', 'common'])
   const [editing, setEditing] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  /**
+   * 地址列表默认收起：一台服务器有四五个入口时，全展开会把卡片撑得比
+   * 整个列表还高，其它服务器全被挤到屏幕外。收起时只留一行摘要
+   * （当前生效地址 + 共几个），要换地址再点开。
+   */
+  const [showEndpoints, setShowEndpoints] = useState(false)
 
   if (editing) {
     return (
@@ -89,101 +303,168 @@ function ServerItem({
     <>
       <div
         onClick={onSelect}
-        className={`group flex items-center gap-1.5 p-2.5 rounded-lg border transition-colors min-w-0
+        className={`group p-2.5 rounded-lg border transition-colors min-w-0
           ${
             isActive ? 'border-accent-main-100/40 bg-accent-main-100/5' : 'border-border-200/40 hover:border-border-300'
           }`}
       >
-        <button
-          type="button"
-          onClick={e => {
-            e.stopPropagation()
-            onSelect()
-          }}
-          aria-current={isActive ? 'true' : undefined}
-          className="min-w-0 flex-1 overflow-hidden bg-transparent border-none p-0 text-left"
-        >
-          <div className="min-w-0">
-            <div
-              className="text-[length:var(--fs-md)] font-medium text-text-100 truncate"
-              title={server.name}
+        <div className="flex items-center gap-1.5 min-w-0">
+          <button
+            type="button"
+            onClick={e => {
+              e.stopPropagation()
+              onSelect()
+            }}
+            aria-current={isActive ? 'true' : undefined}
+            className="min-w-0 flex-1 overflow-hidden bg-transparent border-none p-0 text-left"
+          >
+            <div className="min-w-0">
+              <div className="text-[length:var(--fs-md)] font-medium text-text-100 truncate" title={server.name}>
+                {server.name}
+              </div>
+              <div className="text-[length:var(--fs-xs)] text-text-400 truncate font-mono flex items-center gap-1 mt-0.5 min-w-0">
+                <span className="truncate min-w-0" title={effectiveEndpointUrl(server, endpointState)}>
+                  {effectiveEndpointUrl(server, endpointState)}
+                </span>
+                {server.auth?.password && <KeyIcon size={10} className="shrink-0 text-text-400" />}
+              </div>
+            </div>
+          </button>
+          <div className="shrink-0 flex items-center gap-0.5">
+            <button
+              type="button"
+              disabled={!multiServerEnabled}
+              onClick={e => {
+                e.stopPropagation()
+                onToggleSubscribe()
+              }}
+              title={
+                !multiServerEnabled
+                  ? t('servers.enableMultiServerFirst', { defaultValue: 'Enable multi-server mode first' })
+                  : subscribed
+                    ? t('servers.unsubscribe')
+                    : t('servers.subscribe')
+              }
+              aria-label={subscribed ? t('servers.unsubscribe') : t('servers.subscribe')}
+              className={`p-1.5 rounded-md transition-colors ${
+                subscribed
+                  ? 'text-accent-main-100 hover:bg-accent-main-100/10'
+                  : 'text-text-400 hover:text-text-200 hover:bg-bg-200/70'
+              } ${!multiServerEnabled ? 'opacity-40 cursor-not-allowed' : ''}`}
             >
-              {server.name}
-            </div>
-            <div className="text-[length:var(--fs-xs)] text-text-400 truncate font-mono flex items-center gap-1 mt-0.5 min-w-0">
-              <span className="truncate min-w-0" title={server.url}>
-                {server.url}
-              </span>
-              {server.auth?.password && <KeyIcon size={10} className="shrink-0 text-text-400" />}
-            </div>
+              {subscribed ? <PlugIcon size={13} /> : <CircleIcon size={11} className="opacity-50" />}
+            </button>
+            <ServerHealthButton health={health} onCheck={onCheckHealth} />
+            <button
+              type="button"
+              className="p-1.5 rounded-md text-text-400 hover:text-accent-main-100 hover:bg-accent-main-100/10 transition-colors"
+              onClick={e => {
+                e.stopPropagation()
+                onPair()
+              }}
+              title={t('servers.pairServer')}
+              aria-label={t('servers.pairServer')}
+            >
+              <QrCodeIcon size={13} />
+            </button>
+            {!server.isDefault && (
+              <>
+                <button
+                  type="button"
+                  className="p-1.5 rounded-md text-text-400 hover:text-accent-main-100 hover:bg-accent-main-100/10 transition-colors"
+                  onClick={e => {
+                    e.stopPropagation()
+                    setEditing(true)
+                  }}
+                  title={t('servers.editServer')}
+                  aria-label={t('servers.editServer')}
+                >
+                  <PencilIcon size={13} />
+                </button>
+                <button
+                  type="button"
+                  className="p-1.5 rounded-md text-text-400 hover:text-danger-100 hover:bg-danger-100/10 transition-colors"
+                  onClick={e => {
+                    e.stopPropagation()
+                    setConfirmDelete(true)
+                  }}
+                  title={t('common:remove')}
+                  aria-label={t('common:remove')}
+                >
+                  <TrashIcon size={13} />
+                </button>
+              </>
+            )}
           </div>
-        </button>
-        <div className="shrink-0 flex items-center gap-0.5">
-          <button
-            type="button"
-            disabled={!multiServerEnabled}
-            onClick={e => {
-              e.stopPropagation()
-              onToggleSubscribe()
-            }}
-            title={
-              !multiServerEnabled
-                ? t('servers.enableMultiServerFirst', { defaultValue: 'Enable multi-server mode first' })
-                : subscribed
-                  ? t('servers.unsubscribe')
-                  : t('servers.subscribe')
-            }
-            aria-label={subscribed ? t('servers.unsubscribe') : t('servers.subscribe')}
-            className={`p-1.5 rounded-md transition-colors ${
-              subscribed
-                ? 'text-accent-main-100 hover:bg-accent-main-100/10'
-                : 'text-text-400 hover:text-text-200 hover:bg-bg-200/70'
-            } ${!multiServerEnabled ? 'opacity-40 cursor-not-allowed' : ''}`}
-          >
-            {subscribed ? <PlugIcon size={13} /> : <CircleIcon size={11} className="opacity-50" />}
-          </button>
-          <ServerHealthButton health={health} onCheck={onCheckHealth} />
-          <button
-            type="button"
-            className="p-1.5 rounded-md text-text-400 hover:text-accent-main-100 hover:bg-accent-main-100/10 transition-colors"
-            onClick={e => {
-              e.stopPropagation()
-              onPair()
-            }}
-            title={t('servers.pairServer')}
-            aria-label={t('servers.pairServer')}
-          >
-            <QrCodeIcon size={13} />
-          </button>
-          {!server.isDefault && (
-            <>
-              <button
-                type="button"
-                className="p-1.5 rounded-md text-text-400 hover:text-accent-main-100 hover:bg-accent-main-100/10 transition-colors"
-                onClick={e => {
-                  e.stopPropagation()
-                  setEditing(true)
-                }}
-                title={t('servers.editServer')}
-                aria-label={t('servers.editServer')}
-              >
-                <PencilIcon size={13} />
-              </button>
-              <button
-                type="button"
-                className="p-1.5 rounded-md text-text-400 hover:text-danger-100 hover:bg-danger-100/10 transition-colors"
-                onClick={e => {
-                  e.stopPropagation()
-                  setConfirmDelete(true)
-                }}
-                title={t('common:remove')}
-                aria-label={t('common:remove')}
-              >
-                <TrashIcon size={13} />
-              </button>
-            </>
-          )}
         </div>
+
+        {/* 多地址列表（Issue #183）：仅当服务器配了 >1 个地址时出现，
+            单地址用户看到的界面与旧版完全一致。
+            默认收起——全展开时一张卡片能占掉半屏，其它服务器全被挤下去。 */}
+        {server.endpoints && server.endpoints.length > 1 && (
+          <div className="mt-2 pt-2 border-t border-border-200/40" onClick={e => e.stopPropagation()}>
+            <button
+              type="button"
+              onClick={() => setShowEndpoints(!showEndpoints)}
+              aria-expanded={showEndpoints}
+              title={t('servers.endpointToggle', { count: server.endpoints.length })}
+              className="w-full flex items-center gap-1.5 min-w-0 px-1.5 py-1 rounded-md text-left
+                text-text-400 hover:text-text-200 hover:bg-bg-200/70 transition-colors"
+            >
+              {showEndpoints ? (
+                <ChevronDownIcon size={11} className="shrink-0" />
+              ) : (
+                <ChevronRightIcon size={11} className="shrink-0" />
+              )}
+              <span className="text-[length:var(--fs-xs)]">
+                {t('servers.endpointCount', { count: server.endpoints.length })}
+              </span>
+              {/* 收起时也要能看出「手动锁定了某个地址」，否则用户会以为锁定丢了 */}
+              {!showEndpoints && endpointState.lockedUrl && (
+                <PinIcon size={10} className="shrink-0 text-accent-main-100" />
+              )}
+            </button>
+
+            {showEndpoints && (
+              <div className="mt-0.5 space-y-0.5">
+                {server.endpoints.map(endpoint => {
+                  const isCurrent = effectiveEndpointUrl(server, endpointState) === endpoint.url
+                  const locked = endpointState.lockedUrl === endpoint.url
+                  return (
+                    <div key={endpoint.url} className="flex items-center gap-1 min-w-0">
+                      <button
+                        type="button"
+                        onClick={() => onUseEndpoint(endpoint.url)}
+                        disabled={isCurrent}
+                        title={isCurrent ? t('servers.endpointActive') : t('servers.endpointUse')}
+                        className={`min-w-0 flex-1 flex items-center gap-1.5 px-1.5 py-1 rounded-md text-left transition-colors
+                          ${isCurrent ? 'text-accent-main-100' : 'text-text-300 hover:bg-bg-200/70'}`}
+                      >
+                        <span className="shrink-0 w-3">{isCurrent && <CheckIcon size={11} />}</span>
+                        <span className="truncate min-w-0 font-mono text-[length:var(--fs-xs)]" title={endpoint.url}>
+                          {endpoint.url}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onLockEndpoint(locked ? null : endpoint.url)}
+                        title={locked ? t('servers.endpointUnlock') : t('servers.endpointLock')}
+                        aria-label={locked ? t('servers.endpointUnlock') : t('servers.endpointLock')}
+                        className={`shrink-0 p-1 rounded-md transition-colors ${
+                          locked
+                            ? 'text-accent-main-100 hover:bg-accent-main-100/10'
+                            : 'text-text-400 hover:text-text-200 hover:bg-bg-200/70'
+                        }`}
+                      >
+                        <PinIcon size={12} />
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <ConfirmDialog
@@ -213,22 +494,41 @@ function EditServerForm({
   onCancel,
 }: {
   server: ServerConfig
-  onSave: (updates: { name: string; url: string; username?: string; password?: string }) => void
+  onSave: (updates: {
+    name: string
+    url: string
+    username?: string
+    password?: string
+    endpoints?: ServerEndpoint[]
+  }) => void
   onCancel: () => void
 }) {
   const { t } = useTranslation(['settings', 'common'])
   const [name, setName] = useState(server.name)
-  const [url, setUrl] = useState(server.url)
+  /**
+   * 地址列表（Issue #183）——**唯一的地址数据源**。
+   *
+   * 不再有单独的 URL 输入框：那会变成「同一个值两个入口，一个能改一个不能」。
+   * 第一行即主地址（保存时同时写入 `server.url`），顺序即优先级。
+   */
+  const [endpoints, setEndpoints] = useState<EditableEndpoint[]>(() =>
+    toEditable(server.endpoints?.length ? server.endpoints.map(endpoint => endpoint.url) : [server.url]),
+  )
   const [username, setUsername] = useState(server.auth?.username || '')
   const [password, setPassword] = useState(server.auth?.password || '')
   const [showAuth, setShowAuth] = useState(!!server.auth?.password)
   const [error, setError] = useState('')
-  const showHttpsIpWarning = isHttpsIpUrl(url)
+  // 主地址 = 列表第一个有效项（校验与 URL 警告都看它）
+  const primaryUrl = collectEndpointUrls(endpoints)[0] ?? ''
+  const showHttpsIpWarning = isHttpsIpUrl(primaryUrl)
 
   // 与添加表单同一条配对链：重新扫码 / 粘贴 pair 链接兑换后回填地址与凭据，
   // 保存时才落库——适合换了端口 / 重装了服务端后原地更新连接配置
-  const applyPairing = useCallback((pairedUrl: string, token: string) => {
-    setUrl(pairedUrl)
+  const applyPairing = useCallback((pairedUrl: string, token: string, urls: string[]) => {
+    // 配对拿到的地址集整组替换列表，第一个即主地址
+    const ordered = [pairedUrl, ...urls].map(item => item.trim().replace(/\/+$/, '')).filter(Boolean)
+    const unique = [...new Set(ordered)]
+    setEndpoints(toEditable(unique.length > 0 ? unique : [pairedUrl]))
     setUsername('opencode')
     setPassword(token)
     setShowAuth(true)
@@ -254,21 +554,26 @@ function EditServerForm({
       setError(t('servers.nameRequired'))
       return
     }
-    if (!url.trim()) {
+    const urls = collectEndpointUrls(endpoints)
+    if (urls.length === 0) {
       setError(t('servers.urlRequired'))
       return
     }
-    try {
-      new URL(url)
-    } catch {
-      setError(t('servers.invalidUrl'))
-      return
+    for (const candidate of urls) {
+      try {
+        new URL(candidate)
+      } catch {
+        setError(t('servers.invalidUrl'))
+        return
+      }
     }
     onSave({
       name: trimmedName,
-      url: url.trim(),
+      // 主地址写 url：旧逻辑、SDK 兜底、单地址界面都读它
+      url: urls[0]!,
       username: password.trim() ? username.trim() || 'opencode' : undefined,
       password: password.trim() || undefined,
+      endpoints: toServerEndpoints(urls),
     })
   }
 
@@ -300,25 +605,15 @@ function EditServerForm({
           autoFocus
         />
       </div>
-      <div>
-        <label className="block text-[length:var(--fs-xs)] font-medium text-text-300 mb-1">{t('servers.url')}</label>
-        <input
-          type="text"
-          value={url}
-          onChange={e => {
-            const value = e.target.value
-            // 粘贴到 URL 框的 pair 链接转到配对流程（官方连接对话框同款识别）
-            if (parsePairingLink(value) || isLegacyPairingLink(value)) {
-              handlePairLinkChange(value)
-              return
-            }
-            setUrl(value)
-            setError('')
-          }}
-          placeholder={t('servers.urlPlaceholder')}
-          className={`${inputCls} font-mono`}
-        />
-      </div>
+      <EndpointListEditor
+        items={endpoints}
+        onChange={setEndpoints}
+        onPairLinkPasted={value => {
+          if (!parsePairingLink(value) && !isLegacyPairingLink(value)) return false
+          handlePairLinkChange(value)
+          return true
+        }}
+      />
 
       <button
         type="button"
@@ -332,7 +627,9 @@ function EditServerForm({
       {showAuth && (
         <>
           <div>
-            <label className="block text-[length:var(--fs-xs)] font-medium text-text-300 mb-1">{t('servers.username')}</label>
+            <label className="block text-[length:var(--fs-xs)] font-medium text-text-300 mb-1">
+              {t('servers.username')}
+            </label>
             <input
               type="text"
               value={username}
@@ -345,7 +642,9 @@ function EditServerForm({
             />
           </div>
           <div>
-            <label className="block text-[length:var(--fs-xs)] font-medium text-text-300 mb-1">{t('servers.password')}</label>
+            <label className="block text-[length:var(--fs-xs)] font-medium text-text-300 mb-1">
+              {t('servers.password')}
+            </label>
             <input
               type="password"
               value={password}
@@ -397,19 +696,24 @@ function AddServerForm({
   onAdd,
   onCancel,
 }: {
-  onAdd: (name: string, url: string, username?: string, password?: string) => void
+  onAdd: (name: string, url: string, username?: string, password?: string, endpoints?: ServerEndpoint[]) => void
   onCancel: () => void
 }) {
   const { t } = useTranslation(['settings', 'common'])
   const [name, setName] = useState('')
-  const [url, setUrl] = useState('')
+  const [endpoints, setEndpoints] = useState<EditableEndpoint[]>(() => [blankEditable()])
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [showAuth, setShowAuth] = useState(false)
   const [error, setError] = useState('')
+  // 主地址 = 列表第一个有效项
+  const primaryUrl = collectEndpointUrls(endpoints)[0] ?? ''
 
-  const applyPairing = useCallback((pairedUrl: string, token: string) => {
-    setUrl(pairedUrl)
+  const applyPairing = useCallback((pairedUrl: string, token: string, urls: string[]) => {
+    // 配对地址集整组替换列表，第一个即主地址
+    const ordered = [pairedUrl, ...urls].map(item => item.trim().replace(/\/+$/, '')).filter(Boolean)
+    const unique = [...new Set(ordered)]
+    setEndpoints(toEditable(unique.length > 0 ? unique : [pairedUrl]))
     setUsername('opencode')
     setPassword(token)
     setShowAuth(true)
@@ -437,35 +741,39 @@ function AddServerForm({
       setError(t('servers.nameRequired'))
       return
     }
-    if (!url.trim()) {
+    const urls = collectEndpointUrls(endpoints)
+    if (urls.length === 0) {
       setError(t('servers.urlRequired'))
       return
     }
-    try {
-      new URL(url)
-    } catch {
-      setError(t('servers.invalidUrl'))
-      return
+    for (const candidate of urls) {
+      try {
+        new URL(candidate)
+      } catch {
+        setError(t('servers.invalidUrl'))
+        return
+      }
     }
 
     onAdd(
       trimmedName,
-      url.trim(),
+      urls[0]!,
       password.trim() ? username.trim() || 'opencode' : undefined,
       password.trim() || undefined,
+      toServerEndpoints(urls),
     )
   }
 
   const isCrossOrigin = (() => {
-    if (!url.trim()) return false
+    if (!primaryUrl) return false
     try {
-      const serverUrl = new URL(url)
+      const serverUrl = new URL(primaryUrl)
       return serverUrl.origin !== window.location.origin
     } catch {
       return false
     }
   })()
-  const showHttpsIpWarning = isHttpsIpUrl(url)
+  const showHttpsIpWarning = isHttpsIpUrl(primaryUrl)
 
   const inputCls = settingsFieldClass
 
@@ -492,25 +800,15 @@ function AddServerForm({
           autoFocus
         />
       </div>
-      <div>
-        <label className="block text-[length:var(--fs-xs)] font-medium text-text-300 mb-1">{t('servers.url')}</label>
-        <input
-          type="text"
-          value={url}
-          onChange={e => {
-            const value = e.target.value
-            // 粘贴到 URL 框的 pair 链接转到配对流程（官方连接对话框同款识别）
-            if (parsePairingLink(value) || isLegacyPairingLink(value)) {
-              handlePairLinkChange(value)
-              return
-            }
-            setUrl(value)
-            setError('')
-          }}
-          placeholder={t('servers.urlPlaceholder')}
-          className={`${inputCls} font-mono`}
-        />
-      </div>
+      <EndpointListEditor
+        items={endpoints}
+        onChange={setEndpoints}
+        onPairLinkPasted={value => {
+          if (!parsePairingLink(value) && !isLegacyPairingLink(value)) return false
+          handlePairLinkChange(value)
+          return true
+        }}
+      />
 
       <button
         type="button"
@@ -524,7 +822,9 @@ function AddServerForm({
       {showAuth && (
         <>
           <div>
-            <label className="block text-[length:var(--fs-xs)] font-medium text-text-300 mb-1">{t('servers.username')}</label>
+            <label className="block text-[length:var(--fs-xs)] font-medium text-text-300 mb-1">
+              {t('servers.username')}
+            </label>
             <input
               type="text"
               value={username}
@@ -537,7 +837,9 @@ function AddServerForm({
             />
           </div>
           <div>
-            <label className="block text-[length:var(--fs-xs)] font-medium text-text-300 mb-1">{t('servers.password')}</label>
+            <label className="block text-[length:var(--fs-xs)] font-medium text-text-300 mb-1">
+              {t('servers.password')}
+            </label>
             <input
               type="password"
               value={password}
@@ -564,7 +866,9 @@ function AddServerForm({
             </div>
           )}
 
-          <div className="text-[length:var(--fs-xs)] text-text-400 leading-relaxed">{t('servers.credentialsStorage')}</div>
+          <div className="text-[length:var(--fs-xs)] text-text-400 leading-relaxed">
+            {t('servers.credentialsStorage')}
+          </div>
         </>
       )}
 
@@ -620,9 +924,12 @@ export function ServersSettings() {
     addServer,
     removeServer,
     updateServer,
+    setActiveEndpoint,
+    setLockedEndpoint,
     checkHealth,
     checkAllHealth,
     getHealth,
+    endpointStates,
   } = useServerStore()
   const handleSelectServer = useServerSelection()
   const orderedServers = useMemo(() => {
@@ -678,11 +985,13 @@ export function ServersSettings() {
           description={
             multiServerConfig.enabled
               ? t('servers.subscribedCountHint', {
-                  defaultValue: '{{count}} servers subscribed. The current server is always shown; use the plug icon to keep other servers in the sidebar.',
+                  defaultValue:
+                    '{{count}} servers subscribed. The current server is always shown; use the plug icon to keep other servers in the sidebar.',
                   count: subscribedCount,
                 })
               : t('servers.multiServerModeOffHint', {
-                  defaultValue: 'When enabled, the sidebar shows the current server and any other servers you subscribe to.',
+                  defaultValue:
+                    'When enabled, the sidebar shows the current server and any other servers you subscribe to.',
                 })
           }
         >
@@ -723,11 +1032,17 @@ export function ServersSettings() {
                   <div ref={addMenuContentRef}>
                     <MenuItem
                       label={t('servers.addRemote')}
-                      onClick={() => { setAddMenuOpen(false); setAddingServer(true) }}
+                      onClick={() => {
+                        setAddMenuOpen(false)
+                        setAddingServer(true)
+                      }}
                     />
                     <MenuItem
                       label={t('servers.addWsl')}
-                      onClick={() => { setAddMenuOpen(false); setAddingWslServer(true) }}
+                      onClick={() => {
+                        setAddMenuOpen(false)
+                        setAddingWslServer(true)
+                      }}
                     />
                   </div>
                 </DropdownMenu>
@@ -775,7 +1090,8 @@ export function ServersSettings() {
                 multiServerEnabled={multiServerConfig.enabled}
                 onSelect={() => handleSelectServer(s.id)}
                 onDelete={() => {
-                  const sessions = paneLayoutStore.allLeaves()
+                  const sessions = paneLayoutStore
+                    .allLeaves()
                     .map(leaf => leaf.sessionId)
                     .filter((id): id is string => !!id && sessionKeyToServerId(id) === s.id)
                   // 删除服务器时同步移出多服务器白名单（避免残留订阅连到已删地址）
@@ -793,12 +1109,15 @@ export function ServersSettings() {
                   const auth = updates.password
                     ? { username: updates.username || 'opencode', password: updates.password }
                     : undefined
-                  updateServer(s.id, { name: updates.name, url: updates.url, auth })
+                  updateServer(s.id, { name: updates.name, url: updates.url, auth, endpoints: updates.endpoints })
                   void checkHealth(s.id)
                 }}
                 onCheckHealth={() => void checkHealth(s.id)}
                 onPair={() => setPairingServer(s)}
                 onToggleSubscribe={() => multiServerStore.setSubscribed(s.id, !multiServerStore.isSubscribed(s.id))}
+                endpointState={endpointStates.get(s.id) ?? { activeUrl: null, lockedUrl: null, lastSwitchAt: 0 }}
+                onUseEndpoint={url => setActiveEndpoint(s.id, url)}
+                onLockEndpoint={url => setLockedEndpoint(s.id, url)}
               />
             )
           })}
@@ -817,23 +1136,25 @@ export function ServersSettings() {
             />
           ))}
 
-        {addingServer && (
-          <AddServerForm
-            onAdd={(n, u, user, pass) => {
-              const auth = pass ? { username: user || 'opencode', password: pass } : undefined
-              const s = addServer({ name: n, url: u, auth })
-              setAddingServer(false)
-              if (!activeServer) handleSelectServer(s.id)
-              else void checkHealth(s.id)
-            }}
-            onCancel={() => setAddingServer(false)}
-          />
-        )}
+          {addingServer && (
+            <AddServerForm
+              onAdd={(n, u, user, pass, endpoints) => {
+                const auth = pass ? { username: user || 'opencode', password: pass } : undefined
+                const s = addServer({ name: n, url: u, auth, endpoints })
+                setAddingServer(false)
+                if (!activeServer) handleSelectServer(s.id)
+                else void checkHealth(s.id)
+              }}
+              onCancel={() => setAddingServer(false)}
+            />
+          )}
 
-        {servers.length === 0 && unreadyWslItems.length === 0 && !addingServer && (
-          <div className="text-[length:var(--fs-md)] text-text-400 text-center py-8">{t('servers.noServersConfigured')}</div>
-        )}
-      </div>
+          {servers.length === 0 && unreadyWslItems.length === 0 && !addingServer && (
+            <div className="text-[length:var(--fs-md)] text-text-400 text-center py-8">
+              {t('servers.noServersConfigured')}
+            </div>
+          )}
+        </div>
       </SettingsSection>
 
       <DialogAddWslServer
