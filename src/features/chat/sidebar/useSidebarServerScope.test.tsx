@@ -139,7 +139,7 @@ describe('sidebar server scope', () => {
     }
     render(<SidebarSearch />)
     await act(() => vi.advanceTimersByTimeAsync(300))
-    expect(getSessionsMock).toHaveBeenCalledExactlyOnceWith({ search: 'greeting', limit: 50 }, 'local')
+    expect(getSessionsMock).toHaveBeenCalledExactlyOnceWith({ parentID: null, search: 'greeting', limit: 50 }, 'local')
     expect(screen.getByRole('button', { name: /local greeting/ })).toBeInTheDocument()
 
     act(() => {
@@ -147,7 +147,7 @@ describe('sidebar server scope', () => {
     })
     expect(screen.queryByRole('button', { name: /local greeting/ })).not.toBeInTheDocument()
     await act(() => vi.advanceTimersByTimeAsync(300))
-    expect(getSessionsMock).toHaveBeenLastCalledWith({ search: 'greeting', limit: 50 }, 'remote')
+    expect(getSessionsMock).toHaveBeenLastCalledWith({ parentID: null, search: 'greeting', limit: 50 }, 'remote')
     fireEvent.click(screen.getByRole('button', { name: /remote greeting/ }))
     expect(onSelectSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'greeting', serverId: 'remote' }))
   })

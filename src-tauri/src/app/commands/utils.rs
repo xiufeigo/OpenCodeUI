@@ -31,7 +31,9 @@ pub async fn open_new_window(app: tauri::AppHandle, directory: Option<String>) {
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
 pub fn desktop_window_ready(window: tauri::Window) -> Result<(), String> {
-    crate::app::mark_window_ready(&window).map_err(|err| err.to_string())
+    crate::app::mark_window_ready(&window).map_err(|err| err.to_string())?;
+    super::window_backdrop::reapply_on_shown(&window);
+    Ok(())
 }
 
 /// 获取拖入路径的基础信息，用于前端区分文件/目录并生成 @ 引用。

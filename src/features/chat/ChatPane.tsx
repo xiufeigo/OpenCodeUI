@@ -6,7 +6,17 @@
  * compact viewport wrapper.
  */
 
-import { memo, useRef, useEffect, useState, useCallback, useMemo, useDeferredValue, useSyncExternalStore, type CSSProperties } from 'react'
+import {
+  memo,
+  useRef,
+  useEffect,
+  useState,
+  useCallback,
+  useMemo,
+  useDeferredValue,
+  useSyncExternalStore,
+  type CSSProperties,
+} from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 
 import { ChatArea, Header, InputBox, PermissionDialog, QuestionDialog, type ChatAreaHandle } from '.'
@@ -29,7 +39,11 @@ import { useServerStore } from '../../hooks/useServerStore'
 import { useCancelHint } from '../../hooks/useCancelHint'
 import { makeSessionKey, sessionKeyToServerId, splitSessionKey } from '../../utils/sessionKey'
 import { serverStore } from '../../store/serverStore'
-import { InlineToolRequestContext, partitionUnclaimedRequests, type InlineToolRequestContextValue } from './InlineToolRequestContext'
+import {
+  InlineToolRequestContext,
+  partitionUnclaimedRequests,
+  type InlineToolRequestContextValue,
+} from './InlineToolRequestContext'
 import { ChatViewportProvider, canUseSplitPane, useChatViewportMaybe, type ChatViewportValue } from './chatViewport'
 import { useChatPageViewModel } from './useChatPageViewModel'
 import { findBlockingBackgroundTasks, mergeRunningShells, useRunningShells } from './backgroundTasks'
@@ -307,6 +321,7 @@ export const ChatPane = memo(function ChatPane({
     pendingQuestionRequests,
     pendingWebsearchRequest,
     queuedPrompts,
+    queuedCompactions,
     inboxUserPrompts,
     busyDelivery,
     setBusyDelivery,
@@ -371,23 +386,61 @@ export const ChatPane = memo(function ChatPane({
   // 并入服务端 running shells（官方 background.ts:100-109 同款）
   // ============================================
   const runningShells = useRunningShells(routeSessionId, isStreaming, effectiveDirectory, paneServerId)
+
+  // 当前回合开始的时间点：这之前启动、还挂在后台的 shell 属于上一回合，
+  // 不能算作阻塞当前回合、也不该继续提示「移到后台」。
+  const currentTurnStartedAt = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i]
+      if (message.type === 'user' && typeof message.time?.created === 'number') return message.time.created
+    }
+    return undefined
+  }, [messages])
+
+  // 刚被移到后台的任务：服务端 shell 仍是 running，本地先摘掉，避免入口一直挂着。
+  const [movedBackgroundKeys, setMovedBackgroundKeys] = useState<ReadonlySet<string>>(() => new Set())
+  useEffect(() => {
+    setMovedBackgroundKeys(new Set())
+  }, [routeSessionId, currentTurnStartedAt])
+
   const blockingBackgroundTasks = useMemo(() => {
     if (!isStreaming || !routeSessionId) return []
     const { sessionId: rawSessionId } = splitSessionKey(routeSessionId)
-    return mergeRunningShells(findBlockingBackgroundTasks(messages), runningShells, rawSessionId ?? routeSessionId)
-  }, [isStreaming, routeSessionId, messages, runningShells])
+    const merged = mergeRunningShells(
+      findBlockingBackgroundTasks(messages),
+      runningShells,
+      rawSessionId ?? routeSessionId,
+      { notBefore: currentTurnStartedAt },
+    )
+    if (movedBackgroundKeys.size === 0) return merged
+    return merged.filter(
+      task => !movedBackgroundKeys.has(`${task.type}:${task.id}`) && !movedBackgroundKeys.has(`label:${task.label}`),
+    )
+  }, [isStreaming, routeSessionId, messages, runningShells, currentTurnStartedAt, movedBackgroundKeys])
+
   const [backgroundMoving, setBackgroundMoving] = useState(false)
   const handleMoveToBackground = useCallback(async () => {
     if (!routeSessionId || backgroundMoving) return
+    const snapshot = blockingBackgroundTasks
     setBackgroundMoving(true)
     try {
       await backgroundSession(routeSessionId, paneServerId)
+      if (snapshot.length > 0) {
+        setMovedBackgroundKeys(prev => {
+          const next = new Set(prev)
+          for (const task of snapshot) {
+            next.add(`${task.type}:${task.id}`)
+            next.add(`label:${task.label}`)
+          }
+          return next
+        })
+      }
     } catch (e) {
       uiErrorHandler('background session', e)
     } finally {
       setBackgroundMoving(false)
     }
-  }, [routeSessionId, paneServerId, backgroundMoving])
+  }, [routeSessionId, paneServerId, backgroundMoving, blockingBackgroundTasks])
   const messageView = useMemo(() => ({ sessionId: routeSessionId, messages }), [routeSessionId, messages])
   // Streaming never consumes the deferred value, so do not feed every token into a
   // second low-priority render lane.
@@ -410,10 +463,12 @@ export const ChatPane = memo(function ChatPane({
     loadState,
     messageCount: messages.length,
   })
-  const chatAreaMountKey = messagesReady ? (routeSessionId ?? 'home') : null
+  // 已有可显示消息就先挂出来（官方 createTimelineModel 的 ready 同款：
+  // 任意一条非 pending 消息即视为可渲染，enrich 之后补）。
+  // 缓存命中 / SSE 先到 / 重连刷新时，没必要为了一次元信息回读让整页空白。
+  const hasRenderableMessages = renderedMessages.length > 0
+  const chatAreaMountKey = messagesReady || hasRenderableMessages ? (routeSessionId ?? 'home') : null
   const inputDisabled = !!routeSessionId && loadState === 'error' && messages.length === 0
-  const chatPageViewModel = useChatPageViewModel(projectedMessages)
-
   // 切 session remount 时默认视为贴底，避免回底按钮闪一下
   useEffect(() => {
     if (chatAreaMountKey == null) return
@@ -846,7 +901,12 @@ export const ChatPane = memo(function ChatPane({
     setChatContentWidth,
     chatInputWidth,
     setChatInputWidth,
+    showTimelineNotices,
+    showQueuedCompaction,
   } = useTheme()
+
+  // 提示行开关参与可见性过滤：关掉后这些消息不进入时间线
+  const chatPageViewModel = useChatPageViewModel(projectedMessages, showTimelineNotices)
 
   // ── 对话列/输入框宽度（左缘拖拽调宽，两个独立把手）──
   // 样式与交互抄 dsh ConversationWidthControls，按需求收窄成左缘单把手 × 2：
@@ -904,25 +964,22 @@ export const ChatPane = memo(function ChatPane({
     () => (pendingWebsearchRequest ? [...pendingQuestionRequests, pendingWebsearchRequest] : pendingQuestionRequests),
     [pendingQuestionRequests, pendingWebsearchRequest],
   )
-  const unclaimed = useMemo(
-    () => {
-      // childSessionVersion 是绑定表版本号：卡片↔子会话绑定变化不改任何入参引用，
-      // 但认领判定会变——引用它让依赖数组语义完整（也让 memo 正确失效）
-      void childSessionVersion
-      return inlineToolRequests && routeSessionId
-        ? partitionUnclaimedRequests(messages, pendingPermissionRequests, allPendingForms, paneServerId, routeSessionId)
-        : { permissions: [], questions: [] }
-    },
-    [
-      inlineToolRequests,
-      routeSessionId,
-      messages,
-      pendingPermissionRequests,
-      allPendingForms,
-      paneServerId,
-      childSessionVersion,
-    ],
-  )
+  const unclaimed = useMemo(() => {
+    // childSessionVersion 是绑定表版本号：卡片↔子会话绑定变化不改任何入参引用，
+    // 但认领判定会变——引用它让依赖数组语义完整（也让 memo 正确失效）
+    void childSessionVersion
+    return inlineToolRequests && routeSessionId
+      ? partitionUnclaimedRequests(messages, pendingPermissionRequests, allPendingForms, paneServerId, routeSessionId)
+      : { permissions: [], questions: [] }
+  }, [
+    inlineToolRequests,
+    routeSessionId,
+    messages,
+    pendingPermissionRequests,
+    allPendingForms,
+    paneServerId,
+    childSessionVersion,
+  ])
   const isWebsearchForm = (form: (typeof allPendingForms)[number]) =>
     (form.metadata as Record<string, unknown> | undefined)?.kind === 'websearch.provider'
   // inline 模式底部只渲染未认领的；非 inline 模式维持原样（全量会话级弹窗）。
@@ -1064,10 +1121,13 @@ export const ChatPane = memo(function ChatPane({
                 registerMessage={registerMessage}
                 retryStatus={retryStatus}
                 queuedFollowUps={queuedPrompts}
+                queuedCompactions={showQueuedCompaction ? queuedCompactions : undefined}
                 queueEditingId={queueEditing?.item.id}
                 queueMutation={queueMutation}
                 onQueueSteer={handleSteerQueuedPrompt}
-                onQueueEdit={item => (queueEditing?.item.id === item.id ? handleCancelQueueEdit() : handleEditQueuedPrompt(item))}
+                onQueueEdit={item =>
+                  queueEditing?.item.id === item.id ? handleCancelQueueEdit() : handleEditQueuedPrompt(item)
+                }
                 onQueueRemove={item => handleCancelQueuedPrompt(item.id)}
                 onQueueReorder={handleReorderQueuedPrompts}
                 bottomPadding={inputBoxHeight}
@@ -1244,7 +1304,6 @@ export const ChatPane = memo(function ChatPane({
           onCollapsedChange={setWebsearchCollapsed}
         />
       )}
-
     </div>
   )
 

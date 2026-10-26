@@ -21,12 +21,17 @@ import {
   ToolPartView,
   FilePartView,
   AgentPartView,
+  SkillPartView,
   StepFinishPartView,
   RetryPartView,
   CompactionPartView,
+  TimelineNoticeView,
+  TurnDiffPartView,
   MessageErrorView,
   type StepFinishInfo,
+  type NoticeMessage,
 } from './parts'
+import type { TurnDiffInfo } from '../chat/chatPageModel'
 import { CollapsibleUserText, USER_HTML_ARTIFACT_PATTERN } from './CollapsibleUserText'
 import { extractToolData, type ToolViewPart } from './tools'
 import { ForkActionButton, UndoActionButton, useMessageActionBarClass } from './MessageActionBar'
@@ -283,6 +288,10 @@ interface MessageRendererProps {
   onFork?: (message: SessionMessageInfo, forkMessageId?: string) => Promise<void> | void
   forkMessageId?: string
   canUndo?: boolean
+  /** 回合文件变更摘要：渲染在正文末尾、step 信息之前 */
+  turnDiff?: TurnDiffInfo
+  /** 带服务器前缀的 session key，供 diff 拉取 */
+  sessionId?: string | null
   /** 用户消息入场生长完成（供过程壳等待挂载） */
   onEntryGrowComplete?: (messageId: string) => void
 }
@@ -298,6 +307,8 @@ export const MessageRenderer = memo(function MessageRenderer({
   onFork,
   forkMessageId,
   canUndo,
+  turnDiff,
+  sessionId,
   onEntryGrowComplete,
 }: MessageRendererProps) {
   if (message.type === 'user') {
@@ -341,11 +352,28 @@ export const MessageRenderer = memo(function MessageRenderer({
     if (message.outcome === 'failed' && idleError) {
       return (
         <div className="flex flex-col w-full">
-          <MessageErrorView error={idleError} stateKey={`message:${message.id}:error`} />
+          <MessageErrorView
+            error={idleError}
+            stateKey={`message:${message.id}:error`}
+            time={{ created: message.time.created }}
+          />
         </div>
       )
     }
     return null
+  }
+
+  // 提示行：模型 / agent / 工作目录切换、skill、系统指令、synthetic 上下文
+  // （官方 timeline 的 Notice 行；可见性由 chatAreaVisibility.isNoticeMessage 判定）
+  if (
+    message.type === 'system' ||
+    message.type === 'synthetic' ||
+    message.type === 'skill' ||
+    message.type === 'agent-switched' ||
+    message.type === 'model-switched' ||
+    message.type === 'location-switched'
+  ) {
+    return <TimelineNoticeView message={message as NoticeMessage} />
   }
 
   if (message.type !== 'assistant') return null
@@ -360,6 +388,8 @@ export const MessageRenderer = memo(function MessageRenderer({
       stepFinishVisible={stepFinishVisible}
       onFork={onFork}
       forkMessageId={forkMessageId}
+      turnDiff={turnDiff}
+      sessionId={sessionId}
     />
   )
 })
@@ -541,6 +571,7 @@ const UserMessageView = memo(function UserMessageView({
   const messageText = userMessageText(message)
   const files = message.files ?? []
   const agents = message.agents ?? []
+  const skills = message.skills ?? []
   const hasUserHtmlArtifact = renderUserMarkdown && USER_HTML_ARTIFACT_PATTERN.test(messageText)
 
   return (
@@ -561,13 +592,16 @@ const UserMessageView = memo(function UserMessageView({
         )}
 
         {/* 用户附件 */}
-        {(files.length > 0 || agents.length > 0) && (
+        {(files.length > 0 || agents.length > 0 || skills.length > 0) && (
           <div className="mt-1 flex max-w-full min-w-0 flex-wrap gap-2 justify-end">
             {files.map((file, index) => (
               <FilePartView key={`file:${index}`} file={file} index={index} />
             ))}
             {agents.map((agent, index) => (
               <AgentPartView key={`agent:${index}`} agent={agent} index={index} />
+            ))}
+            {skills.map((skill, index) => (
+              <SkillPartView key={`skill:${skill.id || index}`} skill={skill} index={index} />
             ))}
           </div>
         )}
@@ -597,6 +631,8 @@ const AssistantMessageView = memo(function AssistantMessageView({
   stepFinishVisible = true,
   onFork,
   forkMessageId,
+  turnDiff,
+  sessionId,
 }: {
   message: AssistantMessage
   allowStreamingLayoutAnimation?: boolean
@@ -606,6 +642,8 @@ const AssistantMessageView = memo(function AssistantMessageView({
   stepFinishVisible?: boolean
   onFork?: (message: SessionMessageInfo, forkMessageId?: string) => Promise<void> | void
   forkMessageId?: string
+  turnDiff?: TurnDiffInfo
+  sessionId?: string | null
 }) {
   const { t } = useTranslation('message')
   const { stepFinishDisplay, completedAtFormat, actionsOnLatestAssistantOnly } = useTheme()
@@ -694,7 +732,7 @@ const AssistantMessageView = memo(function AssistantMessageView({
     if (messageError) {
       return (
         <div className={`flex flex-col ${MSG_SPACING.stack} w-full`}>
-          <MessageErrorView error={messageError} stateKey={`message:${message.id}:error`} />
+          <MessageErrorView error={messageError} stateKey={`message:${message.id}:error`} time={message.time} />
         </div>
       )
     }
@@ -745,6 +783,16 @@ const AssistantMessageView = memo(function AssistantMessageView({
             }
           })}
 
+          {/* 回合文件变更：放在正文末尾、step 信息之前，避免和正文分离 */}
+          {turnDiff && processContentScope !== 'process' && processContentScope !== 'inline' && (
+            <TurnDiffPartView
+              sessionId={sessionId ?? null}
+              from={turnDiff.from}
+              files={turnDiff.files}
+              stateKey={`turn-diff:${turnDiff.from}`}
+            />
+          )}
+
           {/* step 完成信息：v2 里一个助手消息就是一整个 step，tokens / cost / finish
               全挂在消息上，所以固定放在本消息内容末尾一行。
 
@@ -770,7 +818,7 @@ const AssistantMessageView = memo(function AssistantMessageView({
 
       {/* Message-level error：过程壳内不重复挂错误 */}
       {messageError && processContentScope !== 'process' && processContentScope !== 'inline' && (
-        <MessageErrorView error={messageError} stateKey={`message:${message.id}:error`} />
+        <MessageErrorView error={messageError} stateKey={`message:${message.id}:error`} time={message.time} />
       )}
 
       {processContentScope !== 'process' &&

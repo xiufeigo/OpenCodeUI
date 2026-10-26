@@ -418,6 +418,18 @@ class MessageStore {
     return this.sessions.get(sessionId)
   }
 
+  /**
+   * 会话是否已有可直接渲染的缓存视图。
+   *
+   * 「切过去不用再拉」和「点击时不必预取」是同一个判断，放在这里做唯一定义，
+   * 免得两处口径漂移（改阈值只改一处）。
+   */
+  hasRenderableCache(sessionId: string | null): boolean {
+    if (!sessionId) return false
+    const cached = this.sessions.get(sessionId)
+    return !!cached && cached.loadState === 'loaded' && !cached.isStale && cached.messages.length > 0
+  }
+
   /** 可见消息：undo 生效后，撤销点及其之后的消息不再展示 */
   getVisibleMessages(sessionId: string | null): SessionMessageInfo[] {
     if (!sessionId) return []
@@ -923,7 +935,7 @@ class MessageStore {
     message.providerState = data.providerState
     message.cost = data.cost
     message.tokens = data.tokens
-    if (data.snapshot) message.snapshot = { ...message.snapshot, end: data.snapshot }
+    this.mergeSnapshot(message, data.snapshot, data.files)
 
     this.markMessageDirty(sessionID, assistantMessageID)
     this.notify([sessionID])
@@ -946,6 +958,7 @@ class MessageStore {
       message.cost = data.cost
       message.tokens = data.tokens
     }
+    this.mergeSnapshot(message, data.snapshot, data.files)
 
     this.markMessageDirty(sessionID, assistantMessageID)
     this.notify([sessionID])
@@ -1405,6 +1418,29 @@ class MessageStore {
   }
 
   /**
+   * `session.moved`：会话被移动到其他目录 / worktree。
+   *
+   * 官方 data.ts 同款：更新会话 location，并在消息流里留一条
+   * `location-switched`。以前本端不做这件事，只有下次重拉消息才看得到切换记录。
+   */
+  handleSessionMoved(data: EventPayload<'session.moved'>, facts?: EventFacts) {
+    const { sessionID, location, projectID, subpath } = data
+    const state = this.ensureSession(sessionID)
+    const previous = state.directory ? { location: { directory: state.directory } } : undefined
+    state.directory = location.directory
+    this.appendMessage(state, {
+      id: messageIDFromFacts(facts),
+      type: 'location-switched',
+      location,
+      projectID,
+      subpath,
+      previous,
+      time: { created: facts?.created ?? Date.now() },
+    })
+    this.notify([sessionID])
+  }
+
+  /**
    * 单条 durable 回读替换（官方 data.ts:677-683 同款）：
    * 事件先合成的乐观行，用 message.get 拉回来的服务端行原位替换；
    * 找不到同 id 则追加。
@@ -1758,6 +1794,22 @@ class MessageStore {
   private findAssistant(state: SessionState, messageID: string): AssistantMessage | undefined {
     const message = this.findMessage(state, messageID)
     return message?.type === 'assistant' ? message : undefined
+  }
+
+  /**
+   * 合并 step 产出的快照事实。
+   *
+   * `session.step.ended/failed` 的 `snapshot` 是 step 末快照 id，`files` 是本 step
+   * 改动过的文件。回合级「N 个文件变更」提示要用这份列表（官方用
+   * `message.snapshot.files`），所以不能只记住 end。
+   */
+  private mergeSnapshot(message: AssistantMessage, snapshot?: string, files?: string[]) {
+    if (!snapshot && (files?.length ?? 0) === 0) return
+    message.snapshot = {
+      ...message.snapshot,
+      ...(snapshot ? { end: snapshot } : {}),
+      ...(files && files.length > 0 ? { files } : {}),
+    }
   }
 
   /** 官方 `message.activeAssistant`：最后一条还没定稿的助手消息 */

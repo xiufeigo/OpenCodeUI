@@ -10,6 +10,14 @@
 
 import { getThemePreset, themeColorsToCSSVars, builtinThemes, DEFAULT_THEME_ID, registerCustomTheme, unregisterCustomTheme, listCustomThemes } from '../themes'
 import type { ThemePreset, ThemeColors } from '../themes'
+import { buildGlassTokens, GLASS_TOKEN_KEYS } from '../utils/glassTokens'
+import { getDesktopPlatform, isTauri } from '../utils/tauri'
+import {
+  compressWallpaperImage,
+  wallpaperIdbDelete,
+  wallpaperIdbGet,
+  wallpaperIdbPut,
+} from '../utils/wallpaperStorage'
 
 const STORAGE_KEY_CUSTOM_THEMES = 'opencode:custom-themes'
 
@@ -171,6 +179,62 @@ function clampTerminalFontSize(n: number): number {
 
 /** 工具输出渲染风格：classic = 经典（input+output 分离），compact = 精简（只展示 output，header 更矮） */
 export type ToolCardStyle = 'classic' | 'compact'
+
+/**
+ * 外观处理：与主题配色相互独立
+ * - default: 实色
+ * - glass:   整窗一层半透明染色 + 一次磨砂
+ */
+export type AppearanceStyle = 'default' | 'glass'
+
+/** 壁纸铺放方式 */
+export type WallpaperFit = 'cover' | 'contain'
+
+/** 窗口背景模式：系统材质 / 页面自绘 / 纯色 */
+type BackdropMode = 'native' | 'page' | 'none'
+
+/**
+ * 桌面背景由谁提供。
+ * - native：系统合成器（DWM / WindowServer）糊，60fps、零 CPU
+ * - live：我们抓屏自己糊，能控制半径，但每帧要走 CPU 往返
+ */
+export type DesktopBackdrop = 'native' | 'live'
+
+const STORAGE_KEY_DESKTOP_BACKDROP = 'desktop-backdrop'
+const DEFAULT_DESKTOP_BACKDROP: DesktopBackdrop = 'native'
+const STORAGE_KEY_BACKDROP_BLUR = 'backdrop-blur'
+const STORAGE_KEY_BACKDROP_INTERVAL = 'backdrop-interval'
+/** 抓取间隔（ms）。越小越跟手，CPU 越高；每次抓取都要等一帧合成，所以有下限。 */
+const DEFAULT_BACKDROP_INTERVAL = 33
+const BACKDROP_INTERVAL_MIN = 8
+const BACKDROP_INTERVAL_MAX = 200
+/** 页面磨砂层的半径（px），和壁纸模式共用同一个变量 */
+const DEFAULT_BACKDROP_BLUR = 24
+
+const DEFAULT_APPEARANCE_STYLE: AppearanceStyle = 'default'
+/**
+ * 玻璃浓度：整窗染色的不透明度。
+ *
+ * 默认 0.6——系统材质（acrylic/壁纸）在窗口底下，染色只是“压一层”让文字能读。
+ * 之前默认 0.88，等于把材质盖掉，只剩 12% 能看见，怎么调都是块死板子。
+ */
+const DEFAULT_GLASS_ALPHA = 0.6
+/** 0.88 是旧默认值，存档里遇到就当成没设置过 */
+const LEGACY_GLASS_ALPHA = 0.88
+const GLASS_ALPHA_MIN = 0.15
+const GLASS_ALPHA_MAX = 1
+/** 系统没有窗口模糊时的最低不透明度，避免桌面原样透上来影响阅读 */
+const GLASS_NO_BLUR_ALPHA = 0.94
+const DEFAULT_WALLPAPER_ENABLED = false
+const DEFAULT_WALLPAPER_FIT: WallpaperFit = 'cover'
+/** 对话区是否再叠一层淡图；默认关闭，保持整窗观感统一 */
+const DEFAULT_WALLPAPER_IN_CHAT = false
+
+function clampGlassAlpha(n: number): number {
+  if (!Number.isFinite(n)) return DEFAULT_GLASS_ALPHA
+  return Math.max(GLASS_ALPHA_MIN, Math.min(GLASS_ALPHA_MAX, n))
+}
+
 const DEFAULT_TOOL_CARD_STYLE: ToolCardStyle = 'compact'
 const DEFAULT_IMMERSIVE_MODE = true
 const DEFAULT_COMPACT_INLINE_PERMISSION = true
@@ -189,6 +253,12 @@ const DEFAULT_ACTIONS_ON_LATEST_ASSISTANT_ONLY = true
 const DEFAULT_DESKTOP_COLLAPSED_INPUT_DOCK = true
 /** 过程折叠：按用户消息把中间过程收成计时折叠块 */
 const DEFAULT_PROCESS_COLLAPSE_ENABLED = false
+/** 时间线提示行（模型/agent 切换、移动、技能、指令更新、合成上下文）默认关闭 */
+const DEFAULT_SHOW_TIMELINE_NOTICES = false
+/** 回合文件变更摘要默认关闭 */
+const DEFAULT_SHOW_TURN_DIFF = false
+/** 压缩排队提示默认关闭 */
+const DEFAULT_SHOW_QUEUED_COMPACTION = false
 /** 输入框选择器默认样式：独立图标按钮 */
 const DEFAULT_COMPOSER_SELECTOR_STYLE: ComposerSelectorStyle = 'icons'
 
@@ -249,6 +319,28 @@ export interface ThemeState {
   queueAutoCollapse: boolean
   /** 毛玻璃效果开关（backdrop-filter blur） */
   glassEffect: boolean
+  /** 外观处理：default = 实色，glass = 玻璃 */
+  appearanceStyle: AppearanceStyle
+  /** 玻璃浓度 0.15–1，越高越实 */
+  glassAlpha: number
+  /** 是否启用壁纸 */
+  wallpaperEnabled: boolean
+  /** 壁纸铺放方式 */
+  wallpaperFit: WallpaperFit
+  /** 对话区是否再叠一层淡图 */
+  wallpaperInChat: boolean
+  /** 壁纸文件名（仅展示，图片本体在 IndexedDB） */
+  wallpaperFileName: string | null
+  /** 运行时壁纸 object URL，不持久化、不随备份导出 */
+  wallpaperUrl: string | null
+  /** 桌面背景是否由页面自己画（抓屏或壁纸），此时不能用系统材质 */
+  liveBackdrop: boolean
+  /** 桌面背景来源：系统材质 / 自己抓屏 */
+  desktopBackdrop: DesktopBackdrop
+  /** 页面磨砂层的半径（px） */
+  backdropBlur: number
+  /** 抓取间隔（ms） */
+  backdropInterval: number
   /** 忙碌时后续消息是否进入队列 */
   queueFollowupMessages: boolean
   /** 输入框的 busy 投递 chip（插队/排队）是否显示 */
@@ -265,6 +357,12 @@ export interface ThemeState {
   desktopCollapsedInputDock: boolean
   /** 过程折叠：用户发送后显示 Working 计时，结束后收成折叠块，最终回答留在外面 */
   processCollapseEnabled: boolean
+  /** 在消息流里显示会话事件提示行（模型/agent 切换、移动、技能、指令更新、合成上下文） */
+  showTimelineNotices: boolean
+  /** 每轮结束后显示文件变更摘要 */
+  showTurnDiff: boolean
+  /** 压缩已入队、尚未开始时显示提示 */
+  showQueuedCompaction: boolean
   /** 输入框选择器样式：独立图标按钮 / DSH 风格汇总菜单 */
   composerSelectorStyle: ComposerSelectorStyle
   /** 代码块语法高亮主题（亮色模式），Shiki theme id */
@@ -307,6 +405,12 @@ const STORAGE_KEY_COMPACT_INLINE_PERMISSION = 'compact-inline-permission'
 const STORAGE_KEY_COMPACTION_AUTO_COLLAPSE = 'compaction-auto-collapse'
 const STORAGE_KEY_QUEUE_AUTO_COLLAPSE = 'queue-auto-collapse'
 const STORAGE_KEY_GLASS_EFFECT = 'glass-effect'
+const STORAGE_KEY_APPEARANCE_STYLE = 'appearance-style'
+const STORAGE_KEY_GLASS_ALPHA = 'glass-alpha'
+const STORAGE_KEY_WALLPAPER_ENABLED = 'wallpaper-enabled'
+const STORAGE_KEY_WALLPAPER_FIT = 'wallpaper-fit'
+const STORAGE_KEY_WALLPAPER_IN_CHAT = 'wallpaper-in-chat'
+const STORAGE_KEY_WALLPAPER_FILE_NAME = 'wallpaper-file-name'
 const STORAGE_KEY_QUEUE_FOLLOWUP_MESSAGES = 'queue-followup-messages'
 const STORAGE_KEY_QUEUE_DELIVERY_CHIP_VISIBLE = 'queue-delivery-chip-visible'
 const STORAGE_KEY_MANUAL_TERMINAL_TITLES = 'manual-terminal-titles'
@@ -315,6 +419,9 @@ const STORAGE_KEY_OUTLINE_CURRENT_HIGHLIGHT = 'outline-current-highlight'
 const STORAGE_KEY_ACTIONS_ON_LATEST_ASSISTANT_ONLY = 'actions-on-latest-assistant-only'
 const STORAGE_KEY_DESKTOP_COLLAPSED_INPUT_DOCK = 'desktop-collapsed-input-dock'
 const STORAGE_KEY_PROCESS_COLLAPSE_ENABLED = 'process-collapse-enabled'
+const STORAGE_KEY_SHOW_TIMELINE_NOTICES = 'show-timeline-notices'
+const STORAGE_KEY_SHOW_TURN_DIFF = 'show-turn-diff'
+const STORAGE_KEY_SHOW_QUEUED_COMPACTION = 'show-queued-compaction'
 const STORAGE_KEY_COMPOSER_SELECTOR_STYLE = 'composer-selector-style'
 const STORAGE_KEY_CODE_BLOCK_THEME_LIGHT = 'code-block-theme-light'
 const STORAGE_KEY_CODE_BLOCK_THEME_DARK = 'code-block-theme-dark'
@@ -355,6 +462,12 @@ function parseCustomCSSSnippets(raw: string | null): CustomCSSSnippet[] {
 class ThemeStore {
   private state: ThemeState
   private listeners = new Set<() => void>()
+  /** 是否已从 IndexedDB 恢复过壁纸 */
+  private wallpaperBlobLoaded = false
+  /** 当前窗口背景模式（含排除标记），避免重复调用 */
+  private backdropMode: string | null = null
+  /** 系统是否真的提供了窗口模糊；null 表示还没问过 */
+  private nativeBlurSupported: boolean | null = null
 
   constructor() {
     // 自定义主题（OpenCode 官方主题 JSON 导入）先于 preset 校验注册——
@@ -459,6 +572,29 @@ class ThemeStore {
     const savedGlassEffect = localStorage.getItem(STORAGE_KEY_GLASS_EFFECT)
     const glassEffect = savedGlassEffect === null ? DEFAULT_GLASS_EFFECT : savedGlassEffect === 'true'
 
+    const appearanceStyle: AppearanceStyle =
+      localStorage.getItem(STORAGE_KEY_APPEARANCE_STYLE) === 'glass' ? 'glass' : DEFAULT_APPEARANCE_STYLE
+    const savedGlassAlpha = localStorage.getItem(STORAGE_KEY_GLASS_ALPHA)
+    const glassAlpha =
+      savedGlassAlpha !== null && Number(savedGlassAlpha) !== LEGACY_GLASS_ALPHA
+        ? clampGlassAlpha(Number(savedGlassAlpha))
+        : DEFAULT_GLASS_ALPHA
+    const wallpaperEnabled = localStorage.getItem(STORAGE_KEY_WALLPAPER_ENABLED) === 'true'
+    const wallpaperFit: WallpaperFit =
+      localStorage.getItem(STORAGE_KEY_WALLPAPER_FIT) === 'contain' ? 'contain' : DEFAULT_WALLPAPER_FIT
+    const wallpaperInChat = localStorage.getItem(STORAGE_KEY_WALLPAPER_IN_CHAT) === 'true'
+    const desktopBackdrop: DesktopBackdrop =
+      localStorage.getItem(STORAGE_KEY_DESKTOP_BACKDROP) === 'live' ? 'live' : DEFAULT_DESKTOP_BACKDROP
+    const savedInterval = Number(localStorage.getItem(STORAGE_KEY_BACKDROP_INTERVAL))
+    const backdropInterval =
+      Number.isFinite(savedInterval) && savedInterval > 0
+        ? Math.min(BACKDROP_INTERVAL_MAX, Math.max(BACKDROP_INTERVAL_MIN, Math.round(savedInterval)))
+        : DEFAULT_BACKDROP_INTERVAL
+    const savedBackdropBlur = Number(localStorage.getItem(STORAGE_KEY_BACKDROP_BLUR))
+    const backdropBlur =
+      Number.isFinite(savedBackdropBlur) && savedBackdropBlur > 0 ? savedBackdropBlur : DEFAULT_BACKDROP_BLUR
+    const wallpaperFileName = localStorage.getItem(STORAGE_KEY_WALLPAPER_FILE_NAME)
+
     const savedQueueFollowupMessages = localStorage.getItem(STORAGE_KEY_QUEUE_FOLLOWUP_MESSAGES)
     const queueFollowupMessages =
       savedQueueFollowupMessages === null ? DEFAULT_QUEUE_FOLLOWUP_MESSAGES : savedQueueFollowupMessages === 'true'
@@ -500,6 +636,17 @@ class ThemeStore {
       savedProcessCollapseEnabled === null
         ? DEFAULT_PROCESS_COLLAPSE_ENABLED
         : savedProcessCollapseEnabled === 'true'
+
+    const savedShowTimelineNotices = localStorage.getItem(STORAGE_KEY_SHOW_TIMELINE_NOTICES)
+    const showTimelineNotices =
+      savedShowTimelineNotices === null ? DEFAULT_SHOW_TIMELINE_NOTICES : savedShowTimelineNotices === 'true'
+
+    const savedShowTurnDiff = localStorage.getItem(STORAGE_KEY_SHOW_TURN_DIFF)
+    const showTurnDiff = savedShowTurnDiff === null ? DEFAULT_SHOW_TURN_DIFF : savedShowTurnDiff === 'true'
+
+    const savedShowQueuedCompaction = localStorage.getItem(STORAGE_KEY_SHOW_QUEUED_COMPACTION)
+    const showQueuedCompaction =
+      savedShowQueuedCompaction === null ? DEFAULT_SHOW_QUEUED_COMPACTION : savedShowQueuedCompaction === 'true'
 
     const savedComposerSelectorStyle = localStorage.getItem(STORAGE_KEY_COMPOSER_SELECTOR_STYLE)
     const composerSelectorStyle: ComposerSelectorStyle =
@@ -543,6 +690,17 @@ class ThemeStore {
       compactionAutoCollapse,
       queueAutoCollapse,
       glassEffect,
+      appearanceStyle,
+      glassAlpha,
+      wallpaperEnabled,
+      wallpaperFit,
+      wallpaperInChat,
+      wallpaperFileName: wallpaperFileName || null,
+      wallpaperUrl: null,
+      liveBackdrop: false,
+      desktopBackdrop,
+      backdropBlur,
+      backdropInterval,
       queueFollowupMessages,
       queueDeliveryChipVisible,
       manualTerminalTitles,
@@ -551,6 +709,9 @@ class ThemeStore {
       actionsOnLatestAssistantOnly,
       desktopCollapsedInputDock,
       processCollapseEnabled,
+      showTimelineNotices,
+      showTurnDiff,
+      showQueuedCompaction,
       composerSelectorStyle,
       codeBlockThemeLight,
       codeBlockThemeDark,
@@ -649,6 +810,65 @@ class ThemeStore {
   get glassEffect() {
     return this.state.glassEffect
   }
+  get appearanceStyle() {
+    return this.state.appearanceStyle
+  }
+  get glassAlpha() {
+    return this.state.glassAlpha
+  }
+  get wallpaperEnabled() {
+    return this.state.wallpaperEnabled
+  }
+  get wallpaperFit() {
+    return this.state.wallpaperFit
+  }
+  get wallpaperInChat() {
+    return this.state.wallpaperInChat
+  }
+  get wallpaperFileName() {
+    return this.state.wallpaperFileName
+  }
+  get wallpaperUrl() {
+    return this.state.wallpaperUrl
+  }
+  get liveBackdrop() {
+    return this.state.liveBackdrop
+  }
+  get desktopBackdrop() {
+    return this.state.desktopBackdrop
+  }
+  get backdropBlur() {
+    return this.state.backdropBlur
+  }
+
+  get backdropInterval() {
+    return this.state.backdropInterval
+  }
+
+  setBackdropInterval(value: number) {
+    const next = Math.min(BACKDROP_INTERVAL_MAX, Math.max(BACKDROP_INTERVAL_MIN, Math.round(value)))
+    if (this.state.backdropInterval === next) return
+    this.state = { ...this.state, backdropInterval: next }
+    localStorage.setItem(STORAGE_KEY_BACKDROP_INTERVAL, String(next))
+    this.emit()
+  }
+
+  setBackdropBlur(value: number) {
+    const next = Math.max(0, Math.min(96, Math.round(value)))
+    if (this.state.backdropBlur === next) return
+    this.state = { ...this.state, backdropBlur: next }
+    localStorage.setItem(STORAGE_KEY_BACKDROP_BLUR, String(next))
+    document.documentElement.style.setProperty('--glass-blur', `${next}px`)
+    this.emit()
+  }
+
+  setDesktopBackdrop(mode: DesktopBackdrop) {
+    if (this.state.desktopBackdrop === mode) return
+    this.state = { ...this.state, desktopBackdrop: mode }
+    localStorage.setItem(STORAGE_KEY_DESKTOP_BACKDROP, mode)
+    this.applyAppearance()
+    this.emit()
+  }
   get queueFollowupMessages() {
     return this.state.queueFollowupMessages
   }
@@ -676,6 +896,18 @@ class ThemeStore {
 
   get processCollapseEnabled() {
     return this.state.processCollapseEnabled
+  }
+
+  get showTimelineNotices() {
+    return this.state.showTimelineNotices
+  }
+
+  get showTurnDiff() {
+    return this.state.showTurnDiff
+  }
+
+  get showQueuedCompaction() {
+    return this.state.showQueuedCompaction
   }
 
   get composerSelectorStyle() {
@@ -1031,6 +1263,86 @@ class ThemeStore {
     this.emit()
   }
 
+  /** 切换外观处理；玻璃需要浮层模糊，顺手打开毛玻璃 */
+  setAppearanceStyle(style: AppearanceStyle) {
+    if (this.state.appearanceStyle === style) return
+    const next: Partial<ThemeState> = { appearanceStyle: style }
+    if (style === 'glass') {
+      if (!this.state.glassEffect) {
+        next.glassEffect = true
+        localStorage.setItem(STORAGE_KEY_GLASS_EFFECT, 'true')
+      }
+      // 玻璃只在暗色下成立，浅色时开启就直接切到深色
+      if (this.getResolvedMode() === 'light') {
+        next.colorMode = 'dark'
+        localStorage.setItem(STORAGE_KEY_COLOR_MODE, 'dark')
+      }
+    }
+    this.state = { ...this.state, ...next }
+    localStorage.setItem(STORAGE_KEY_APPEARANCE_STYLE, style)
+    this.applyGlassClass()
+    this.applyTheme()
+    this.emit()
+  }
+
+  setGlassAlpha(alpha: number) {
+    const clamped = clampGlassAlpha(alpha)
+    if (this.state.glassAlpha === clamped) return
+    this.state = { ...this.state, glassAlpha: clamped }
+    localStorage.setItem(STORAGE_KEY_GLASS_ALPHA, String(clamped))
+    this.applyAppearance()
+    this.emit()
+  }
+
+  setWallpaperEnabled(enabled: boolean) {
+    if (this.state.wallpaperEnabled === enabled) return
+    this.state = { ...this.state, wallpaperEnabled: enabled }
+    localStorage.setItem(STORAGE_KEY_WALLPAPER_ENABLED, String(enabled))
+    this.applyAppearance()
+    this.emit()
+  }
+
+  setWallpaperFit(fit: WallpaperFit) {
+    if (this.state.wallpaperFit === fit) return
+    this.state = { ...this.state, wallpaperFit: fit }
+    localStorage.setItem(STORAGE_KEY_WALLPAPER_FIT, fit)
+    this.applyAppearance()
+    this.emit()
+  }
+
+  setWallpaperInChat(enabled: boolean) {
+    if (this.state.wallpaperInChat === enabled) return
+    this.state = { ...this.state, wallpaperInChat: enabled }
+    localStorage.setItem(STORAGE_KEY_WALLPAPER_IN_CHAT, String(enabled))
+    this.applyAppearance()
+    this.emit()
+  }
+
+  /** 设置壁纸；传 null 清除 */
+  async setWallpaperImage(file: File | Blob | null, fileName?: string | null): Promise<void> {
+    if (!file) {
+      await wallpaperIdbDelete().catch(() => undefined)
+      this.replaceWallpaperUrl(null)
+      this.state = { ...this.state, wallpaperFileName: null, wallpaperEnabled: false }
+      localStorage.removeItem(STORAGE_KEY_WALLPAPER_FILE_NAME)
+      localStorage.setItem(STORAGE_KEY_WALLPAPER_ENABLED, 'false')
+      this.applyAppearance()
+      this.emit()
+      return
+    }
+
+    const compressed = await compressWallpaperImage(file)
+    await wallpaperIdbPut(compressed)
+    const name =
+      fileName ?? (file instanceof File && file.name ? file.name : this.state.wallpaperFileName) ?? 'wallpaper'
+    this.replaceWallpaperUrl(URL.createObjectURL(compressed))
+    this.state = { ...this.state, wallpaperFileName: name, wallpaperEnabled: true }
+    localStorage.setItem(STORAGE_KEY_WALLPAPER_FILE_NAME, name)
+    localStorage.setItem(STORAGE_KEY_WALLPAPER_ENABLED, 'true')
+    this.applyAppearance()
+    this.emit()
+  }
+
   setQueueFollowupMessages(enabled: boolean) {
     if (this.state.queueFollowupMessages === enabled) return
     this.state = { ...this.state, queueFollowupMessages: enabled }
@@ -1087,6 +1399,27 @@ class ThemeStore {
     this.emit()
   }
 
+  setShowTimelineNotices(enabled: boolean) {
+    if (this.state.showTimelineNotices === enabled) return
+    this.state = { ...this.state, showTimelineNotices: enabled }
+    localStorage.setItem(STORAGE_KEY_SHOW_TIMELINE_NOTICES, String(enabled))
+    this.emit()
+  }
+
+  setShowTurnDiff(enabled: boolean) {
+    if (this.state.showTurnDiff === enabled) return
+    this.state = { ...this.state, showTurnDiff: enabled }
+    localStorage.setItem(STORAGE_KEY_SHOW_TURN_DIFF, String(enabled))
+    this.emit()
+  }
+
+  setShowQueuedCompaction(enabled: boolean) {
+    if (this.state.showQueuedCompaction === enabled) return
+    this.state = { ...this.state, showQueuedCompaction: enabled }
+    localStorage.setItem(STORAGE_KEY_SHOW_QUEUED_COMPACTION, String(enabled))
+    this.emit()
+  }
+
   setComposerSelectorStyle(style: ComposerSelectorStyle) {
     if (this.state.composerSelectorStyle === style) return
     this.state = { ...this.state, composerSelectorStyle: style }
@@ -1117,6 +1450,8 @@ class ThemeStore {
     this.applyTheme()
     this.applyFontScale()
     this.applyGlassClass()
+    this.applyAppearance()
+    void this.loadWallpaperFromIDB()
 
     // 监听系统主题变化
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
@@ -1149,6 +1484,9 @@ class ThemeStore {
 
     // 3. 应用自定义 CSS
     this.applyCustomCSS()
+
+    // 4. 明暗切换会影响玻璃浓度（亮色实色），重算一次
+    this.applyAppearance()
 
     // 4. 更新 meta theme-color
     requestAnimationFrame(() => {
@@ -1269,6 +1607,133 @@ class ThemeStore {
     }
   }
 
+  /**
+   * 外观处理：把壁纸和染色浓度写到 DOM。
+   * 内部面板不自己上色（--color-bg-100 在 glass.css 里置空），
+   * 只由 .app-shell 那一层统一涂色，避免嵌套叠加。
+   */
+  private applyAppearance() {
+    const root = document.documentElement
+    if (this.state.appearanceStyle !== 'glass') {
+      root.removeAttribute('data-appearance')
+      root.removeAttribute('data-glass-wallpaper')
+      root.removeAttribute('data-window-transparent')
+      root.removeAttribute('data-live-backdrop')
+      for (const key of GLASS_TOKEN_KEYS) root.style.removeProperty(key)
+      if (this.state.liveBackdrop) this.state = { ...this.state, liveBackdrop: false }
+      this.syncWindowBackdrop('none', '#101014')
+      return
+    }
+
+    root.setAttribute('data-appearance', 'glass')
+    const isDark = this.getResolvedMode() === 'dark'
+    for (const [key, value] of Object.entries(buildGlassTokens(isDark))) {
+      root.style.setProperty(key, value)
+    }
+
+    const url = this.state.wallpaperUrl
+    const hasWallpaper = this.state.wallpaperEnabled && !!url
+    if (hasWallpaper) {
+      root.setAttribute('data-glass-wallpaper', '')
+      root.style.setProperty('--glass-wallpaper', `url("${url}")`)
+      root.style.setProperty('--glass-wallpaper-fit', this.state.wallpaperFit)
+      root.style.setProperty('--glass-art-alpha', this.state.wallpaperInChat ? '0.24' : '0')
+    } else {
+      root.removeAttribute('data-glass-wallpaper')
+      root.style.removeProperty('--glass-wallpaper')
+      root.style.removeProperty('--glass-wallpaper-fit')
+      root.style.setProperty('--glass-art-alpha', '0')
+    }
+
+    // 桌面端没设壁纸时，窗口背后就是桌面。
+    //
+    // Windows 上我们不再用系统材质：把桌面抓下来当页面背景，我们的材质
+    // 才有东西可以糊（窗口背景透明时 Chromium 的 backdrop-filter 是死的）。
+    // 其它平台留给系统材质，页面只负责染色。
+    const wantsDesktop = isDark && !hasWallpaper && isTauri()
+    // Windows 上只走自绘：系统材质档对应用内面板没有帮助，还和录屏互斥
+    const liveBackdrop =
+      wantsDesktop && (getDesktopPlatform() === 'windows' || this.state.desktopBackdrop === 'live')
+    const nativeBackdrop = wantsDesktop && !liveBackdrop
+
+    if (liveBackdrop) root.setAttribute('data-live-backdrop', '')
+    else root.removeAttribute('data-live-backdrop')
+
+    if (nativeBackdrop) root.setAttribute('data-window-transparent', '')
+    else root.removeAttribute('data-window-transparent')
+
+    if (this.state.liveBackdrop !== liveBackdrop) {
+      this.state = { ...this.state, liveBackdrop }
+    }
+
+    // 拿不到系统模糊时（部分 Windows 版本、Linux 合成器），桌面会原样透上来，
+    // 这里把染色抬高一档，保证文字还能读。
+    const alpha = !isDark
+      ? 1
+      : nativeBackdrop && this.nativeBlurSupported === false
+        ? Math.max(this.state.glassAlpha, GLASS_NO_BLUR_ALPHA)
+        : this.state.glassAlpha
+    root.style.setProperty('--glass-alpha', String(alpha))
+    root.style.setProperty('--glass-blur', `${this.state.backdropBlur}px`)
+
+    this.syncWindowBackdrop(
+      liveBackdrop ? 'page' : nativeBackdrop ? 'native' : 'none',
+      isDark ? '#101014' : '#f5f5f6',
+    )
+  }
+
+  /**
+   * 窗口背景模式：native = 系统材质，page = 页面自己画，none = 纯色。
+   * 浏览器里没有窗口可调，直接跳过。
+   */
+  private syncWindowBackdrop(mode: BackdropMode, color: string) {
+    if (!isTauri() || this.backdropMode === mode) return
+    this.backdropMode = mode
+    void import('@tauri-apps/api/core')
+      .then(({ invoke }) => invoke<boolean>('set_window_backdrop', { mode, color }))
+      .then(applied => {
+        if (mode !== 'native') return
+        const supported = applied === true
+        if (this.nativeBlurSupported === supported) return
+        this.nativeBlurSupported = supported
+        this.applyAppearance()
+      })
+      .catch(() => undefined)
+  }
+
+  /** 替换壁纸 object URL（先释放旧的） */
+  private replaceWallpaperUrl(nextUrl: string | null) {
+    const prev = this.state.wallpaperUrl
+    if (prev && prev !== nextUrl) {
+      URL.revokeObjectURL(prev)
+    }
+    this.state = { ...this.state, wallpaperUrl: nextUrl }
+  }
+
+  /** 从 IndexedDB 恢复壁纸；失败就当作没有 */
+  private async loadWallpaperFromIDB() {
+    if (this.wallpaperBlobLoaded) return
+    this.wallpaperBlobLoaded = true
+    try {
+      const blob = await wallpaperIdbGet()
+      if (!blob) {
+        if (this.state.wallpaperEnabled || this.state.wallpaperFileName) {
+          this.state = { ...this.state, wallpaperEnabled: false, wallpaperFileName: null, wallpaperUrl: null }
+          localStorage.setItem(STORAGE_KEY_WALLPAPER_ENABLED, 'false')
+          localStorage.removeItem(STORAGE_KEY_WALLPAPER_FILE_NAME)
+          this.applyAppearance()
+          this.emit()
+        }
+        return
+      }
+      this.replaceWallpaperUrl(URL.createObjectURL(blob))
+      this.applyAppearance()
+      this.emit()
+    } catch {
+      /* IndexedDB 不可用时静默跳过 */
+    }
+  }
+
   private persistCustomCSSSnippets(customCSSSnippets: CustomCSSSnippet[]) {
     localStorage.setItem(STORAGE_KEY_CUSTOM_CSS_SNIPPETS, JSON.stringify(customCSSSnippets))
   }
@@ -1362,6 +1827,19 @@ function normalizeThemeBackup(raw: unknown): ThemeBackup {
     queueAutoCollapse:
       typeof parsed?.queueAutoCollapse === 'boolean' ? parsed.queueAutoCollapse : DEFAULT_QUEUE_AUTO_COLLAPSE,
     glassEffect: typeof parsed?.glassEffect === 'boolean' ? parsed.glassEffect : DEFAULT_GLASS_EFFECT,
+    appearanceStyle: parsed?.appearanceStyle === 'glass' ? 'glass' : DEFAULT_APPEARANCE_STYLE,
+    glassAlpha: clampGlassAlpha(typeof parsed?.glassAlpha === 'number' ? parsed.glassAlpha : DEFAULT_GLASS_ALPHA),
+    backdropBlur: typeof parsed?.backdropBlur === 'number' ? parsed.backdropBlur : DEFAULT_BACKDROP_BLUR,
+    backdropInterval: DEFAULT_BACKDROP_INTERVAL,
+    wallpaperEnabled:
+      typeof parsed?.wallpaperEnabled === 'boolean' ? parsed.wallpaperEnabled : DEFAULT_WALLPAPER_ENABLED,
+    wallpaperFit: parsed?.wallpaperFit === 'contain' ? 'contain' : DEFAULT_WALLPAPER_FIT,
+    wallpaperInChat:
+      typeof parsed?.wallpaperInChat === 'boolean' ? parsed.wallpaperInChat : DEFAULT_WALLPAPER_IN_CHAT,
+    wallpaperFileName: typeof parsed?.wallpaperFileName === 'string' ? parsed.wallpaperFileName : null,
+    wallpaperUrl: null,
+    liveBackdrop: false,
+    desktopBackdrop: DEFAULT_DESKTOP_BACKDROP,
     queueFollowupMessages:
       typeof parsed?.queueFollowupMessages === 'boolean'
         ? parsed.queueFollowupMessages
@@ -1391,6 +1869,15 @@ function normalizeThemeBackup(raw: unknown): ThemeBackup {
       typeof parsed?.processCollapseEnabled === 'boolean'
         ? parsed.processCollapseEnabled
         : DEFAULT_PROCESS_COLLAPSE_ENABLED,
+    showTimelineNotices:
+      typeof parsed?.showTimelineNotices === 'boolean'
+        ? parsed.showTimelineNotices
+        : DEFAULT_SHOW_TIMELINE_NOTICES,
+    showTurnDiff: typeof parsed?.showTurnDiff === 'boolean' ? parsed.showTurnDiff : DEFAULT_SHOW_TURN_DIFF,
+    showQueuedCompaction:
+      typeof parsed?.showQueuedCompaction === 'boolean'
+        ? parsed.showQueuedCompaction
+        : DEFAULT_SHOW_QUEUED_COMPACTION,
     composerSelectorStyle:
       parsed?.composerSelectorStyle === 'seat' ? 'seat' : DEFAULT_COMPOSER_SELECTOR_STYLE,
     codeBlockThemeLight: normalizeCodeBlockTheme(
@@ -1446,6 +1933,16 @@ export function importThemeBackup(raw: unknown): void {
   localStorage.setItem(STORAGE_KEY_COMPACTION_AUTO_COLLAPSE, String(backup.compactionAutoCollapse))
   localStorage.setItem(STORAGE_KEY_QUEUE_AUTO_COLLAPSE, String(backup.queueAutoCollapse))
   localStorage.setItem(STORAGE_KEY_GLASS_EFFECT, String(backup.glassEffect))
+  localStorage.setItem(STORAGE_KEY_APPEARANCE_STYLE, backup.appearanceStyle)
+  localStorage.setItem(STORAGE_KEY_GLASS_ALPHA, String(backup.glassAlpha))
+  localStorage.setItem(STORAGE_KEY_WALLPAPER_ENABLED, String(backup.wallpaperEnabled))
+  localStorage.setItem(STORAGE_KEY_WALLPAPER_FIT, backup.wallpaperFit)
+  localStorage.setItem(STORAGE_KEY_WALLPAPER_IN_CHAT, String(backup.wallpaperInChat))
+  if (backup.wallpaperFileName) {
+    localStorage.setItem(STORAGE_KEY_WALLPAPER_FILE_NAME, backup.wallpaperFileName)
+  } else {
+    localStorage.removeItem(STORAGE_KEY_WALLPAPER_FILE_NAME)
+  }
   localStorage.setItem(STORAGE_KEY_QUEUE_FOLLOWUP_MESSAGES, String(backup.queueFollowupMessages))
   localStorage.setItem(STORAGE_KEY_QUEUE_DELIVERY_CHIP_VISIBLE, String(backup.queueDeliveryChipVisible))
   localStorage.setItem(STORAGE_KEY_MANUAL_TERMINAL_TITLES, String(backup.manualTerminalTitles))
@@ -1457,6 +1954,9 @@ export function importThemeBackup(raw: unknown): void {
   )
   localStorage.setItem(STORAGE_KEY_DESKTOP_COLLAPSED_INPUT_DOCK, String(backup.desktopCollapsedInputDock))
   localStorage.setItem(STORAGE_KEY_PROCESS_COLLAPSE_ENABLED, String(backup.processCollapseEnabled))
+  localStorage.setItem(STORAGE_KEY_SHOW_TIMELINE_NOTICES, String(backup.showTimelineNotices))
+  localStorage.setItem(STORAGE_KEY_SHOW_TURN_DIFF, String(backup.showTurnDiff))
+  localStorage.setItem(STORAGE_KEY_SHOW_QUEUED_COMPACTION, String(backup.showQueuedCompaction))
   localStorage.setItem(STORAGE_KEY_COMPOSER_SELECTOR_STYLE, backup.composerSelectorStyle)
   localStorage.setItem(STORAGE_KEY_CODE_BLOCK_THEME_LIGHT, backup.codeBlockThemeLight)
   localStorage.setItem(STORAGE_KEY_CODE_BLOCK_THEME_DARK, backup.codeBlockThemeDark)

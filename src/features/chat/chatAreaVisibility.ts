@@ -7,6 +7,7 @@ import {
   isUserMessage,
   userMessageText,
 } from '../../types/api/message'
+import { shellResultFailed } from '../../types/api'
 import { isInterruptedError } from '../../utils/errorMessage'
 
 function isVisibleThinking(content: AssistantContent): boolean {
@@ -19,27 +20,78 @@ function isVisibleText(content: AssistantContent): boolean {
 
 /** 用户消息在 v2 里自带正文与附件 */
 function userMessageHasAnyContent(message: UserMessage): boolean {
-  return userMessageText(message).length > 0 || (message.files?.length ?? 0) > 0 || (message.agents?.length ?? 0) > 0
+  return (
+    userMessageText(message).length > 0 ||
+    (message.files?.length ?? 0) > 0 ||
+    (message.agents?.length ?? 0) > 0 ||
+    (message.skills?.length ?? 0) > 0
+  )
 }
 
 function userMessageHasRenderableContent(message: UserMessage): boolean {
   return (
-    userMessageText(message).trim().length > 0 || (message.files?.length ?? 0) > 0 || (message.agents?.length ?? 0) > 0
+    userMessageText(message).trim().length > 0 ||
+    (message.files?.length ?? 0) > 0 ||
+    (message.agents?.length ?? 0) > 0 ||
+    (message.skills?.length ?? 0) > 0
+  )
+}
+
+/** synthetic 的可见性：官方 timelineNoticeRequired（错误 / shell 失败必须露出） */
+function syntheticNoticeRequired(message: Extract<SessionMessageInfo, { type: 'synthetic' }>): boolean {
+  const metadata = message.metadata as Record<string, unknown> | undefined
+  return (
+    metadata?.['state'] === 'error' ||
+    (metadata?.['source'] === 'shell' && metadata?.['state'] === 'completed' && shellResultFailed(metadata))
+  )
+}
+
+/**
+ * 提示行是否要占位。
+ * - 普通切换 / 技能 / 指令更新：受「显示会话事件提示」开关控制，默认关。
+ * - synthetic 错误 / shell 失败：是唯一能证明失败发生过的记录，不受开关影响，
+ *   否则用户关掉提示后，失败就完全不可见了。
+ */
+function noticeVisible(message: SessionMessageInfo, showNotices: boolean): boolean {
+  if (!isNoticeMessage(message)) return false
+  if (message.type === 'synthetic' && syntheticNoticeRequired(message)) return true
+  return showNotices
+}
+
+/**
+ * 官方 projection.ts 的 `isNotice`：正文之外的记录行（切换记录 / 系统提示 /
+ * 技能 / 合成上下文）。它们也是一条消息，只是渲染成细提示行。
+ *
+ * synthetic 特殊：没有 description 的纯上下文（如注入的规则文本）默认不占行，
+ * 但错误与 shell 失败必须可见，否则信息流里会凭空少一条失败记录。
+ */
+export function isNoticeMessage(message: SessionMessageInfo): boolean {
+  if (message.type === 'synthetic') {
+    return !!message.description?.trim() || syntheticNoticeRequired(message)
+  }
+  return (
+    message.type === 'system' ||
+    message.type === 'skill' ||
+    message.type === 'agent-switched' ||
+    message.type === 'model-switched' ||
+    message.type === 'location-switched'
   )
 }
 
 /** 对应旧视图模型的 `message.parts.length !== 0`（原始存在性，不做 trim） */
-function hasAnyContent(message: SessionMessageInfo): boolean {
+function hasAnyContent(message: SessionMessageInfo, showNotices: boolean): boolean {
   if (isUserMessage(message)) return userMessageHasAnyContent(message)
   if (isAssistantMessage(message)) return message.content.length > 0 || message.retry != null
   if (message.type === 'compaction') return true
   // `!` shell 命令消息：command + 状态即内容（官方 timeline 里独立成行）
   if (message.type === 'shell') return true
+  // 切换记录 / 系统提示 / 技能 / 合成上下文：官方 timeline 的 Notice 行
+  if (noticeVisible(message, showNotices)) return true
   return false
 }
 
 /** 对应旧视图模型的 `hasRenderableParts(message)` */
-function hasRenderableContent(message: SessionMessageInfo): boolean {
+function hasRenderableContent(message: SessionMessageInfo, showNotices: boolean): boolean {
   if (isUserMessage(message)) return userMessageHasRenderableContent(message)
   if (isAssistantMessage(message)) {
     if (message.retry) return true
@@ -50,11 +102,12 @@ function hasRenderableContent(message: SessionMessageInfo): boolean {
   }
   if (message.type === 'compaction') return true
   if (message.type === 'shell') return true
+  if (noticeVisible(message, showNotices)) return true
   return false
 }
 
-function messageHasContent(message: SessionMessageInfo): boolean {
-  const hasRenderable = hasRenderableContent(message)
+function messageHasContent(message: SessionMessageInfo, showNotices: boolean): boolean {
+  const hasRenderable = hasRenderableContent(message, showNotices)
   // 有非 abort 错误的助手消息始终可见（展示错误信息）。
   // abort 只有在已经产生可见内容时才显示；空 abort 不占信息流位置。
   if (isAssistantMessage(message) && message.error) {
@@ -63,7 +116,7 @@ function messageHasContent(message: SessionMessageInfo): boolean {
   // 失败 idle 标记（会话级错误，如 pre-promotion failure）始终可见：
   // 它没有 assistant 消息，错误卡片就是它唯一的内容（官方 isFailedIdle → Error 卡片）
   if (isFailedIdleMessage(message)) return true
-  if (!hasAnyContent(message)) {
+  if (!hasAnyContent(message, showNotices)) {
     // 任何角色的空消息都不可见：没有内容可展示
     // 内容到达后自动进入可见列表；abort 后永远不会有内容 → 永远不可见
     return false
@@ -147,7 +200,11 @@ export function getVisibleMessageForkTargetId(entry: VisibleMessageEntry): strin
   return entry.sourceIds[entry.sourceIds.length - 1] || entry.message.id
 }
 
-export function buildVisibleMessageEntries(messages: SessionMessageInfo[]): VisibleMessageEntry[] {
+export function buildVisibleMessageEntries(
+  messages: SessionMessageInfo[],
+  options?: { showNotices?: boolean },
+): VisibleMessageEntry[] {
+  const showNotices = options?.showNotices ?? false
   // 防御性去重：保证输入无重复 ID
   const seenIds = new Set<string>()
   const unique: SessionMessageInfo[] = []
@@ -157,7 +214,7 @@ export function buildVisibleMessageEntries(messages: SessionMessageInfo[]): Visi
       unique.push(m)
     }
   }
-  const filteredMessages = unique.filter(messageHasContent)
+  const filteredMessages = unique.filter(message => messageHasContent(message, showNotices))
   const result: VisibleMessageEntry[] = []
 
   for (let i = 0; i < filteredMessages.length; i++) {
