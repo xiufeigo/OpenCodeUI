@@ -1,5 +1,6 @@
 {
   "showLess": "Show less",
+  "showAll": "Show all",
   "showMore": "Show more",
   "hideSystemContext": "Hide",
   "showSystemContext": "Show system context ({{count}})",
@@ -123,6 +124,8 @@
   },
   "system": {
     "retryAttempt": "Retry attempt {{attempt}}",
+    "retryWaiting": "Retrying in {{seconds}}s (attempt {{attempt}})",
+    "retryNow": "Retrying now (attempt {{attempt}})",
     "retryable": "Retryable",
     "statusCode": "Status: {{code}}",
     "contextCompacted": "History compacted",
@@ -136,6 +139,22 @@
     "autoPrefix": "auto-",
     "filesChanged": "{{count}} file changed",
     "filesChanged_other": "{{count}} files changed"
+  },
+  "notice": {
+    "agentChangedDetail": "Agent changed · {{previous}} → {{agent}}",
+    "agentChangedTo": "Agent changed · {{agent}}",
+    "modelSwitched": "Switched to {{model}}",
+    "modelSwitchedVariant": "Switched to {{model}} ({{variant}})",
+    "movedTo": "Moved to {{directory}}",
+    "skillActivated": "Skill · {{name}}",
+    "failed": "{{actor}} failed",
+    "cancelled": "{{actor}} cancelled",
+    "finished": "{{actor}} finished",
+    "actorShell": "Shell",
+    "actorAgent": "Agent",
+    "instructionsUpdatedDetail": "Instructions updated · {{sources}}",
+    "restart": "Continuing after restart",
+    "compactionQueued": "Session compaction queued"
   },
   "subtask": {
     "running": "Running",
@@ -164,6 +183,8 @@
     "apiError": "API Error",
     "apiErrorWithCode": "API Error ({{code}})",
     "unknownError": "Error",
-    "unknownErrorDesc": "An unknown error occurred."
+    "unknownErrorDesc": "An unknown error occurred.",
+    "freeLimitTitle": "You've used today's free messages.",
+    "freeLimitReset": "You've used today's free messages. They reset at {{time}}."
   }
 }

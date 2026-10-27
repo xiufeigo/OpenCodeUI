@@ -4,6 +4,7 @@ import { RetryIcon, ChevronDownIcon } from '../../../components/Icons'
 import { CopyButton } from '../../../components/ui'
 import { MarkdownRenderer } from '../../../components/MarkdownRenderer'
 import { useDisclosureScrollLock } from '../../../hooks'
+import { useNow } from '../../../hooks/useNow'
 import { useTheme } from '../../../hooks/useTheme'
 import type { SessionMessageAssistant, SessionMessageCompaction, SessionMessageInfo } from '@opencode/client/promise'
 import { useUiDisclosureState } from '../../../utils/uiDisclosureState'
@@ -39,8 +40,16 @@ export const RetryPartView = memo(function RetryPartView({ retry, stateKey }: Re
   const shouldRenderBody = useMessageExpandRender(expanded)
   const { rootRef, headerRef, withScrollLock } = useDisclosureScrollLock()
   const { attempt, error, at } = retry
+  const now = useNow(250)
 
-  const timeStr = new Date(at).toLocaleTimeString()
+  // `at` 是下一次重试的绝对时间戳（与官方 session-retry.tsx 的 `next - Date.now()` 一致）。
+  // 超过 10 分钟视为数据异常（旧版本/脏数据），宁可不显示倒计时。
+  const remainingMs = at - now
+  const showCountdown = remainingMs > 0 && remainingMs <= 10 * 60_000
+  const info = showCountdown
+    ? t('system.retryWaiting', { attempt, seconds: Math.ceil(remainingMs / 1000) })
+    : t('system.retryNow', { attempt })
+
   const isRetryable = isRetryableStatus(error)
 
   return (
@@ -54,8 +63,12 @@ export const RetryPartView = memo(function RetryPartView({ retry, stateKey }: Re
       >
         <RetryIcon className="w-4 h-4 text-warning-100 flex-shrink-0" />
         <div className="flex-1 min-w-0">
-          <span className="text-[length:var(--fs-base)] text-warning-100">{t('system.retryAttempt', { attempt })}</span>
-          <span className="text-[length:var(--fs-sm)] text-text-500 ml-2">{timeStr}</span>
+          <span className="text-[length:var(--fs-base)] text-warning-100">{info}</span>
+          {error.message && (
+            <span className="block truncate text-[length:var(--fs-sm)] text-text-500">
+              {unwrapErrorMessage(error.message)}
+            </span>
+          )}
         </div>
         {isRetryable && (
           <span className="text-[length:var(--fs-xxs)] text-warning-100/70 bg-warning-100/10 px-1.5 py-0.5 rounded">
@@ -99,13 +112,22 @@ interface CompactionPartViewProps {
   canUndo?: boolean
 }
 
-/** 官方 TimelineSeparator 同款：细分隔线 + 中间标签 */
-function Separator({ label }: { label: string }) {
+/**
+ * 官方 TimelineSeparator 同款：细分隔线 + 中间标签。
+ * 时间线提示行（切换记录 / 技能 / 指令更新 / 压缩排队）都复用它。
+ */
+export function TimelineSeparator({ label, title }: { label: string; title?: string }) {
   return (
-    <div className="flex items-center gap-2 px-3 py-1.5 text-[length:var(--fs-sm)] text-text-500">
-      <span className="flex-1 h-px bg-border-200/70" />
-      <span className="shrink-0 text-[length:var(--fs-xs)] leading-none text-text-400">{label}</span>
-      <span className="flex-1 h-px bg-border-200/70" />
+    <div
+      data-component="timeline-separator"
+      className="flex items-center gap-2 px-3 py-1.5 text-[length:var(--fs-sm)] text-text-500"
+      title={title ?? label}
+    >
+      <span className="h-px min-w-0 flex-1 bg-border-200/70" />
+      <span className="min-w-0 max-w-[85%] shrink truncate text-[length:var(--fs-xs)] leading-none text-text-400">
+        {label}
+      </span>
+      <span className="h-px min-w-0 flex-1 bg-border-200/70" />
     </div>
   )
 }
@@ -214,7 +236,7 @@ export const CompactionPartView = memo(function CompactionPartView({
   if (!hasContent) {
     return (
       <div data-component="session-compaction-message">
-        <Separator label={headerLabel} />
+        <TimelineSeparator label={headerLabel} />
       </div>
     )
   }

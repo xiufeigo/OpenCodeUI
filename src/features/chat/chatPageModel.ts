@@ -1,6 +1,7 @@
 import type { AssistantMessage, SessionMessageInfo, ToolState, UserMessage } from '../../types/api/message'
 import { contentEntries, isAssistantMessage, isFailedIdleMessage, isUserMessage, userMessageText } from '../../types/api/message'
 import { isInterruptedError } from '../../utils/errorMessage'
+import { isNoticeMessage } from './chatAreaVisibility'
 
 export const PAGE_MESSAGE_COUNT = 20
 export const PAGE_EXTREME_RENDER_WEIGHT = 700
@@ -743,6 +744,14 @@ export function buildTurnLatestAssistantIdSet(visibleMessages: SessionMessageInf
   return latestIds
 }
 
+/** 回合文件变更摘要（附着在回合最后一条正文消息上，渲染在其正文末尾） */
+export interface TurnDiffInfo {
+  /** 该轮用户消息 id */
+  from: string
+  /** 各 step 记录到的变更文件（去重排序） */
+  files: string[]
+}
+
 /** 过程折叠：虚拟时间线上的一行 */
 export type ProcessTimelineItem =
   | {
@@ -751,6 +760,8 @@ export type ProcessTimelineItem =
       message: SessionMessageInfo
       /** 过程壳内消息的内容范围 */
       processContentScope?: 'process' | 'final' | 'inline'
+      /** 回合文件变更摘要（仅挂在回合最后一条正文消息上） */
+      turnDiff?: TurnDiffInfo
     }
   | {
       kind: 'process-shell'
@@ -766,6 +777,8 @@ export type ProcessTimelineItem =
       }>
       /** 壳外最终回答（结束后才有） */
       finalMessage?: SessionMessageInfo
+      /** 回合文件变更摘要：有壳外 final 时挂在 final 上，没有时由壳外单独渲染 */
+      turnDiff?: TurnDiffInfo
     }
 
 /** 两行是否可共享同一对象（VirtualRow 靠 item 引用短路） */
@@ -774,7 +787,12 @@ export function sameProcessTimelineItem(a: ProcessTimelineItem, b: ProcessTimeli
   if (a.kind !== b.kind || a.key !== b.key) return false
 
   if (a.kind === 'message' && b.kind === 'message') {
-    return a.message === b.message && a.processContentScope === b.processContentScope
+    return (
+      a.message === b.message &&
+      a.processContentScope === b.processContentScope &&
+      a.turnDiff?.from === b.turnDiff?.from &&
+      a.turnDiff?.files === b.turnDiff?.files
+    )
   }
 
   if (a.kind === 'process-shell' && b.kind === 'process-shell') {
@@ -784,6 +802,8 @@ export function sameProcessTimelineItem(a: ProcessTimelineItem, b: ProcessTimeli
       a.durationMs !== b.durationMs ||
       a.isActive !== b.isActive ||
       a.finalMessage !== b.finalMessage ||
+      a.turnDiff?.from !== b.turnDiff?.from ||
+      a.turnDiff?.files !== b.turnDiff?.files ||
       a.children.length !== b.children.length
     ) {
       return false
@@ -829,6 +849,65 @@ export function reuseProcessTimelineItems(
   }
 
   return allSame ? previous : result
+}
+
+/** 一个回合里所有 step 记录到的变更文件（去重、排序，官方 sort 同款） */
+function collectTurnFiles(assistants: AssistantMessage[]): string[] {
+  const files = new Set<string>()
+  for (const message of assistants) {
+    for (const file of message.snapshot?.files ?? []) files.add(file)
+  }
+  return [...files].sort()
+}
+
+/**
+ * 平铺模式（processCollapseEnabled=false）：一行一条消息。
+ *
+ * 回合结束后仍要补一条文件变更摘要（官方 TurnDiff 行），否则关掉过程折叠
+ * 就看不出这轮改了什么。`isStreaming` 为 true 时最后一个回合还没结束，
+ * 先不显示（官方也是 idle 之后才追加）。
+ */
+export function buildFlatTimeline(
+  messages: SessionMessageInfo[],
+  sessionIsStreaming: boolean,
+  turnDiff = false,
+): ProcessTimelineItem[] {
+  const items: ProcessTimelineItem[] = messages.map(message => ({
+    kind: 'message',
+    key: message.id,
+    message,
+  }))
+  if (!turnDiff) return items
+
+  const turns: Array<{ userId: string; lastAssistantIndex: number | null; files: Set<string> }> = []
+  let current: (typeof turns)[number] | null = null
+
+  messages.forEach((message, index) => {
+    if (isUserMessage(message)) {
+      if (current) turns.push(current)
+      current = { userId: message.id, lastAssistantIndex: null, files: new Set() }
+      return
+    }
+    if (!current) return
+    if (isAssistantMessage(message)) {
+      current.lastAssistantIndex = index
+      for (const file of message.snapshot?.files ?? []) current.files.add(file)
+    }
+  })
+  if (current) turns.push(current)
+
+  turns.forEach((turn, index) => {
+    if (turn.lastAssistantIndex == null || turn.files.size === 0) return
+    if (index === turns.length - 1 && sessionIsStreaming) return
+    const target = items[turn.lastAssistantIndex]
+    if (target?.kind !== 'message') return
+    items[turn.lastAssistantIndex] = {
+      ...target,
+      turnDiff: { from: turn.userId, files: [...turn.files].sort() },
+    }
+  })
+
+  return items
 }
 
 function assistantHasLiveWork(message: AssistantMessage): boolean {
@@ -885,6 +964,8 @@ export function buildProcessTimeline(
     messageHasFinal: (message: AssistantMessage) => boolean
     /** 用户消息入场生长是否完成；缺省视为已完成（历史消息 / 测试） */
     isUserEntryReady?: (userMessageId: string) => boolean
+    /** 是否在回合结束后追加文件变更摘要（默认关闭） */
+    turnDiff?: boolean
   },
 ): ProcessTimelineItem[] {
   const {
@@ -893,12 +974,18 @@ export function buildProcessTimeline(
     messageHasProcess,
     messageHasFinal,
     isUserEntryReady = () => true,
+    turnDiff = false,
   } = options
   const items: ProcessTimelineItem[] = []
 
   type TurnBag = {
     user: UserMessage | null
     assistants: AssistantMessage[]
+    /**
+     * 提示行（模型/agent 切换、skill、system、synthetic）。`at` = 出现时的
+     * assistant 数量：0 表示排在本回合过程壳之前，>0 表示之后。
+     */
+    notices: Array<{ at: number; message: SessionMessageInfo }>
     /** 独立成行的消息（shell 命令等）：不进任何回合壳，按原位平铺 */
     standalone?: SessionMessageInfo
     /**
@@ -914,7 +1001,7 @@ export function buildProcessTimeline(
   for (const message of visibleMessages) {
     if (isUserMessage(message)) {
       if (current) turns.push(current)
-      current = { user: message, assistants: [] }
+      current = { user: message, assistants: [], notices: [] }
       continue
     }
     // shell 命令消息独立成行（官方 projection.ts:188：shell 是独立 timeline 行），
@@ -924,7 +1011,24 @@ export function buildProcessTimeline(
         turns.push(current)
         current = null
       }
-      turns.push({ user: null, assistants: [], standalone: message })
+      turns.push({ user: null, assistants: [], notices: [], standalone: message })
+      continue
+    }
+    // 压缩消息独立成行（官方 projection：compaction 是独立 timeline entry），
+    // 并结束当前回合，避免压缩摘要被算进上一回合的过程壳。
+    // 漏掉这个分支会让压缩消息直接掉出时间线——压缩了但 UI 什么都不显示。
+    if (message.type === 'compaction') {
+      if (current) {
+        turns.push(current)
+        current = null
+      }
+      turns.push({ user: null, assistants: [], notices: [], standalone: message })
+      continue
+    }
+    // 提示行：跟当前回合走（官方放进 turn 的 entries），没有回合就独立平铺
+    if (isNoticeMessage(message)) {
+      if (current) current.notices.push({ at: current.assistants.length, message })
+      else items.push({ kind: 'message', key: message.id, message })
       continue
     }
     // 失败的 idle 标记：会话级错误（如 prompt 没能提升成 assistant 工作）只在这条
@@ -1005,6 +1109,15 @@ export function buildProcessTimeline(
     items.push({ kind: 'message', key: failedIdle.id, message: failedIdle })
   }
 
+  /** 提示行跟随回合：0 的排在过程壳前，其余排在壳后 */
+  const emitNotices = (turn: TurnBag, beforeFirstAssistant: boolean) => {
+    for (const notice of turn.notices) {
+      if ((notice.at === 0) === beforeFirstAssistant) {
+        items.push({ kind: 'message', key: notice.message.id, message: notice.message })
+      }
+    }
+  }
+
   for (const turn of turns) {
     if (turn.standalone) {
       items.push({ kind: 'message', key: turn.standalone.id, message: turn.standalone })
@@ -1016,18 +1129,23 @@ export function buildProcessTimeline(
 
     const assistants = turn.assistants
     if (!turn.user && assistants.length === 0) {
+      emitNotices(turn, true)
       appendFailedIdle(turn)
       continue
     }
 
     // 无 user 的续段：平铺
     if (!turn.user) {
+      emitNotices(turn, true)
       for (const m of assistants) {
         items.push({ kind: 'message', key: m.id, message: m })
       }
+      emitNotices(turn, false)
       appendFailedIdle(turn)
       continue
     }
+
+    emitNotices(turn, true)
 
     const userId = turn.user.id
     const turnIsActive = activeUserId != null && userId === activeUserId
@@ -1060,6 +1178,9 @@ export function buildProcessTimeline(
 
     const finalOutside = !turnIsActive && finalAssistant && messageHasFinal(finalAssistant) ? finalAssistant : undefined
 
+    const files = !turnIsActive && turnDiff ? collectTurnFiles(assistants) : []
+    const turnDiffInfo: TurnDiffInfo | undefined = files.length > 0 ? { from: userId, files } : undefined
+
     // 进行中或有过程内容 → 挂壳
     // 更晚的空 pending 回合：turnIsActive=false 且无 children → 不挂壳（只显示 user）
     // 纯 final 正文、无过程 → 直接平铺
@@ -1073,18 +1194,27 @@ export function buildProcessTimeline(
         isActive: turnIsActive,
         children,
         finalMessage: finalOutside,
+        turnDiff: turnDiffInfo,
       })
     } else if (finalOutside) {
       items.push({
         kind: 'message',
         key: finalOutside.id,
         message: finalOutside,
+        turnDiff: turnDiffInfo,
       })
     } else {
-      for (const m of assistants) {
-        items.push({ kind: 'message', key: m.id, message: m })
-      }
+      assistants.forEach((m, index) => {
+        items.push({
+          kind: 'message',
+          key: m.id,
+          message: m,
+          turnDiff: index === assistants.length - 1 ? turnDiffInfo : undefined,
+        })
+      })
     }
+
+    emitNotices(turn, false)
 
     appendFailedIdle(turn)
   }

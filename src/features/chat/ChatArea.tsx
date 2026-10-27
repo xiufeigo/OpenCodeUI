@@ -28,8 +28,9 @@ import type { SessionMessageInfo } from '../../types/api/message'
 import { isAssistantMessage, isUserMessage } from '../../types/api/message'
 import type { APIError } from '../../types/api/common'
 import { RetryStatusInline, type RetryStatusInlineData } from './RetryStatusInline'
+import { CompactionQueuedView, TurnDiffPartView } from '../message/parts'
 import { QueueBubbles } from './QueueBubbles'
-import type { QueuedUserPrompt } from '../../store/inboxStore'
+import type { QueuedUserPrompt, QueuedCompaction } from '../../store/inboxStore'
 import {
   buildVisibleMessageEntries,
   getVisibleMessageForkTargetId,
@@ -38,11 +39,13 @@ import {
 import { AT_BOTTOM_THRESHOLD_PX } from '../../constants'
 import { useChatViewport } from './chatViewport'
 import {
+  buildFlatTimeline,
   buildProcessTimeline,
   buildTurnDurationMap,
   buildTurnLatestAssistantIdSet,
   reuseProcessTimelineItems,
   type ProcessTimelineItem,
+  type TurnDiffInfo,
 } from './chatPageModel'
 import { useTheme } from '../../hooks/useTheme'
 import { getStreamingHotIndexes, getTimelineRowYClass, mergeVirtualRangeIndexes } from './chatAreaUtils'
@@ -62,6 +65,7 @@ const EMPTY_WORKING_SHELL_EXTRA_DELAY_MS = 500
 const DEFAULT_BOTTOM_SPACER = 256
 const SESSION_CACHE_LIMIT = 16
 const EMPTY_QUEUE: QueuedUserPrompt[] = []
+const EMPTY_COMPACTIONS: QueuedCompaction[] = []
 
 const bottomSpacerHeight = (bottomPadding: number) => (bottomPadding > 0 ? bottomPadding + 48 : DEFAULT_BOTTOM_SPACER)
 
@@ -106,6 +110,8 @@ interface ChatAreaProps {
   retryStatus?: RetryStatusInlineData | null
   /** 下轮队列气泡（PiUI 同款：融在消息流尾部，虚拟行之后、重试提示之前） */
   queuedFollowUps?: QueuedUserPrompt[]
+  /** 已入队、尚未开始的压缩（官方 CompactionQueued 行，排在队列气泡之前） */
+  queuedCompactions?: QueuedCompaction[]
   /** 正在编辑的队列条目 id（该条目的「撤回编辑」切换为「取消编辑」） */
   queueEditingId?: string
   /** 队列 mutation 投影（编辑/重排期间显示期望形态，无事件落地跳变） */
@@ -143,6 +149,9 @@ interface MessageBodyProps {
   processContentScope?: 'all' | 'process' | 'final' | 'inline'
   /** step 完成信息是否由本实例渲染（壳内那截且壳外还有一份时传 false） */
   stepFinishVisible?: boolean
+  /** 回合文件变更摘要（渲染在正文末尾、step 信息之前） */
+  turnDiff?: TurnDiffInfo
+  sessionId?: string | null
   onEntryGrowComplete?: (messageId: string) => void
 }
 
@@ -158,6 +167,8 @@ const MessageBody = memo(function MessageBody({
   allowStreamingLayoutAnimation,
   processContentScope = 'all',
   stepFinishVisible,
+  turnDiff,
+  sessionId,
   onEntryGrowComplete,
 }: MessageBodyProps) {
   const messageId = message.id
@@ -183,6 +194,8 @@ const MessageBody = memo(function MessageBody({
             onFork={onFork}
             forkMessageId={forkMessageId}
             canUndo={undoable ? canUndo : undefined}
+            turnDiff={turnDiff}
+            sessionId={sessionId}
             onEntryGrowComplete={isUser ? onEntryGrowComplete : undefined}
           />
         </div>
@@ -194,6 +207,7 @@ const MessageBody = memo(function MessageBody({
 interface RowProps {
   virtualItem: VirtualItem
   item: ProcessTimelineItem
+  sessionId: string | null
   maxWidthClass: string
   paddingClass: string
   rowYClass: string
@@ -213,6 +227,7 @@ const VirtualRow = memo(
   function VirtualRow({
     virtualItem,
     item,
+    sessionId,
     maxWidthClass,
     paddingClass,
     rowYClass,
@@ -265,6 +280,8 @@ const VirtualRow = memo(
               }
               allowStreamingLayoutAnimation={allowStreamingLayoutAnimation}
               processContentScope={item.processContentScope ?? 'all'}
+              turnDiff={item.turnDiff}
+              sessionId={sessionId}
               onEntryGrowComplete={onEntryGrowComplete}
             />
           ) : (
@@ -307,6 +324,16 @@ const VirtualRow = memo(
                     isTurnLatestAssistant
                     allowStreamingLayoutAnimation={allowStreamingLayoutAnimation}
                     processContentScope="final"
+                    turnDiff={item.turnDiff}
+                    sessionId={sessionId}
+                  />
+                )}
+                {!item.finalMessage && item.turnDiff && (
+                  <TurnDiffPartView
+                    sessionId={sessionId}
+                    from={item.turnDiff.from}
+                    files={item.turnDiff.files}
+                    stateKey={`turn-diff:${item.turnDiff.from}`}
                   />
                 )}
               </div>
@@ -321,6 +348,7 @@ const VirtualRow = memo(
     prev.virtualItem.start === next.virtualItem.start &&
     prev.virtualItem.size === next.virtualItem.size &&
     prev.item === next.item &&
+    prev.sessionId === next.sessionId &&
     prev.maxWidthClass === next.maxWidthClass &&
     prev.paddingClass === next.paddingClass &&
     prev.rowYClass === next.rowYClass &&
@@ -367,6 +395,7 @@ export const ChatArea = memo(
         registerMessage,
         retryStatus = null,
         queuedFollowUps = EMPTY_QUEUE,
+        queuedCompactions = EMPTY_COMPACTIONS,
         queueEditingId,
         queueMutation,
         onQueueSteer,
@@ -380,7 +409,7 @@ export const ChatArea = memo(
       ref,
     ) => {
       const { t } = useTranslation('chat')
-      const { processCollapseEnabled } = useTheme()
+      const { processCollapseEnabled, showTimelineNotices, showTurnDiff } = useTheme()
       const { presentation } = useChatViewport()
       const atBottomThreshold = presentation.isCompact ? 150 : AT_BOTTOM_THRESHOLD_PX
       const paddingClass = presentation.isCompact ? 'px-3' : 'px-5'
@@ -390,8 +419,8 @@ export const ChatArea = memo(
 
       // ── 派生数据 ──
       const entries = useMemo(
-        () => visibleMessageEntriesProp ?? buildVisibleMessageEntries(messages),
-        [messages, visibleMessageEntriesProp],
+        () => visibleMessageEntriesProp ?? buildVisibleMessageEntries(messages, { showNotices: showTimelineNotices }),
+        [messages, visibleMessageEntriesProp, showTimelineNotices],
       )
       const visibleMessages = useMemo(
         () => visibleMessagesProp ?? entries.map(e => e.message),
@@ -422,17 +451,14 @@ export const ChatArea = memo(
       }>({ processCollapseEnabled })
       const timeline = useMemo<ProcessTimelineItem[]>(() => {
         const next = !processCollapseEnabled
-          ? visibleMessages.map(message => ({
-              kind: 'message' as const,
-              key: message.id,
-              message,
-            }))
+          ? buildFlatTimeline(visibleMessages, isStreaming, showTurnDiff)
           : buildProcessTimeline(visibleMessages, {
               turnDurationMap,
               sessionIsStreaming: isStreaming,
               messageHasProcess: messageHasProcessContent,
               messageHasFinal: messageHasFinalContent,
               isUserEntryReady: emptyShellGate.isReady,
+              turnDiff: showTurnDiff,
             })
         const previous =
           previousTimelineRef.current.processCollapseEnabled === processCollapseEnabled
@@ -448,6 +474,7 @@ export const ChatArea = memo(
         visibleMessages,
         turnDurationMap,
         isStreaming,
+        showTurnDiff,
         emptyShellGate.version,
         emptyShellGate.isReady,
       ])
@@ -892,7 +919,7 @@ export const ChatArea = memo(
 
       // retry/error 出现消失、输入框高度变 → 底部 footer 高度变，贴底时要跟着滚
       // 否则重试条进出后 scrollTop 停在旧位置，看起来没贴底
-      const footerPinKey = `${retryStatus ? 'r' : ''}|${loadError || connectionError ? 'e' : ''}|${queuedFollowUps.map(item => item.id).join('')}|${spacerHeight}`
+      const footerPinKey = `${retryStatus ? 'r' : ''}|${loadError || connectionError ? 'e' : ''}|${queuedCompactions.map(item => item.id).join('')}|${queuedFollowUps.map(item => item.id).join('')}|${spacerHeight}`
       useLayoutEffect(() => {
         if (!shouldAnchorBottom() || prependLoading.current) return
         pinToBottom()
@@ -1083,6 +1110,7 @@ export const ChatArea = memo(
                     key={item.key}
                     virtualItem={item}
                     item={timelineItem}
+                    sessionId={sessionId ?? null}
                     maxWidthClass={maxWidthClass}
                     paddingClass={paddingClass}
                     rowYClass={getTimelineRowYClass(timelineItem, timeline[item.index - 1], timeline[item.index + 1])}
@@ -1101,6 +1129,15 @@ export const ChatArea = memo(
               })}
             </div>
 
+            {/* 已入队未开始的压缩：官方 CompactionQueued 行，排在待投递输入之前 */}
+            {queuedCompactions.length > 0 && (
+              <div className={`w-full ${maxWidthClass} mx-auto ${paddingClass}`}>
+                {queuedCompactions.map(item => (
+                  <CompactionQueuedView key={item.id} />
+                ))}
+              </div>
+            )}
+
             {/* 队列气泡：融在消息流尾部（PiUI 同款位置：虚拟行之后、重试提示之前） */}
             {queuedFollowUps.length > 0 && (
               <div className={`w-full ${maxWidthClass} mx-auto ${paddingClass}`}>
@@ -1117,7 +1154,7 @@ export const ChatArea = memo(
               </div>
             )}
 
-            {/* 顺序必须是：消息 → 队列 → 重试/错误提示 → 输入框占位。
+            {/* 顺序必须是：消息 → 压缩排队 → 队列 → 重试/错误提示 → 输入框占位。
                 旧 Virtuoso Footer 就是这样；换 virtualizer 后 paddingEnd 在前、提示在后，会叠到输入框下。 */}
             {retryStatus && (
               <div className={`w-full ${maxWidthClass} mx-auto ${paddingClass}`}>

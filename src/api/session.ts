@@ -27,6 +27,7 @@ import { inboxStore } from '../store/inboxStore'
 import { normalizeFileDiffs } from '../types/api/file'
 import type { FileDiff, Session, SessionListParams, SessionRevert, SessionStatusMap } from './types'
 import type { SessionTransferData, SessionInboxInfo } from '@opencode/client/promise'
+import { sessionInfoCache } from '../store/sessionInfoCache'
 
 // ============================================
 // 会话状态
@@ -76,16 +77,54 @@ export async function getSessionDiff(sessionId: string, serverId?: string): Prom
   return normalizeFileDiffs(diffs)
 }
 
+/** 单轮 diff 的 in-flight 去重（虚拟列表来回挂载时不重复请求） */
+const inflightTurnDiffs = new Map<string, Promise<FileDiff[]>>()
+
+/**
+ * 取某一轮（从指定 user message 起）的文件 diff。
+ *
+ * 官方 timeline 的 TurnDiff 行用 `session.diff({ sessionID, from })`，
+ * `from` 是该轮用户消息 id。返回的 patch 可直接交给 DiffView 渲染。
+ */
+export async function getTurnDiff(sessionId: string, from: string, serverId?: string): Promise<FileDiff[]> {
+  const target = resolveSessionTarget(sessionId, serverId)
+  const key = `${target.serverId}:${target.sessionId}:${from}`
+  const inflight = inflightTurnDiffs.get(key)
+  if (inflight) return inflight
+
+  const request = (async () => {
+    try {
+      const sdk = getSDKClient(target.serverId)
+      const diffs = await sdk.session.diff({ sessionID: target.sessionId, from })
+      return normalizeFileDiffs(diffs)
+    } finally {
+      inflightTurnDiffs.delete(key)
+    }
+  })()
+  inflightTurnDiffs.set(key, request)
+  return request
+}
+
 // ============================================
 // 会话 CRUD
 // ============================================
 
+/** 一页会话列表；`next` 是下一页游标（null = 到底） */
+export interface SessionListPage {
+  data: Session[]
+  next: string | null
+}
+
 /**
- * 获取会话列表。
+ * 获取一页会话列表，保留服务端游标。
  *
- * v2 返回 `{ data, cursor }`；调用点普遍期望数组，这里返回 `data`。
+ * 翻页（loadMore）走这里：cursor 分页只取新增的一页，不必把整张表
+ * 重新拉一遍（旧实现靠 limit 递增重拉，越翻越慢）。
  */
-export async function getSessions(params: SessionListParams = {}, serverId?: string): Promise<Session[]> {
+export async function listSessionsPage(
+  params: SessionListParams = {},
+  serverId?: string,
+): Promise<SessionListPage> {
   const sdk = getSDKClient(serverId)
   const { directory, parentID, search, limit, order, cursor, project, subpath } = params
   const result = await sdk.session.list({
@@ -98,7 +137,18 @@ export async function getSessions(params: SessionListParams = {}, serverId?: str
     project,
     subpath,
   })
-  return result.data
+  return { data: result.data, next: result.cursor?.next ?? null }
+}
+
+/**
+ * 获取会话列表（数组形态）。
+ *
+ * 只要第一页的调用点（搜索、e2e）继续用它；需要翻页的列表走
+ * `listSessionsPage` 或 `sessionIndexStore`。
+ */
+export async function getSessions(params: SessionListParams = {}, serverId?: string): Promise<Session[]> {
+  const page = await listSessionsPage(params, serverId)
+  return page.data
 }
 
 /**
@@ -120,7 +170,10 @@ export async function getSessionChildren(
 export async function getSession(sessionId: string, _directory?: string, serverId?: string): Promise<Session> {
   const target = resolveSessionTarget(sessionId, serverId)
   const sdk = getSDKClient(target.serverId)
-  return await sdk.session.get({ sessionID: target.sessionId })
+  const session = await sdk.session.get({ sessionID: target.sessionId })
+  // 权威读顺手刷新交接缓存：从任何路径回读到的最新元信息都能被下一次进入命中
+  sessionInfoCache.remember(target.serverId, session)
+  return session
 }
 
 /**
@@ -177,7 +230,9 @@ export async function updateSession(
     title: params.title,
   })
   // v2 的 update 返回 void，回读一次保证调用点拿到最新会话
-  return await sdk.session.get({ sessionID: target.sessionId })
+  const session = await sdk.session.get({ sessionID: target.sessionId })
+  sessionInfoCache.remember(target.serverId, session)
+  return session
 }
 
 /** 删除会话（v1 的 delete → v2 的 remove） */
@@ -185,6 +240,8 @@ export async function deleteSession(sessionId: string, _directory?: string, serv
   const target = resolveSessionTarget(sessionId, serverId)
   const sdk = getSDKClient(target.serverId)
   await sdk.session.remove({ sessionID: target.sessionId })
+  // 删掉的会话不该在 TTL 内还命中交接缓存
+  sessionInfoCache.forget(target.serverId, sessionId)
   return true
 }
 
@@ -198,6 +255,8 @@ export async function moveSession(sessionId: string, directory: string, serverId
   const target = resolveSessionTarget(sessionId, serverId)
   const sdk = getSDKClient(target.serverId)
   await sdk.session.move({ sessionID: target.sessionId, directory })
+  // 目录归属变了：交接缓存里的 location 立刻作废，避免进会话用错目录
+  sessionInfoCache.forget(target.serverId, sessionId)
 }
 
 /**

@@ -1,59 +1,67 @@
 import { act, render } from '@testing-library/react'
 import { useContext, useEffect, type ContextType } from 'react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { EventCallbacks } from '../types/api/event'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SessionContext } from './SessionContext.shared'
 import { SessionProvider } from './SessionContext'
-import type { ServerChangeReason } from '../store/serverStore'
+import type { Session } from '../types/api/session'
 
-function createDeferred<T>() {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>(res => {
-    resolve = res
+const { storeMock, createSessionMock, deleteSessionMock, getSessionMock, clearSessionRuntimeStateMock, unpinMock } =
+  vi.hoisted(() => {
+    const listeners = new Set<() => void>()
+    let snapshot: {
+      sessions: Session[]
+      hasMore: boolean
+      ready: boolean
+      loading: boolean
+      error: Error | null
+    } = { sessions: [], hasMore: false, ready: false, loading: false, error: null }
+
+    const storeMock = {
+      subscribe: (listener: () => void) => {
+        listeners.add(listener)
+        return () => listeners.delete(listener)
+      },
+      getSnapshot: () => snapshot,
+      ensure: vi.fn(() => Promise.resolve()),
+      ensureDirectory: vi.fn(() => Promise.resolve()),
+      loadMore: vi.fn(() => Promise.resolve()),
+      remove: vi.fn(),
+      patch: vi.fn(),
+      upsert: vi.fn(),
+      reset: vi.fn(),
+      setSnapshotForTest: (next: Partial<typeof snapshot>) => {
+        snapshot = { ...snapshot, ...next }
+        for (const listener of listeners) listener()
+      },
+      resetSnapshotForTest: () => {
+        snapshot = { sessions: [], hasMore: false, ready: false, loading: false, error: null }
+        for (const listener of listeners) listener()
+      },
+    }
+
+    return {
+      storeMock,
+      createSessionMock: vi.fn(),
+      deleteSessionMock: vi.fn(),
+      getSessionMock: vi.fn(),
+      clearSessionRuntimeStateMock: vi.fn(),
+      unpinMock: vi.fn(),
+    }
   })
-  return { promise, resolve }
-}
 
-const {
-  getSessionsMock,
-  getSessionMock,
-  createSessionMock,
-  deleteSessionMock,
-  subscribeToEventsMock,
-  clearChildrenMock,
-  clearFollowupQueueMock,
-  clearSessionRuntimeStateMock,
-  sessionErrorHandlerMock,
-  autoDetectPathStyleMock,
-  onServerChangeMock,
-  directoryState,
-} = vi.hoisted(() => ({
-  getSessionsMock: vi.fn(),
-  getSessionMock: vi.fn(),
-  createSessionMock: vi.fn(),
-  deleteSessionMock: vi.fn(),
-  subscribeToEventsMock: vi.fn(),
-  clearChildrenMock: vi.fn(),
-  clearFollowupQueueMock: vi.fn(),
-  clearSessionRuntimeStateMock: vi.fn(),
-  sessionErrorHandlerMock: vi.fn(),
-  autoDetectPathStyleMock: vi.fn(),
-  onServerChangeMock: vi.fn(),
-  directoryState: {
-    currentDirectory: '/workspace/demo' as string | undefined,
-    pathInfo: null as { directory: string } | null,
-  },
+const directoryState = vi.hoisted(() => ({
+  currentDirectory: '/workspace/demo' as string | undefined,
+  pathInfo: null as { directory?: string } | null,
 }))
-let latestEventCallbacks: Partial<EventCallbacks> = {}
-let latestContext: ContextType<typeof SessionContext> = null
-let latestServerChange: ((serverId: string, reason: ServerChangeReason) => void) | undefined
 
 vi.mock('../api', () => ({
-  getSessions: (...args: unknown[]) => getSessionsMock(...args),
-  getSession: (...args: unknown[]) => getSessionMock(...args),
   createSession: (...args: unknown[]) => createSessionMock(...args),
   deleteSession: (...args: unknown[]) => deleteSessionMock(...args),
-  subscribeToEvents: (...args: unknown[]) => subscribeToEventsMock(...args),
+  getSession: (...args: unknown[]) => getSessionMock(...args),
+}))
+
+vi.mock('../store/sessionIndexStore', () => ({
+  sessionIndexStore: storeMock,
 }))
 
 vi.mock('./useDirectory', () => ({
@@ -63,37 +71,44 @@ vi.mock('./useDirectory', () => ({
   }),
 }))
 
-vi.mock('../store/childSessionStore', () => ({
-  childSessionStore: {
-    clearChildren: clearChildrenMock,
+vi.mock('../store/pinnedSessionsStore', () => ({
+  pinnedSessionsStore: {
+    unpin: (...args: unknown[]) => unpinMock(...args),
   },
 }))
 
-vi.mock('../store/inboxStore', () => ({
-  inboxStore: {
-    clearSession: clearFollowupQueueMock,
-  },
-}))
-
-// v2 删除了 todoStore（连同整块 todo UI），这里不再 mock
 vi.mock('../store/serverStore', () => ({
   serverStore: {
-    onServerChange: (...args: unknown[]) => onServerChangeMock(...args),
+    subscribe: () => () => {},
     getActiveServerId: () => 'local',
-    getActiveServer: () => ({ id: 'local' }),
   },
 }))
 
 vi.mock('../utils', () => ({
-  sessionErrorHandler: (...args: unknown[]) => sessionErrorHandlerMock(...args),
-  normalizeToForwardSlash: (value?: string) => value,
-  isSameDirectory: (left?: string, right?: string) => left === right,
-  autoDetectPathStyle: (...args: unknown[]) => autoDetectPathStyleMock(...args),
+  normalizeToForwardSlash: (value?: string) => value?.replace(/\\/g, '/'),
+  isSameDirectory: (left?: string, right?: string) => {
+    const normalize = (value?: string) => value?.replace(/[\\/]+$/, '')
+    return normalize(left) === normalize(right)
+  },
 }))
 
 vi.mock('../utils/sessionLifecycle', () => ({
   clearSessionRuntimeState: (...args: unknown[]) => clearSessionRuntimeStateMock(...args),
 }))
+
+function makeSession(id: string, directory = '/workspace/demo', updated = 2): Session {
+  return {
+    id,
+    projectID: 'project-1',
+    location: { directory },
+    title: `Session ${id}`,
+    cost: 0,
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    time: { created: 1, updated },
+  } as Session
+}
+
+let latestContext: ContextType<typeof SessionContext> = null
 
 function SessionContextProbe() {
   const context = useContext(SessionContext)
@@ -105,311 +120,254 @@ function SessionContextProbe() {
   return null
 }
 
+function renderProvider() {
+  return render(
+    <SessionProvider>
+      <SessionContextProbe />
+    </SessionProvider>,
+  )
+}
+
 describe('SessionProvider', () => {
   beforeEach(() => {
-    vi.useFakeTimers()
     latestContext = null
-    latestEventCallbacks = {}
     directoryState.currentDirectory = '/workspace/demo'
     directoryState.pathInfo = null
-    getSessionsMock.mockReset()
-    getSessionMock.mockReset()
+    storeMock.ensure.mockClear()
+    storeMock.ensureDirectory.mockClear()
+    storeMock.loadMore.mockReset()
+    storeMock.loadMore.mockImplementation(() => Promise.resolve())
+    storeMock.remove.mockClear()
+    storeMock.patch.mockClear()
+    storeMock.upsert.mockClear()
     createSessionMock.mockReset()
     deleteSessionMock.mockReset()
-    subscribeToEventsMock.mockReset()
-    clearChildrenMock.mockReset()
-    clearFollowupQueueMock.mockReset()
+    getSessionMock.mockReset()
+    getSessionMock.mockRejectedValue(new Error('not found'))
     clearSessionRuntimeStateMock.mockReset()
-    sessionErrorHandlerMock.mockReset()
-    autoDetectPathStyleMock.mockReset()
-    onServerChangeMock.mockReset()
-    latestServerChange = undefined
-    subscribeToEventsMock.mockImplementation((callbacks: EventCallbacks) => {
-      latestEventCallbacks = callbacks
-      return vi.fn()
-    })
-    onServerChangeMock.mockImplementation(listener => {
-      latestServerChange = listener as (serverId: string, reason: ServerChangeReason) => void
-      return vi.fn()
-    })
+    unpinMock.mockReset()
+    storeMock.resetSnapshotForTest()
   })
 
-  afterEach(() => {
-    vi.useRealTimers()
-  })
-
-  it('queues a reconnect refresh while the latest request is still pending', async () => {
-    const firstRequest = createDeferred<Array<{ id: string; directory: string }>>()
-    const secondRequest = createDeferred<Array<{ id: string; directory: string }>>()
-    const thirdRequest = createDeferred<Array<{ id: string; directory: string }>>()
-
-    getSessionsMock
-      .mockImplementationOnce(() => firstRequest.promise)
-      .mockImplementationOnce(() => secondRequest.promise)
-      .mockImplementationOnce(() => thirdRequest.promise)
-
-    render(
-      <SessionProvider>
-        <SessionContextProbe />
-      </SessionProvider>,
-    )
-
-    await act(async () => {
-      vi.runAllTimers()
-      await Promise.resolve()
+  it('从共享索引按当前目录过滤（不再自己发请求）', async () => {
+    storeMock.setSnapshotForTest({
+      ready: true,
+      sessions: [
+        makeSession('ses_a', '/workspace/demo'),
+        makeSession('ses_b', '/workspace/other'),
+        makeSession('ses_c', '/workspace/demo/'),
+      ],
     })
 
-    expect(latestContext).not.toBeNull()
+    renderProvider()
+
+    expect(storeMock.ensure).toHaveBeenCalledWith('local')
+    expect(latestContext?.sessions.map(session => session.id)).toEqual(['ses_a', 'ses_c'])
+    expect(latestContext?.isLoading).toBe(false)
+  })
+
+  it('首帧还没拉到数据时显示 loading，失败后不再转圈', () => {
+    renderProvider()
+    expect(latestContext?.isLoading).toBe(true)
 
     act(() => {
-      latestContext!.setSearch('branch')
+      storeMock.setSnapshotForTest({ ready: false, error: new Error('down') })
     })
-
-    await act(async () => {
-      vi.advanceTimersByTime(300)
-      await Promise.resolve()
-    })
-
-    await act(async () => {
-      firstRequest.resolve([{ id: 'session-1', directory: '/workspace/demo' }])
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    await act(async () => {
-      latestEventCallbacks.onReconnected?.('network')
-      await Promise.resolve()
-    })
-
-    expect(getSessionsMock).toHaveBeenCalledTimes(2)
-
-    await act(async () => {
-      secondRequest.resolve([{ id: 'session-2', directory: '/workspace/demo' }])
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    expect(getSessionsMock).toHaveBeenCalledTimes(3)
-
-    await act(async () => {
-      thirdRequest.resolve([{ id: 'session-3', directory: '/workspace/demo' }])
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    expect(latestContext?.sessions.map(session => session.id)).toEqual(['session-3'])
+    expect(latestContext?.isLoading).toBe(false)
   })
 
-  it('retries the initial session list fetch after a startup failure', async () => {
-    getSessionsMock
-      .mockRejectedValueOnce(new Error('service not ready'))
-      .mockResolvedValueOnce([{ id: 'session-1', directory: '/workspace/demo' }])
-
-    render(
-      <SessionProvider>
-        <SessionContextProbe />
-      </SessionProvider>,
-    )
-
-    await act(async () => {
-      vi.runOnlyPendingTimers()
-      await Promise.resolve()
-      await Promise.resolve()
+  it('搜索在本地过滤标题 / id，不发请求', () => {
+    storeMock.setSnapshotForTest({
+      ready: true,
+      sessions: [makeSession('ses_a', '/workspace/demo'), makeSession('ses_b', '/workspace/demo')],
     })
 
-    expect(getSessionsMock).toHaveBeenCalledTimes(1)
-
-    await act(async () => {
-      vi.advanceTimersByTime(500)
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    expect(getSessionsMock).toHaveBeenCalledTimes(2)
-    expect(latestContext?.sessions.map(session => session.id)).toEqual(['session-1'])
-  })
-
-  it('removes deleted sessions from context and clears runtime state', async () => {
-    getSessionsMock.mockResolvedValue([
-      { id: 'session-1', directory: '/workspace/demo' },
-      { id: 'session-2', directory: '/workspace/demo' },
-    ])
-
-    render(
-      <SessionProvider>
-        <SessionContextProbe />
-      </SessionProvider>,
-    )
-
-    await act(async () => {
-      vi.runAllTimers()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    expect(latestContext?.sessions.map(session => session.id)).toEqual(['session-1', 'session-2'])
+    renderProvider()
+    const ensureCalls = storeMock.ensure.mock.calls.length
 
     act(() => {
-      latestEventCallbacks.onSessionDeleted?.({ sessionID: 'session-1' })
+      latestContext?.setSearch('ses_b')
     })
 
-    expect(clearSessionRuntimeStateMock).toHaveBeenCalledWith('session-1')
-    expect(latestContext?.sessions.map(session => session.id)).toEqual(['session-2'])
+    expect(latestContext?.sessions.map(session => session.id)).toEqual(['ses_b'])
+    expect(storeMock.ensure).toHaveBeenCalledTimes(ensureCalls)
+    expect(getSessionMock).not.toHaveBeenCalled()
   })
 
-  it('refetches on server endpoint changes even while the old request is in flight', async () => {
-    const staleRequest = createDeferred<Array<{ id: string; directory: string }>>()
-    const freshRequest = createDeferred<Array<{ id: string; directory: string }>>()
+  it('输入完整会话 ID 时直接回读（官方 home 的 lookup 口径）', async () => {
+    const id = `ses_${'a'.repeat(24)}`
+    storeMock.setSnapshotForTest({ ready: true, sessions: [] })
+    getSessionMock.mockResolvedValue(makeSession(id, '/workspace/other'))
 
-    getSessionsMock
-      .mockImplementationOnce(() => staleRequest.promise)
-      .mockImplementationOnce(() => freshRequest.promise)
-
-    render(
-      <SessionProvider>
-        <SessionContextProbe />
-      </SessionProvider>,
-    )
-
+    renderProvider()
     await act(async () => {
-      vi.runAllTimers()
-      await Promise.resolve()
+      latestContext?.setSearch(id)
     })
 
-    expect(getSessionsMock).toHaveBeenCalledTimes(1)
-
-    await act(async () => {
-      // active 服务器自身端点变化（serverId = active）才应触发重拉
-      latestServerChange?.('local', 'server-runtime-updated')
-      await Promise.resolve()
-    })
-
-    expect(getSessionsMock).toHaveBeenCalledTimes(2)
-
-    await act(async () => {
-      freshRequest.resolve([{ id: 'fresh', directory: '/workspace/demo' }])
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    expect(latestContext?.sessions.map(session => session.id)).toEqual(['fresh'])
-
-    await act(async () => {
-      staleRequest.resolve([{ id: 'stale', directory: '/workspace/demo' }])
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    expect(latestContext?.sessions.map(session => session.id)).toEqual(['fresh'])
+    expect(getSessionMock).toHaveBeenCalledWith(id, undefined, 'local')
+    // 不在索引 / 当前目录里也要露出来：用户是拿着 ID 找的
+    expect(latestContext?.sessions.map(session => session.id)).toEqual([id])
   })
 
-  it('keeps the session list untouched when a non-active server endpoint changes', async () => {
-    getSessionsMock.mockResolvedValue([{ id: 'session-1', directory: '/workspace/demo' }])
+  it('本地已拉到的会话先切片露出，见底后才向服务端续页', async () => {
+    const many = Array.from({ length: 40 }, (_, index) => makeSession(`ses_${index}`, '/workspace/demo'))
+    storeMock.setSnapshotForTest({ ready: true, sessions: many, hasMore: false })
 
-    render(
-      <SessionProvider>
-        <SessionContextProbe />
-      </SessionProvider>,
-    )
+    renderProvider()
+    expect(latestContext?.sessions).toHaveLength(30)
+    expect(latestContext?.hasMore).toBe(true)
 
     await act(async () => {
-      vi.runAllTimers()
-      await Promise.resolve()
+      await latestContext!.loadMore()
     })
 
-    expect(getSessionsMock).toHaveBeenCalledTimes(1)
-    expect(latestContext?.sessions.map(session => session.id)).toEqual(['session-1'])
+    expect(storeMock.loadMore).not.toHaveBeenCalled()
+    expect(latestContext?.sessions).toHaveLength(40)
+    expect(latestContext?.hasMore).toBe(false)
 
-    // 非 active 服务器（remote）端点变化：与 active 会话列表无关，不得清空/重拉
+    act(() => {
+      storeMock.setSnapshotForTest({ ready: true, sessions: many, hasMore: true })
+    })
     await act(async () => {
-      latestServerChange?.('remote', 'server-runtime-updated')
-      await Promise.resolve()
+      await latestContext!.loadMore()
     })
 
-    expect(getSessionsMock).toHaveBeenCalledTimes(1)
-    expect(latestContext?.sessions.map(session => session.id)).toEqual(['session-1'])
+    expect(storeMock.loadMore).toHaveBeenCalledWith('local')
   })
 
-  it('lists only the home directory when Global has no project selected', async () => {
-    directoryState.currentDirectory = undefined
-    directoryState.pathInfo = { directory: '/home/user/' }
-    getSessionsMock.mockResolvedValue([{ id: 'home-session', location: { directory: '/home/user' } }])
+  it('「显示更多」连翻到当前目录出现新行就停', async () => {
+    storeMock.setSnapshotForTest({
+      ready: true,
+      hasMore: true,
+      sessions: [makeSession('ses_other', '/workspace/other')],
+    })
+    renderProvider()
 
-    render(
-      <SessionProvider>
-        <SessionContextProbe />
-      </SessionProvider>,
-    )
-
-    await act(async () => {
-      vi.runAllTimers()
-      await Promise.resolve()
-      await Promise.resolve()
+    let pages = 0
+    storeMock.loadMore.mockImplementation(async () => {
+      pages += 1
+      if (pages < 2) return
+      storeMock.setSnapshotForTest({
+        ready: true,
+        hasMore: true,
+        sessions: [makeSession('ses_other', '/workspace/other'), makeSession('ses_b', '/workspace/demo')],
+      })
     })
 
-    expect(getSessionsMock).toHaveBeenCalledWith(expect.objectContaining({ directory: '/home/user', parentID: null }))
-    expect(getSessionsMock.mock.calls.some(call => call[0]?.directory == null)).toBe(false)
+    await act(async () => {
+      await latestContext!.loadMore()
+    })
+
+    expect(storeMock.loadMore).toHaveBeenCalledTimes(2)
+    expect(latestContext?.sessions.map(session => session.id)).toEqual(['ses_b'])
   })
 
-  it('does not fetch every session before the home directory is known', async () => {
+  it('切换目录不重新拉索引', () => {
+    storeMock.setSnapshotForTest({ ready: true, sessions: [makeSession('ses_a', '/workspace/demo')] })
+    renderProvider()
+
+    act(() => {
+      storeMock.setSnapshotForTest({
+        ready: true,
+        sessions: [makeSession('ses_a', '/workspace/demo'), makeSession('ses_b', '/workspace/other')],
+      })
+    })
+
+    expect(storeMock.ensure).toHaveBeenCalledTimes(1)
+    expect(latestContext?.sessions.map(session => session.id)).toEqual(['ses_a'])
+  })
+
+  it('当前目录在索引里为空且服务端还有页时，按目录兜底补拉', () => {
+    storeMock.setSnapshotForTest({
+      ready: true,
+      hasMore: true,
+      sessions: [makeSession('ses_other', '/workspace/other')],
+    })
+
+    renderProvider()
+
+    expect(storeMock.ensureDirectory).toHaveBeenCalledWith('local', '/workspace/demo')
+  })
+
+  it('索引已到底或目录本身有数据时不补拉', () => {
+    storeMock.setSnapshotForTest({
+      ready: true,
+      hasMore: false,
+      sessions: [makeSession('ses_other', '/workspace/other')],
+    })
+    renderProvider()
+    expect(storeMock.ensureDirectory).not.toHaveBeenCalled()
+
+    act(() => {
+      storeMock.setSnapshotForTest({
+        ready: true,
+        hasMore: true,
+        sessions: [makeSession('ses_a', '/workspace/demo')],
+      })
+    })
+    expect(storeMock.ensureDirectory).not.toHaveBeenCalled()
+  })
+
+  it('删除会话：调 API、清运行时状态、清索引', async () => {
+    storeMock.setSnapshotForTest({ ready: true, sessions: [makeSession('ses_a', '/workspace/demo')] })
+    deleteSessionMock.mockResolvedValue(true)
+
+    renderProvider()
+
+    await act(async () => {
+      await latestContext!.deleteSession('ses_a')
+    })
+
+    expect(deleteSessionMock).toHaveBeenCalledWith('ses_a', '/workspace/demo')
+    expect(unpinMock).toHaveBeenCalledWith('ses_a')
+    expect(clearSessionRuntimeStateMock).toHaveBeenCalledWith('ses_a')
+    expect(storeMock.remove).toHaveBeenCalledWith('local', 'ses_a')
+  })
+
+  it('全局模式只显示家目录会话，主目录未知时保持 loading', () => {
     directoryState.currentDirectory = undefined
     directoryState.pathInfo = null
-
-    render(
-      <SessionProvider>
-        <SessionContextProbe />
-      </SessionProvider>,
-    )
-
-    await act(async () => {
-      vi.runAllTimers()
-      await Promise.resolve()
+    storeMock.setSnapshotForTest({
+      ready: true,
+      sessions: [makeSession('ses_home', '/home/user'), makeSession('ses_other', '/workspace/demo')],
     })
 
-    expect(getSessionsMock).not.toHaveBeenCalled()
+    renderProvider()
+
+    expect(latestContext?.isLoading).toBe(true)
+    expect(latestContext?.sessions).toEqual([])
+    expect(storeMock.ensureDirectory).not.toHaveBeenCalled()
   })
 
-  it('ignores sessions created outside the global home directory', async () => {
+  it('全局模式按家目录过滤，家目录被挤出索引时按目录补拉', () => {
     directoryState.currentDirectory = undefined
     directoryState.pathInfo = { directory: '/home/user' }
-    getSessionsMock.mockResolvedValue([])
-    getSessionMock.mockImplementation(async (id: string) => ({
-      id,
-      location: { directory: id === 'home-session' ? '/home/user' : '/workspace/demo' },
-    }))
-
-    render(
-      <SessionProvider>
-        <SessionContextProbe />
-      </SessionProvider>,
-    )
-
-    await act(async () => {
-      vi.runAllTimers()
-      await Promise.resolve()
-      await Promise.resolve()
+    storeMock.setSnapshotForTest({
+      ready: true,
+      hasMore: true,
+      sessions: [makeSession('ses_other', '/workspace/demo')],
     })
 
+    renderProvider()
+
+    expect(latestContext?.isLoading).toBe(false)
+    expect(latestContext?.sessions).toEqual([])
+    expect(storeMock.ensureDirectory).toHaveBeenCalledWith('local', '/home/user')
+  })
+
+  it('全局模式新建会话落在家目录', async () => {
+    directoryState.currentDirectory = undefined
+    directoryState.pathInfo = { directory: '/home/user' }
+    storeMock.setSnapshotForTest({ ready: true, sessions: [] })
+    createSessionMock.mockResolvedValue(makeSession('ses_new', '/home/user'))
+
+    renderProvider()
+
     await act(async () => {
-      latestEventCallbacks.onSessionCreated?.({
-        sessionID: 'other-session',
-        location: { directory: '/workspace/demo' },
-      } as never)
-      await Promise.resolve()
-      await Promise.resolve()
+      await latestContext!.createSession('hello')
     })
 
-    expect(latestContext?.sessions.map(session => session.id)).toEqual([])
-
-    await act(async () => {
-      latestEventCallbacks.onSessionCreated?.({
-        sessionID: 'home-session',
-        location: { directory: '/home/user' },
-      } as never)
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    expect(latestContext?.sessions.map(session => session.id)).toEqual(['home-session'])
+    expect(createSessionMock).toHaveBeenCalledWith({ title: 'hello', directory: '/home/user' })
+    expect(storeMock.upsert).toHaveBeenCalled()
   })
 })

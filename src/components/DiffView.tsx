@@ -24,6 +24,8 @@ interface DiffViewProps {
   maxHeight?: number
   /** Explicit language */
   language?: string
+  /** 去掉外层卡片 / 头部 / 边框，只渲染 diff 正文（挂在文件行下面时用） */
+  bare?: boolean
 }
 
 /** 轻量统计 additions/deletions，不做高亮 */
@@ -45,8 +47,9 @@ export const DiffView = memo(function DiffView({
   after,
   filePath,
   defaultCollapsed = false,
-  maxHeight = 300,
+  maxHeight,
   language: explicitLanguage,
+  bare = false,
 }: DiffViewProps) {
   const { t } = useTranslation(['components', 'common'])
   const [collapsed, setCollapsed] = useState(defaultCollapsed)
@@ -126,6 +129,27 @@ export const DiffView = memo(function DiffView({
     return () => window.removeEventListener('resize', checkWidth)
   }, [fullscreenOpen])
 
+  if (bare) {
+    if (!content) {
+      return diff ? (
+        <pre className="overflow-auto whitespace-pre p-3 font-mono text-[length:var(--fs-sm)] text-text-200">{diff}</pre>
+      ) : null
+    }
+    return (
+      <div className="overflow-hidden font-mono text-[length:var(--fs-code)]">
+        <DiffViewer
+          before={content.before}
+          after={content.after}
+          language={language}
+          viewMode="unified"
+          maxHeight={maxHeight}
+          data={diffViewerData}
+          stateKey={`${generatedFullscreenId}:bare`}
+        />
+      </div>
+    )
+  }
+
   // Fallback for unified diff string only
   if (!hasContent && diff) {
     return (
@@ -184,7 +208,7 @@ export const DiffView = memo(function DiffView({
             after={content.after}
             language={language}
             viewMode="unified"
-            maxHeight={maxHeight}
+            maxHeight={maxHeight ?? 300}
             data={diffViewerData}
           />
         </div>

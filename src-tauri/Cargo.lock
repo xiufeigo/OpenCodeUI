@@ -2725,7 +2725,7 @@ dependencies = [
 
 [[package]]
 name = "opencodeui"
-version = "1.0.9"
+version = "1.0.10"
 dependencies = [
  "futures-util",
  "log",
@@ -2749,6 +2749,7 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-util",
  "uuid",
+ "windows 0.61.3",
 ]
 
 [[package]]

@@ -2,7 +2,8 @@ import { useCallback, useRef, useSyncExternalStore } from 'react'
 import { flushSync } from 'react-dom'
 import { THEME_SWITCH_DISABLE_MS } from '../constants'
 import { themeStore, type ColorMode } from '../store/themeStore'
-import type { StepFinishDisplay, CustomCSSSnippet } from '../store/themeStore'
+import type { StepFinishDisplay, CustomCSSSnippet, AppearanceStyle, WallpaperFit } from '../store/themeStore'
+import type { DesktopBackdrop } from '../store/themeStore'
 import type { ReasoningDisplayMode, DiffStyle, ToolCardStyle, CompletedAtFormat, ExternalFileDropMode, ComposerSelectorStyle } from '../store/themeStore'
 
 // 保持向后兼容的类型别名
@@ -252,6 +253,18 @@ export function useTheme() {
     themeStore.setProcessCollapseEnabled(enabled)
   }, [])
 
+  const setShowTimelineNotices = useCallback((enabled: boolean) => {
+    themeStore.setShowTimelineNotices(enabled)
+  }, [])
+
+  const setShowTurnDiff = useCallback((enabled: boolean) => {
+    themeStore.setShowTurnDiff(enabled)
+  }, [])
+
+  const setShowQueuedCompaction = useCallback((enabled: boolean) => {
+    themeStore.setShowQueuedCompaction(enabled)
+  }, [])
+
   const setCodeBlockThemeLight = useCallback((id: string) => {
     themeStore.setCodeBlockThemeLight(id)
   }, [])
@@ -383,6 +396,48 @@ export function useTheme() {
       themeStore.setGlassEffect(enabled)
     }, []),
 
+    // 外观处理（实色 / 玻璃）
+    appearanceStyle: state.appearanceStyle,
+    setAppearanceStyle: useCallback((style: AppearanceStyle) => {
+      themeStore.setAppearanceStyle(style)
+    }, []),
+    glassAlpha: state.glassAlpha,
+    setGlassAlpha: useCallback((alpha: number) => {
+      themeStore.setGlassAlpha(alpha)
+    }, []),
+
+    // 壁纸
+    wallpaperEnabled: state.wallpaperEnabled,
+    setWallpaperEnabled: useCallback((enabled: boolean) => {
+      themeStore.setWallpaperEnabled(enabled)
+    }, []),
+    wallpaperFit: state.wallpaperFit,
+    setWallpaperFit: useCallback((fit: WallpaperFit) => {
+      themeStore.setWallpaperFit(fit)
+    }, []),
+    wallpaperInChat: state.wallpaperInChat,
+    setWallpaperInChat: useCallback((enabled: boolean) => {
+      themeStore.setWallpaperInChat(enabled)
+    }, []),
+    wallpaperFileName: state.wallpaperFileName,
+    wallpaperUrl: state.wallpaperUrl,
+    liveBackdrop: state.liveBackdrop,
+    desktopBackdrop: state.desktopBackdrop,
+    backdropBlur: state.backdropBlur,
+    backdropInterval: state.backdropInterval,
+    setBackdropInterval: useCallback((value: number) => {
+      themeStore.setBackdropInterval(value)
+    }, []),
+    setBackdropBlur: useCallback((value: number) => {
+      themeStore.setBackdropBlur(value)
+    }, []),
+    setDesktopBackdrop: useCallback((mode: DesktopBackdrop) => {
+      themeStore.setDesktopBackdrop(mode)
+    }, []),
+    setWallpaperImage: useCallback((file: File | Blob | null, fileName?: string | null) => {
+      return themeStore.setWallpaperImage(file, fileName)
+    }, []),
+
     // 终端标签标题模式
     manualTerminalTitles: state.manualTerminalTitles,
     setManualTerminalTitles,
@@ -406,6 +461,14 @@ export function useTheme() {
     // 过程折叠
     processCollapseEnabled: state.processCollapseEnabled,
     setProcessCollapseEnabled,
+
+    // 时间线提示行 / 回合文件变更 / 压缩排队
+    showTimelineNotices: state.showTimelineNotices,
+    setShowTimelineNotices,
+    showTurnDiff: state.showTurnDiff,
+    setShowTurnDiff,
+    showQueuedCompaction: state.showQueuedCompaction,
+    setShowQueuedCompaction,
 
     // 输入框选择器样式（独立图标按钮 / DSH 风格汇总菜单）
     composerSelectorStyle: state.composerSelectorStyle,

@@ -41,9 +41,13 @@ import { serverStore } from './store/serverStore'
 import { initNotificationSound } from './utils/notificationSoundBridge'
 import { useSessionTerminals } from './hooks/useSessionTerminals'
 import { useServerStore } from './hooks/useServerStore'
+import { prefetchSessionMessages } from './api/messagePrefetch'
+import { isCompleteSessionInfo, sessionInfoCache } from './store/sessionInfoCache'
+import { INITIAL_MESSAGE_LIMIT } from './constants'
 import type { SettingsTab } from './features/settings/SettingsDialog'
 import { isTauri, isTauriMobile } from './utils/tauri'
 import { InternalDragLayer } from './components/InternalDragLayer'
+import { LiveBackdrop } from './features/appearance/LiveBackdrop'
 
 const SettingsDialog = lazy(() =>
   import('./features/settings/SettingsDialog').then(module => ({ default: module.SettingsDialog })),
@@ -224,7 +228,15 @@ function App() {
     (session: { id: string; serverId?: string; directory?: string; location?: { directory?: string } }) => {
       const paneId = paneLayout.focusedPaneId ?? paneLayoutStore.getFocusedPaneId()
       if (!paneId) return
-      const sessionKey = makeSessionKey(session.serverId ?? serverStore.getActiveServerId(), session.id)
+      const serverId = session.serverId ?? serverStore.getActiveServerId()
+      const sessionKey = makeSessionKey(serverId, session.id)
+
+      // 点击即出发：把列表里已有的元信息留给会话页（省掉 session.get），
+      // 同时预取首屏消息。两者都只是写缓存 / 发请求，不等待结果，
+      // 页面照常立刻导航（官方 home/sessions/controller.tsx:348 同款时机）。
+      if (isCompleteSessionInfo(session)) sessionInfoCache.remember(serverId, session)
+      prefetchSessionMessages(serverId, session.id, INITIAL_MESSAGE_LIMIT)
+
       // v2 的目录在 location.directory；扁平 directory 只有命令面板等少数路径会带。
       // 全局下打开主目录会话不写 dir，否则选择器会从「全局」跳成该文件夹。
       const directory = directoryForSessionOpen(readRouteDirectory(), sessionRouteDirectory(session), globalDirectory)
@@ -234,7 +246,9 @@ function App() {
   )
 
   // 命令面板混合搜索的会话/文件数据源（官方 palette.ts 同款：
-  // 命令之外还能搜到会话与文件）
+  // 命令之外还能搜到会话与文件）。
+  // 面板只读 id/title/directory，所以这里只挑这三个字段；点击时再按 id
+  // 从 allSessions 取回完整记录（见 handlePaletteOpenSession）。
   const { sessions: allSessions } = useSessionContext()
   const paletteSessions = useMemo(
     () =>
@@ -244,6 +258,16 @@ function App() {
         directory: session.location?.directory,
       })),
     [allSessions],
+  )
+
+  // 面板只回传 id + directory（它并不关心完整记录），这里按 id 补回列表里的
+  // 完整 SessionInfo：元信息交接缓存与目录解析都依赖完整字段。
+  const handlePaletteOpenSession = useCallback(
+    (session: { id: string; directory?: string }) => {
+      const full = allSessions.find(item => item.id === session.id)
+      handleSelectSession(full ?? session)
+    },
+    [allSessions, handleSelectSession],
   )
   const handlePaletteOpenFile = useCallback(
     (path: string) => {
@@ -919,87 +943,165 @@ function App() {
     handleToggleFocusedPaneFullscreen,
   ])
 
-  const { showCloseDialog, handleCloseDialogConfirm, handleCloseDialogCancel, hasUnsavedChanges } = useCloseServiceDialog()
+  const { showCloseDialog, handleCloseDialogConfirm, handleCloseDialogCancel, hasUnsavedChanges } =
+    useCloseServiceDialog()
 
   return (
-    <div className="relative flex h-full flex-col bg-bg-100 overflow-hidden">
-      <DesktopTitlebar />
-      <InternalDragLayer />
-      <ChatViewportProvider value={chatViewport}>
-        <div className="relative flex min-h-0 flex-1 overflow-hidden">
-          {isMobilePanelLayout ? (
-            <>
-              <div
-                ref={mobilePagerRef}
-                className="mobile-chat-pager absolute inset-x-0 top-0 -bottom-4 flex overflow-x-auto overflow-y-hidden bg-bg-100 pb-4"
-                style={{
-                  scrollSnapType: 'x mandatory',
-                  overscrollBehaviorX: 'contain',
-                  scrollbarWidth: 'none',
-                  WebkitOverflowScrolling: 'touch',
-                  perspective: '1200px',
-                  perspectiveOrigin: '50% 50%',
-                }}
-                onScroll={handleMobilePagerScroll}
-                onTouchStart={handleMobilePagerInteractionStart}
-                onTouchEnd={handleMobilePagerInteractionEnd}
-                onTouchCancel={handleMobilePagerInteractionEnd}
-              >
-                <section
-                  className="h-full shrink-0 overflow-hidden bg-bg-100"
-                  aria-hidden={mobileActivePage !== 'left'}
-                  inert={mobileActivePage !== 'left'}
+    <>
+      {/* 桌面背景层放在 .app-shell 之前：两者都是定位元素，
+          靠文档顺序决定谁在上，图要垫在整层染色底下 */}
+      <LiveBackdrop />
+      <div className="app-shell relative flex h-full flex-col bg-bg-100 overflow-hidden">
+        <DesktopTitlebar />
+        <InternalDragLayer />
+        <ChatViewportProvider value={chatViewport}>
+          <div className="relative flex min-h-0 flex-1 overflow-hidden">
+            {isMobilePanelLayout ? (
+              <>
+                <div
+                  ref={mobilePagerRef}
+                  className="mobile-chat-pager absolute inset-x-0 top-0 -bottom-4 flex overflow-x-auto overflow-y-hidden bg-bg-100 pb-4"
                   style={{
-                    width: `${mobileLeftPanelWidth}px`,
-                    flexBasis: `${mobileLeftPanelWidth}px`,
-                    scrollSnapAlign: 'start',
-                    scrollSnapStop: 'always',
+                    scrollSnapType: 'x mandatory',
+                    overscrollBehaviorX: 'contain',
+                    scrollbarWidth: 'none',
+                    WebkitOverflowScrolling: 'touch',
+                    perspective: '1200px',
+                    perspectiveOrigin: '50% 50%',
                   }}
+                  onScroll={handleMobilePagerScroll}
+                  onTouchStart={handleMobilePagerInteractionStart}
+                  onTouchEnd={handleMobilePagerInteractionEnd}
+                  onTouchCancel={handleMobilePagerInteractionEnd}
                 >
-                  <Sidebar
-                    isOpen={sidebarExpanded}
-                    selectedSessionId={paneLayout.focusedSessionId}
-                    onSelectSession={handleSelectSession}
-                    onNewSession={handleNewSession}
-                    onOpen={handleOpenSidebar}
-                    onClose={handleCloseSidebar}
-                    contextLimit={focusedController?.contextLimit}
-                    onOpenSettings={openSettings}
-                    projectDialogOpen={projectDialogOpen}
-                    onProjectDialogClose={closeProjectDialog}
-                    mobileInline
-                  />
-                </section>
+                  <section
+                    className="h-full shrink-0 overflow-hidden bg-bg-100"
+                    aria-hidden={mobileActivePage !== 'left'}
+                    inert={mobileActivePage !== 'left'}
+                    style={{
+                      width: `${mobileLeftPanelWidth}px`,
+                      flexBasis: `${mobileLeftPanelWidth}px`,
+                      scrollSnapAlign: 'start',
+                      scrollSnapStop: 'always',
+                    }}
+                  >
+                    <Sidebar
+                      isOpen={sidebarExpanded}
+                      selectedSessionId={paneLayout.focusedSessionId}
+                      onSelectSession={handleSelectSession}
+                      onNewSession={handleNewSession}
+                      onOpen={handleOpenSidebar}
+                      onClose={handleCloseSidebar}
+                      contextLimit={focusedController?.contextLimit}
+                      onOpenSettings={openSettings}
+                      projectDialogOpen={projectDialogOpen}
+                      onProjectDialogClose={closeProjectDialog}
+                      mobileInline
+                    />
+                  </section>
 
-                <section
-                  ref={surfaceRef}
-                  className="relative h-full shrink-0 overflow-visible bg-bg-100"
-                  style={{
-                    width: `${mobilePageWidth}px`,
-                    flexBasis: `${mobilePageWidth}px`,
-                    scrollSnapAlign: 'start',
-                    scrollSnapStop: 'always',
-                  }}
-                >
-                  <div
-                    className="absolute inset-y-0 -left-4 -right-4 z-10 flex flex-col overflow-hidden bg-bg-100 rounded-xl shadow-[0_0_24px_hsl(var(--always-black)/0.15)] [contain:layout_paint]"
-                    aria-hidden={mobileActivePage !== 'chat'}
-                    inert={mobileActivePage !== 'chat'}
-                    style={
-                      pagerTransformActive
-                        ? {
-                            transform:
-                              'translate3d(var(--mobile-chat-offset-x, 0px), 0, 0) rotateY(var(--mobile-chat-rotate-y, 0deg)) scale(var(--mobile-chat-scale, 1))',
-                            transformOrigin: 'var(--mobile-chat-transform-origin, 50% 50%)',
-                            transformStyle: 'preserve-3d',
-                            backfaceVisibility: 'hidden',
-                            willChange: 'transform',
-                          }
-                        : undefined
-                    }
+                  <section
+                    ref={surfaceRef}
+                    className="relative h-full shrink-0 overflow-visible bg-bg-100"
+                    style={{
+                      width: `${mobilePageWidth}px`,
+                      flexBasis: `${mobilePageWidth}px`,
+                      scrollSnapAlign: 'start',
+                      scrollSnapStop: 'always',
+                    }}
                   >
                     <div
-                      className={`flex-1 min-h-0 px-4 ${paneLayout.isSplit && !paneLayout.fullscreenPaneId ? 'py-2' : ''}`}
+                      className="absolute inset-y-0 -left-4 -right-4 z-10 flex flex-col overflow-hidden bg-bg-100 rounded-xl shadow-[0_0_24px_hsl(var(--always-black)/0.15)] [contain:layout_paint]"
+                      aria-hidden={mobileActivePage !== 'chat'}
+                      inert={mobileActivePage !== 'chat'}
+                      style={
+                        pagerTransformActive
+                          ? {
+                              transform:
+                                'translate3d(var(--mobile-chat-offset-x, 0px), 0, 0) rotateY(var(--mobile-chat-rotate-y, 0deg)) scale(var(--mobile-chat-scale, 1))',
+                              transformOrigin: 'var(--mobile-chat-transform-origin, 50% 50%)',
+                              transformStyle: 'preserve-3d',
+                              backfaceVisibility: 'hidden',
+                              willChange: 'transform',
+                            }
+                          : undefined
+                      }
+                    >
+                      <div
+                        className={`flex-1 min-h-0 px-4 ${paneLayout.isSplit && !paneLayout.fullscreenPaneId ? 'py-2' : ''}`}
+                      >
+                        <SplitContainer
+                          node={paneLayout.root}
+                          renderLeaf={renderPaneLeaf}
+                          fullscreenPaneId={paneLayout.fullscreenPaneId}
+                        />
+                      </div>
+
+                      <div
+                        aria-hidden="true"
+                        className="pointer-events-none absolute inset-0 z-[80] rounded-xl border-x border-border-200/50"
+                      />
+                    </div>
+
+                    {sidebarExpanded && (
+                      <button
+                        type="button"
+                        aria-label={t('chat:sidebar.collapseSidebar')}
+                        className="absolute inset-0 z-[70] cursor-default bg-transparent [touch-action:pan-x]"
+                        onClick={handleCloseSidebar}
+                      />
+                    )}
+                  </section>
+
+                  <section
+                    className="h-full shrink-0 overflow-hidden bg-bg-100"
+                    aria-hidden={mobileActivePage !== 'right'}
+                    inert={mobileActivePage !== 'right'}
+                    style={{
+                      width: `${mobilePageWidth}px`,
+                      flexBasis: `${mobilePageWidth}px`,
+                      scrollSnapAlign: 'start',
+                      scrollSnapStop: 'always',
+                    }}
+                  >
+                    <RightPanel
+                      terminals={terminals}
+                      directory={focusedDirectory}
+                      sessionId={paneLayout.focusedSessionId}
+                      serverId={focusedServerId}
+                      inline
+                      renderPanelContent={rightPanelOpen || shouldRenderMobileRightPanel}
+                    />
+                  </section>
+                </div>
+
+                <BottomPanel directory={focusedDirectory} serverId={focusedServerId} terminals={terminals} />
+              </>
+            ) : (
+              <>
+                <Sidebar
+                  isOpen={sidebarExpanded}
+                  selectedSessionId={paneLayout.focusedSessionId}
+                  onSelectSession={handleSelectSession}
+                  onNewSession={handleNewSession}
+                  onOpen={handleOpenSidebar}
+                  onClose={handleCloseSidebar}
+                  contextLimit={focusedController?.contextLimit}
+                  onOpenSettings={openSettings}
+                  projectDialogOpen={projectDialogOpen}
+                  onProjectDialogClose={closeProjectDialog}
+                />
+
+                <div className="flex-1 flex min-w-0 h-full overflow-hidden">
+                  <div
+                    ref={surfaceRef}
+                    className="flex-1 flex flex-col min-w-0 overflow-hidden"
+                    style={{ minWidth: `${CHAT_SURFACE_MIN_WIDTH}px` }}
+                  >
+                    <div
+                      className={
+                        paneLayout.isSplit && !paneLayout.fullscreenPaneId ? 'flex-1 min-h-0 p-2' : 'flex-1 min-h-0'
+                      }
                     >
                       <SplitContainer
                         node={paneLayout.root}
@@ -1008,118 +1110,46 @@ function App() {
                       />
                     </div>
 
-                    <div
-                      aria-hidden="true"
-                      className="pointer-events-none absolute inset-0 z-[80] rounded-xl border-x border-border-200/50"
-                    />
+                    <BottomPanel directory={focusedDirectory} serverId={focusedServerId} terminals={terminals} />
                   </div>
 
-                  {sidebarExpanded && (
-                    <button
-                      type="button"
-                      aria-label={t('chat:sidebar.collapseSidebar')}
-                      className="absolute inset-0 z-[70] cursor-default bg-transparent [touch-action:pan-x]"
-                      onClick={handleCloseSidebar}
-                    />
-                  )}
-                </section>
-
-                <section
-                  className="h-full shrink-0 overflow-hidden bg-bg-100"
-                  aria-hidden={mobileActivePage !== 'right'}
-                  inert={mobileActivePage !== 'right'}
-                  style={{
-                    width: `${mobilePageWidth}px`,
-                    flexBasis: `${mobilePageWidth}px`,
-                    scrollSnapAlign: 'start',
-                    scrollSnapStop: 'always',
-                  }}
-                >
                   <RightPanel
                     terminals={terminals}
                     directory={focusedDirectory}
                     sessionId={paneLayout.focusedSessionId}
                     serverId={focusedServerId}
-                    inline
-                    renderPanelContent={rightPanelOpen || shouldRenderMobileRightPanel}
                   />
-                </section>
-              </div>
-
-              <BottomPanel directory={focusedDirectory} serverId={focusedServerId} terminals={terminals} />
-            </>
-          ) : (
-            <>
-              <Sidebar
-                isOpen={sidebarExpanded}
-                selectedSessionId={paneLayout.focusedSessionId}
-                onSelectSession={handleSelectSession}
-                onNewSession={handleNewSession}
-                onOpen={handleOpenSidebar}
-                onClose={handleCloseSidebar}
-                contextLimit={focusedController?.contextLimit}
-                onOpenSettings={openSettings}
-                projectDialogOpen={projectDialogOpen}
-                onProjectDialogClose={closeProjectDialog}
-              />
-
-              <div className="flex-1 flex min-w-0 h-full overflow-hidden">
-                <div
-                  ref={surfaceRef}
-                  className="flex-1 flex flex-col min-w-0 overflow-hidden"
-                  style={{ minWidth: `${CHAT_SURFACE_MIN_WIDTH}px` }}
-                >
-                  <div
-                    className={
-                      paneLayout.isSplit && !paneLayout.fullscreenPaneId ? 'flex-1 min-h-0 p-2' : 'flex-1 min-h-0'
-                    }
-                  >
-                    <SplitContainer
-                      node={paneLayout.root}
-                      renderLeaf={renderPaneLeaf}
-                      fullscreenPaneId={paneLayout.fullscreenPaneId}
-                    />
-                  </div>
-
-                  <BottomPanel directory={focusedDirectory} serverId={focusedServerId} terminals={terminals} />
                 </div>
+              </>
+            )}
+            <ToastContainer onOpenAbout={openAboutSettings} />
+            <UsageExceededDialog />
+          </div>
 
-                <RightPanel
-                  terminals={terminals}
-                  directory={focusedDirectory}
-                  sessionId={paneLayout.focusedSessionId}
-                  serverId={focusedServerId}
-                />
-              </div>
-            </>
-          )}
-          <ToastContainer onOpenAbout={openAboutSettings} />
-          <UsageExceededDialog />
-        </div>
+          <Suspense fallback={null}>
+            <SettingsDialog isOpen={settingsDialogOpen} onClose={closeSettings} initialTab={settingsInitialTab} />
+            <CommandPalette
+              isOpen={commandPaletteOpen}
+              onClose={() => setCommandPaletteOpen(false)}
+              commands={commands}
+              directory={focusedDirectory || currentDirectory || undefined}
+              sessions={paletteSessions}
+              onOpenSession={handlePaletteOpenSession}
+              onOpenFile={handlePaletteOpenFile}
+            />
+          </Suspense>
 
-        <Suspense fallback={null}>
-          <SettingsDialog isOpen={settingsDialogOpen} onClose={closeSettings} initialTab={settingsInitialTab} />
-          <CommandPalette
-            isOpen={commandPaletteOpen}
-            onClose={() => setCommandPaletteOpen(false)}
-            commands={commands}
-            directory={focusedDirectory || currentDirectory || undefined}
-            sessions={paletteSessions}
-            onOpenSession={handleSelectSession}
-            onOpenFile={handlePaletteOpenFile}
-          />
-        </Suspense>
-
-        <Suspense fallback={null}>
-          <CloseServiceDialog
-            isOpen={showCloseDialog}
-            onConfirm={handleCloseDialogConfirm}
-            onCancel={handleCloseDialogCancel}
-            hasUnsavedChanges={hasUnsavedChanges}
-          />
-        </Suspense>
-      </ChatViewportProvider>
-    </div>
+          <Suspense fallback={null}>
+            <CloseServiceDialog
+              isOpen={showCloseDialog}
+              onConfirm={handleCloseDialogConfirm}
+              onCancel={handleCloseDialogCancel}
+              hasUnsavedChanges={hasUnsavedChanges}
+            />
+          </Suspense>
+        </ChatViewportProvider>
+      </div>
+    </>
   )
 }
 

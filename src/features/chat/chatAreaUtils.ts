@@ -1,5 +1,6 @@
 import { isAssistantMessage, isUserMessage } from '../../types/api/message'
 import type { ProcessTimelineItem } from './chatPageModel'
+import { isNoticeMessage } from './chatAreaVisibility'
 
 /** 回合边界 / 用户消息：上下各 12px */
 const ROW_Y_TURN = 'py-3'
@@ -12,6 +13,11 @@ function isAssistantMessageItem(item: ProcessTimelineItem | undefined): boolean 
   return item?.kind === 'message' && isAssistantMessage(item.message)
 }
 
+/** 提示行自带上下留白，行容器不再加 py */
+function isNoticeItem(item: ProcessTimelineItem | undefined): boolean {
+  return item?.kind === 'message' && isNoticeMessage(item.message)
+}
+
 /**
  * 用户和过程壳保留回合边界；连续助手按消息内 stack 节奏收紧。
  * 连续助手 py-1+py-1=8px，与 MSG_SPACING.stack / processBody 的 gap-2 同距。
@@ -21,7 +27,9 @@ export function getTimelineRowYClass(
   prev?: ProcessTimelineItem,
   next?: ProcessTimelineItem,
 ): string {
-  if (item.kind === 'process-shell' || isUserMessage(item.message)) return ROW_Y_TURN
+  if (item.kind === 'process-shell') return ROW_Y_TURN
+  if (isNoticeItem(item)) return ''
+  if (isUserMessage(item.message)) return ROW_Y_TURN
 
   const prevAssistant = isAssistantMessageItem(prev)
   const nextAssistant = isAssistantMessageItem(next)

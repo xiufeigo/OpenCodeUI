@@ -15,6 +15,7 @@ import {
   RangeSlider,
 } from './SettingsUI'
 import { CodeBlockThemeSettings } from './CodeBlockThemeSettings'
+import { AppearanceStyleSettings } from './AppearanceStyleSettings'
 import { useTheme } from '../../../hooks'
 import { getThemePreset } from '../../../themes'
 import { parseOpenCodeTheme } from '../../../themes/opencodeTheme'
@@ -642,6 +643,7 @@ export function AppearanceSettings() {
     clearActiveCustomCSSSnippet,
     glassEffect,
     setGlassEffect,
+    appearanceStyle,
     uiFontScale,
     setUIFontScale,
     codeFontScale,
@@ -850,13 +852,19 @@ export function AppearanceSettings() {
           </div>
         </SettingField>
 
-        <SettingRow
-          label={t('appearance.glassEffect')}
-          description={t('appearance.glassEffectDesc')}
-          onClick={() => setGlassEffect(!glassEffect)}
-        >
-          <Toggle enabled={glassEffect} onChange={() => setGlassEffect(!glassEffect)} />
-        </SettingRow>
+        <SettingField label={t('appearance.style')} description={t('appearance.styleDesc')}>
+          <AppearanceStyleSettings />
+        </SettingField>
+
+        {appearanceStyle !== 'glass' && (
+          <SettingRow
+            label={t('appearance.glassEffect')}
+            description={t('appearance.glassEffectDesc')}
+            onClick={() => setGlassEffect(!glassEffect)}
+          >
+            <Toggle enabled={glassEffect} onChange={() => setGlassEffect(!glassEffect)} />
+          </SettingRow>
+        )}
 
         <SettingField
           label={t('appearance.uiFontScale')}
