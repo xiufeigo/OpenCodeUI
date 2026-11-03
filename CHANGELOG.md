@@ -1,5 +1,10 @@
 # Changelog
 
+## [v1.0.11] - 2026-11-02
+
+- fix(markdown): 长公式支持横向滚动 (44800bdd)
+- fix(attachment): 本机路径引用只写路径，不再整份读进 prompt.files[] (983bb028)
+
 ## [v1.0.10] - 2026-10-26
 
 - chore: bump version to 0.7.24 (3cc22e8c)
