@@ -8,6 +8,7 @@ import { SessionShellsSlot } from './SessionShellsSlot'
 import { shellInventoryStore, useShellActiveSessionIds } from '../../../store/shellInventoryStore'
 import { multiServerStore } from '../../../store/multiServerStore'
 import { useSidebarServerScope } from './useSidebarServerScope'
+import { useServerStore } from '../../../hooks/useServerStore'
 import { getProjectGroupIdentity } from './projectGrouping'
 import { ConfirmDialog } from '../../../components/ui/ConfirmDialog'
 import { ActiveSessionItem } from './ActiveSessionItem'
@@ -45,11 +46,10 @@ import {
   updateSession,
   deleteSession as apiDeleteSession,
   getSession,
-  subscribeToConnectionState,
   type ApiSession,
-  type ConnectionInfo,
 } from '../../../api'
 import { getDirectoryName, isSameDirectory, normalizeToForwardSlash } from '../../../utils'
+import { healthToConnectionDisplay } from '../../../utils/connectionDisplay'
 import { createSessionPlaceholder } from '../../../utils/sessionPlaceholder'
 import { makeSessionKey, splitSessionKey } from '../../../utils/sessionKey'
 import { uiErrorHandler } from '../../../utils'
@@ -123,6 +123,7 @@ export function SidePanel({
   } = useDirectory()
   const { multiServerConfig, activeServer, serverIds } = useSidebarServerScope()
   // 多服务器模式：Git/路径信息跟随「焦点服务器」（焦点缺省 = 活动服务器）
+  const { getHealth } = useServerStore()
   const catalogServerId = multiServerConfig.enabled
     ? (multiServerConfig.focusedServerId ?? activeServer?.id)
     : undefined
@@ -148,7 +149,6 @@ export function SidePanel({
     () => (currentDirectory ? normalizeToForwardSlash(currentDirectory) : undefined),
     [currentDirectory],
   )
-  const [connectionState, setConnectionState] = useState<ConnectionInfo | null>(null)
   const [projectDeleteConfirm, setProjectDeleteConfirm] = useState<{ isOpen: boolean; projectId: string | null }>({
     isOpen: false,
     projectId: null,
@@ -303,9 +303,20 @@ export function SidePanel({
   const notifications = useNotifications()
   const unreadNotificationCount = useUnreadNotificationCount()
 
+  // 状态点与设置页同源：直接读目标服务器的健康状态（/api/info），不看 SSE。
+  // 目标服务器优先取焦点会话所属服务器——切到别的服务器的会话时也能对上，
+  // 不会再去盯 active server 那条不相关的连接。
+  const footerServerId = selectedSessionId
+    ? splitSessionKey(selectedSessionId).serverId
+    : serverStore.getActiveServerId()
+  const footerHealth = getHealth(footerServerId)
+  const connectionDisplay = healthToConnectionDisplay(footerHealth)
+
+  // 第一次进入时健康状态可能还没查过：补一次，避免一直停在过渡态
   useEffect(() => {
-    return subscribeToConnectionState(setConnectionState)
-  }, [])
+    if (footerHealth) return
+    void serverStore.checkHealth(footerServerId).catch(() => {})
+  }, [footerHealth, footerServerId])
 
   const { sessions, isLoading, isLoadingMore, hasMore, search, setSearch, loadMore, deleteSession, refresh } =
     useSessionContext()
@@ -1635,7 +1646,7 @@ export function SidePanel({
       {/* ===== Footer ===== */}
       <SidebarFooter
         showLabels={showLabels}
-        connectionState={connectionState?.state || 'disconnected'}
+        connectionState={connectionDisplay}
         contextLimit={contextLimit}
         onOpenSettings={onOpenSettings}
       />
