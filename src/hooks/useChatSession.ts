@@ -23,6 +23,8 @@ import { usePermissions, usePermissionHandler, useMessageAnimation, useDirectory
 import { useNotification } from './useNotification'
 import { notificationEventSettingsStore } from '../store/notificationEventSettingsStore'
 import { notificationStore } from '../store/notificationStore'
+import { subscribeFullAutoMode } from '../store/autoApproveStore'
+import { shellInventoryStore } from '../store/shellInventoryStore'
 import {
   sendMessageAsync,
   getSessionMessages,
@@ -70,7 +72,7 @@ import { serverStorage } from '../utils/perServerStorage'
 import { makeSessionKey, sessionKeyToServerId, splitSessionKey } from '../utils/sessionKey'
 import { sweepTaskChildBindings, verifyTaskChildBindings } from '../utils/taskChildBinding'
 import { createMessageId } from '../utils/identifier'
-import { serverStore } from '../store/serverStore'
+import { serverStore, subscribeServerStore } from '../store/serverStore'
 import { STORAGE_KEY_SELECTED_AGENT } from '../constants'
 import type { ChatAreaHandle } from '../features/chat'
 import { inboxStore, useInboxUserPrompts, useInboxCompactions, queuedPromptText } from '../store/inboxStore'
@@ -185,7 +187,7 @@ export function useChatSession({
    * 漏声明就会把请求打到旧服务器。被 routeSessionId 守卫的单元除外：此时 paneServerId 是它的纯函数。
    */
   const activeServerId = useSyncExternalStore(
-    cb => serverStore.subscribe(cb),
+    subscribeServerStore,
     () => serverStore.getActiveServerId(),
     () => serverStore.getActiveServerId(),
   )
@@ -295,6 +297,8 @@ export function useChatSession({
     handleFormCancel,
     refreshPendingRequests,
     resetPendingRequests,
+    markPermissionResolved,
+    isPermissionResolved,
     isReplying,
   } = usePermissionHandler(paneServerId)
 
@@ -320,7 +324,7 @@ export function useChatSession({
   const effectiveDirectory = sessionDirectory || currentDirectory
 
   const fullAutoMode = useSyncExternalStore(
-    cb => autoApproveStore.onFullAutoChange(cb),
+    subscribeFullAutoMode,
     () => autoApproveStore.getPaneFullAutoMode(paneId),
   )
   const approvePendingOnFullAuto = useSyncExternalStore(
@@ -511,6 +515,9 @@ export function useChatSession({
   const sseCallbacks = useMemo(
     () => ({
       onPermissionAsked: (request: import('../api').ApiPermissionRequest) => {
+        // 已在本端处理过的请求不再上屏：SSE 重连回放 / 旧快照补投可能重复送达
+        if (isPermissionResolved(request.id)) return
+
         // Full Auto 会话级：当前 session 的 handler 天然只处理当前 session 的请求
         const effectiveFullAutoMode = autoApproveStore.getPaneFullAutoMode(paneId)
         if (effectiveFullAutoMode === 'session') {
@@ -549,6 +556,9 @@ export function useChatSession({
         // 应用内 toast 已在 useGlobalEvents 中统一处理
       },
       onPermissionReplied: (data: { sessionID: string; requestID: string }) => {
+        // 不管是本 pane 回复还是别处（全局自动放行 / 另一个客户端）处理，
+        // 都记下来：后续 refresh 拿到的旧快照不能把它捡回来
+        markPermissionResolved(data.requestID)
         setPendingPermissionRequests(prev =>
           prev.some(r => r.id === data.requestID) ? prev.filter(r => r.id !== data.requestID) : prev,
         )
@@ -635,6 +645,8 @@ export function useChatSession({
       buildNotificationTitle,
       sendNotification,
       isWithinCurrentSession,
+      isPermissionResolved,
+      markPermissionResolved,
       loadSession,
       refreshPendingRequests,
       refetchModels,
@@ -683,6 +695,14 @@ export function useChatSession({
     prefetchRootDirectory(effectiveDirectory, paneServerId).catch(() => {})
     prefetchCommands(effectiveDirectory, paneServerId).catch(() => {})
   }, [effectiveDirectory, paneServerId])
+
+  // 只有当前打开的会话目录主动水合 shell 库存（刷新后恢复后台 shell 行）。
+  // 侧边栏里其它会话只吃全局 shell 事件，不因为出现在列表里就替用户
+  // 打开那个工作区——见 shellInventoryStore 的 hydrateRefs 说明。
+  useEffect(() => {
+    if (!effectiveDirectory) return
+    return shellInventoryStore.trackDirectory(effectiveDirectory)
+  }, [effectiveDirectory])
 
   // agents 列表加载后，校验当前选中的 agent 是否存在于列表中
   // 选择值统一为 agent **id**（v2 API 用 id）；历史存储的显示名会被归一化成 id
@@ -790,10 +810,14 @@ export function useChatSession({
       // /permission can list it for this routed instance. Refresh 时序下子 session 关系
       // 可能尚未注册（family 不含子 session），因此 SSE 已知请求必须无条件保留，
       // 否则刷新后子任务的权限弹窗会被 family 过滤误删。
-      const nextPerms = allPerms.filter((p: ApiPermissionRequest) => matchesFamily(p.sessionID))
+      // 本端已经处理掉的请求不得从旧快照里复活（见 usePermissionHandler 的 resolvedIdsRef）。
+      const nextPerms = allPerms.filter(
+        (p: ApiPermissionRequest) => matchesFamily(p.sessionID) && !isPermissionResolved(p.id),
+      )
       setPendingPermissionRequests(prev => {
         const merged = new Map(nextPerms.map((p: ApiPermissionRequest) => [p.id, p]))
         for (const request of prev) {
+          if (isPermissionResolved(request.id)) continue
           if (!merged.has(request.id)) merged.set(request.id, request)
         }
         return Array.from(merged.values())
@@ -846,6 +870,7 @@ export function useChatSession({
     resetPendingRequests,
     setPendingPermissionRequests,
     setPendingQuestionRequests,
+    isPermissionResolved,
   ])
 
   const sendMessageNow = useCallback(
