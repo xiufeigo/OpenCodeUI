@@ -13,8 +13,19 @@ ensure_mise() {
     *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
   esac
 
-  curl -fsSL "${MISE_INSTALL_URL:-https://mise.run}" \
-    | MISE_INSTALL_PATH=/usr/local/bin/mise MISE_INSTALL_FROM_GITHUB=1 MISE_INSTALL_ARCH="${MISE_ARCH}" sh
+  # 用脚本内置的当前版本号钉住版本：校验和写在脚本里，tarball 走
+  # mise.jdx.dev，避免去 GitHub Releases 现拉 SHASUMS256.txt（容易 504）。
+  local installer=/tmp/mise-install.sh
+  curl -fsSL --retry 3 --retry-delay 2 --retry-connrefused -o "$installer" "${MISE_INSTALL_URL:-https://mise.run}"
+  local pin
+  pin="$(sed -n 's/^[[:space:]]*current_version="v\{0,1\}\([0-9][0-9.]*\)".*$/\1/p' "$installer" | head -n1)"
+
+  if [ -n "$pin" ]; then
+    MISE_INSTALL_PATH=/usr/local/bin/mise MISE_INSTALL_ARCH="${MISE_ARCH}" MISE_VERSION="$pin" sh "$installer"
+  else
+    MISE_INSTALL_PATH=/usr/local/bin/mise MISE_INSTALL_FROM_GITHUB=1 MISE_INSTALL_ARCH="${MISE_ARCH}" sh "$installer"
+  fi
+  rm -f "$installer"
 }
 
 ensure_opencode() {
@@ -22,18 +33,34 @@ ensure_opencode() {
     return
   fi
 
-  # 直接从 GitHub Releases 拉 tarball，绕开 opencode.ai/install 脚本对
-  # api.github.com 的依赖（共享 IP 易触发限流）。
+  # 走 opencode.ai 的 CLI 分发清单（v2 发布线）。GitHub 的 releases/latest
+  # 仍指向 v1.19.x，装下来和 v2 SDK 前端对不上。
   case "$(uname -m)" in
     x86_64)  OC_ARCH=x64 ;;
     aarch64|arm64) OC_ARCH=arm64 ;;
     *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
   esac
 
-  curl -fsSL -o /tmp/opencode.tar.gz \
-    "https://github.com/anomalyco/opencode/releases/latest/download/opencode-linux-${OC_ARCH}.tar.gz"
+  local manifest=/tmp/opencode-release.json
+  curl -fsSL --retry 3 --retry-delay 2 --retry-connrefused -o "$manifest" "${OPENCODE_MANIFEST_URL:-https://opencode.ai/update/api/latest/cli/opencode}"
+
+  local file="opencode-linux-${OC_ARCH}.tar.gz"
+  local url sha
+  url="$(jq -r --arg f "$file" '.metadata.files[$f].url // empty' "$manifest")"
+  sha="$(jq -r --arg f "$file" '.metadata.files[$f].sha256 // empty' "$manifest")"
+  if [ -z "$url" ] || [ -z "$sha" ]; then
+    echo "no ${file} entry in opencode manifest" >&2
+    exit 1
+  fi
+  case "$url" in
+    http*) ;;
+    *) url="https://opencode.ai${url}" ;;
+  esac
+
+  curl -fsSL --retry 3 --retry-delay 2 --retry-connrefused -o /tmp/opencode.tar.gz "$url"
+  echo "${sha}  /tmp/opencode.tar.gz" | sha256sum -c -
   tar -xzf /tmp/opencode.tar.gz -C /usr/local/bin opencode
-  rm -f /tmp/opencode.tar.gz
+  rm -f /tmp/opencode.tar.gz "$manifest"
   chmod +x /usr/local/bin/opencode
 }
 
