@@ -1,5 +1,56 @@
 # Changelog
 
+## [v1.0.15] - 2026-11-20
+
+同步上游 v0.7.28 之后到 v0.7.30 的功能提交（跳过上游 0.7.29 / 0.7.30 版本号 bump）。
+
+### 流式输出
+
+- perf(render): 流式文本按节奏揭示，并减轻 Markdown / 高亮渲染负担 (bef6dd6f)
+- feat(stream): 流式文本尾部淡入 (aa3effc3)
+- fix(stream): 块结束后立即补齐前面的流式文字 (cd202251)
+- feat(settings): 流式逐字节奏与尾部淡入可单独开关 (41d797f6)
+- feat(stream): 工具卡按流式节奏生长入场 (1182ec4c)
+- fix(stream): 工具卡入场只做淡入，不再插值高度 (af45e12a)
+- fix(chat): 流式期间每帧兜底贴底 (af5b1935)
+
+### Markdown 与高亮
+
+- fix(render): 补齐嵌套代码块样式，自定义动画遵从减少动效 (e892dfd9)
+- fix(markdown): 补齐标题层级、嵌套表格、HTML 注释与列表 / 链接样式 (8c5ee29c)
+- perf(markdown): 缓存非流式消息的分块结果 (a79bd18d)
+- perf(markdown): 合并稳定块组，超大 live 块限频完整解析 (14f317a4)
+- refactor(markdown): 抽出 Mermaid 渲染块 (aab42f47)
+- style(markdown): 去掉 Mermaid 块文件末尾多余空行 (ad1e9011)
+- perf(highlight): 流式高亮改为增量协议 (2f958c0b)
+- perf(markdown): 大块解析移到 Worker (806773d5)
+- feat(markdown): 行内前瞻与长代码块折叠 (fc5a26be)
+- perf(highlight): 语法失败按语言冷却 (2b4e25fc)
+- fix(markdown): 折叠改为限高可滚动，按钮并入操作区 (50c45413)
+- fix(markdown): 围栏语言没写完时不做增量追加 (3e9531e6)
+- feat(settings): 长代码块折叠可开关，默认开启 (4c63b193)
+- fix(markdown): 增量渲染按块边界判断，不再猜后缀 (e7894e9c)
+- perf(markdown): 尾部增量解析与诊断补强 (bd2cc1a8)
+- fix(markdown): 图区域不再吞掉触摸滚动 (b50e3407)
+
+### 长会话、虚拟列表与内存
+
+- perf(chat): 长会话下避免逐帧重算与无效重渲染 (cde5248a)
+- perf(cache): 消息渲染相关缓存加上体积上限 (ff495683)
+- perf(virtual): 会话恢复按 key 取高度，滚动时不再重建 observer (2b17bb58)
+- perf(virtual): 冷启动按消息内容估算行高 (5eaf2a94)
+- refactor(render): 统一有上限缓存，补开发期耗时打点 (078a7cd1)
+- refactor(chat): 抽出时间线高度估算与会话测量缓存 (35104fc1)
+- perf(render): 长消息块级窗口化与流式掉帧采样 (c7836eea)
+- refactor(message): 拆出工具摘要与内容分组 (3ab37925)
+- fix(chat): 翻页锚点让位于用户滚动，跳屏渲染延后到真实布局 (f35f8991)
+- feat(memory): 会话持有量统计、按体积分页与闲置回收 (94cb5d61)
+- perf(chat): 预渲染窗口改为按像素计算，高亮提前到可见之前 (664af913)
+
+### 输入
+
+- fix(input): 手持设备按触摸优先，不再被媒体查询判成桌面 (5dc51948)
+
 ## [v1.0.14] - 2026-11-18
 
 - fix(chat): 压缩后的续写继续挂过程壳 (1ffc33ac)
