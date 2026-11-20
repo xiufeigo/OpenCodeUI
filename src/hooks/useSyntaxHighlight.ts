@@ -1,11 +1,20 @@
-import { useState, useEffect, useMemo, useRef, useId, useSyncExternalStore } from 'react'
+import { useState, useEffect, useMemo, useRef, useId, useSyncExternalStore, useCallback } from 'react'
 import type { ShikiThemeInput } from '../lib/shikiTheme'
 import { getShikiTheme, useIsDarkMode } from '../lib/shikiTheme'
-import { disposeShikiWorkerKey, highlightHtmlInWorker, highlightTokensInWorker } from '../lib/shikiWorkerClient'
+import { disposeShikiWorkerKey, highlightHtmlInWorker, highlightTokensInWorker, splitTokensIntoLines } from '../lib/shikiWorkerClient'
 import type { HighlightTokens } from '../lib/highlightTypes'
+import {
+  applyHighlightChunk,
+  createHighlightAccumulator,
+  type HighlightAccumulator,
+} from '../lib/highlightAccumulator'
 import { normalizeLanguage } from '../utils/languageUtils'
+import { BoundedCache } from '../utils/boundedCache'
+import { finishPerf, startPerf } from '../utils/perfTrace'
 import { THEME_SWITCH_DISABLE_MS } from '../constants'
 import { themeStore } from '../store/themeStore'
+import { reportRenderFailure } from '../utils/renderDiagnostics'
+import { isHighlightLanguageCoolingDown, markHighlightLanguageFailed } from '../lib/highlightCooldown'
 
 export type { HighlightTokens } from '../lib/highlightTypes'
 export type { ShikiThemeInput } from '../lib/shikiTheme'
@@ -34,83 +43,23 @@ type IdleWindowApi = {
 type HighlightTask = () => Promise<void>
 
 // ============================================
-// LRU 缓存层 - 避免重复高亮相同代码
+// 缓存层 - 避免重复高亮相同代码
 // ============================================
 
-interface CacheEntry<T> {
-  value: T
-  /** 估算成本（字符量 / token 数），用于按总量回收 */
-  cost: number
-}
-
-/**
- * 带成本预算的 LRU。
- *
- * 原来的实现只按条数回收：80 条 token 数组，赶上几个大文件就是几百 MB。
- * 现在同时受条数和总量限制，读命中也会移到队尾（真正的 LRU）。
- */
-class LRUCache<T> {
-  private cache = new Map<string, CacheEntry<T>>()
-  private totalCost = 0
-  private readonly maxSize: number
-  private readonly maxCost: number
-  private readonly costOf: (value: T) => number
-
-  constructor(maxSize: number, maxCost = Number.POSITIVE_INFINITY, costOf: (value: T) => number = () => 1) {
-    this.maxSize = maxSize
-    this.maxCost = maxCost
-    this.costOf = costOf
-  }
-
-  get(key: string): T | undefined {
-    const entry = this.cache.get(key)
-    if (!entry) return undefined
-    this.cache.delete(key)
-    this.cache.set(key, entry)
-    return entry.value
-  }
-
-  set(key: string, value: T): void {
-    const cost = this.costOf(value)
-    const existing = this.cache.get(key)
-    if (existing) {
-      this.totalCost -= existing.cost
-      existing.value = value
-      existing.cost = cost
-      this.cache.delete(key)
-      this.cache.set(key, existing)
-    } else {
-      this.cache.set(key, { value, cost })
-    }
-    this.totalCost += cost
-    this.trim()
-  }
-
-  private trim(): void {
-    while (this.cache.size > this.maxSize || this.totalCost > this.maxCost) {
-      const oldest = this.cache.keys().next().value
-      if (oldest === undefined) break
-      this.totalCost -= this.cache.get(oldest)?.cost ?? 0
-      this.cache.delete(oldest)
-    }
-  }
-
-  clear(): void {
-    this.cache.clear()
-    this.totalCost = 0
-  }
-
-  get size(): number {
-    return this.cache.size
-  }
-}
-
-const htmlCache = new LRUCache<string>(120, 4 * 1024 * 1024, html => html.length)
-const tokensCache = new LRUCache<HighlightTokens>(80, 8 * 1024 * 1024, tokens => {
-  // 字符量 + 每个 token 的对象开销，粗略但足够决定回收顺序
-  let cost = 0
-  for (const line of tokens) for (const token of line) cost += token.content.length + 24
-  return cost
+const htmlCache = new BoundedCache<string, string>({
+  maxEntries: 120,
+  maxCost: 4 * 1024 * 1024,
+  costOf: html => html.length,
+})
+const tokensCache = new BoundedCache<string, HighlightTokens>({
+  maxEntries: 80,
+  maxCost: 8 * 1024 * 1024,
+  costOf: tokens => {
+    // 字符量 + 每个 token 的对象开销，粗略但足够决定回收顺序
+    let cost = 0
+    for (const line of tokens) for (const token of line) cost += token.content.length + 24
+    return cost
+  },
 })
 
 /**
@@ -121,6 +70,8 @@ const tokensCache = new LRUCache<HighlightTokens>(80, 8 * 1024 * 1024, tokens =>
 const MAX_HIGHLIGHT_CHARS = 160 * 1024
 /** 超过这个长度的结果不进缓存：一两条大文件就能把 LRU 撑成几百 MB */
 const MAX_CACHED_HIGHLIGHT_CHARS = 64 * 1024
+/** 流式高亮的合并窗口：窗口内只把最新文本送给 worker */
+const STREAMING_HIGHLIGHT_INTERVAL_MS = 48
 
 const highlightQueue: HighlightTask[] = []
 let highlightQueueRunning = false
@@ -181,6 +132,8 @@ async function highlightWithCache(
   themeKey: string,
   mode: 'html' | 'tokens',
 ): Promise<string | HighlightTokens | null> {
+  if (isHighlightLanguageCoolingDown(lang)) return null
+
   const cacheKey = getCacheKey(code, lang, themeKey)
   const cacheable = code.length <= MAX_CACHED_HIGHLIGHT_CHARS
 
@@ -197,7 +150,9 @@ async function highlightWithCache(
       })
       if (cacheable) htmlCache.set(cacheKey, html)
       return html
-    } catch {
+    } catch (err) {
+      reportRenderFailure('highlight', 'degraded', err)
+      if (!(err instanceof Error) || err.message !== 'superseded') markHighlightLanguageFailed(lang)
       return null
     }
   } else {
@@ -205,16 +160,19 @@ async function highlightWithCache(
     if (cached !== undefined) return cached
 
     try {
-      const { tokens } = await highlightTokensInWorker({
+      const { stable } = await highlightTokensInWorker({
         key: `tokens:${cacheKey}:${highlightRequestId++}`,
         text: code,
         language: lang,
         theme,
         complete: true,
       })
+      const tokens = splitTokensIntoLines(stable)
       if (cacheable) tokensCache.set(cacheKey, tokens)
       return tokens
-    } catch {
+    } catch (err) {
+      reportRenderFailure('highlight', 'degraded', err)
+      if (!(err instanceof Error) || err.message !== 'superseded') markHighlightLanguageFailed(lang)
       return null
     }
   }
@@ -268,54 +226,133 @@ export function useStreamingSyntaxHighlight(
   const [outputState, setOutputState] = useState<{ code: string; tokens: HighlightTokens } | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const workerKeyRef = useRef('')
-  const codeRef = useRef(code)
-  codeRef.current = code
+  /** 按 worker key 累积增量 token；换语言/主题时整体丢弃 */
+  const accumulatorRef = useRef<{ key: string; acc: HighlightAccumulator } | null>(null)
 
   const key = `${instanceId}:${normalizedLang}:${resolvedTheme.key}`
 
+  // 流式高亮不必跟满帧：worker 侧是 latest-only，主线程如果每帧都 postMessage，
+  // 只会反复结构化拷贝整段代码。这里固定一个合并窗口，窗口内只保留最后一次。
+  const latestRef = useRef({
+    code,
+    enabled,
+    key,
+    language: normalizedLang,
+    theme: resolvedTheme.theme,
+  })
+  const timerRef = useRef<number | null>(null)
+  const lastRequestAtRef = useRef(0)
+  const runRequestRef = useRef<() => void>(() => {})
+
+  const scheduleRequest = useCallback(() => {
+    if (timerRef.current !== null) return
+    const wait = Math.max(0, STREAMING_HIGHLIGHT_INTERVAL_MS - (performance.now() - lastRequestAtRef.current))
+    timerRef.current = window.setTimeout(() => runRequestRef.current(), wait)
+  }, [])
+
   useEffect(() => {
+    latestRef.current = { code, enabled, key, language: normalizedLang, theme: resolvedTheme.theme }
+
+    runRequestRef.current = () => {
+      timerRef.current = null
+      const request = latestRef.current
+      if (!request.enabled || isHighlightLanguageCoolingDown(request.language)) {
+        setIsLoading(false)
+        return
+      }
+
+      const isCurrent = () => latestRef.current.key === request.key && latestRef.current.enabled
+      const currentAccumulator = accumulatorRef.current
+      if (!currentAccumulator || currentAccumulator.key !== request.key) {
+        accumulatorRef.current = { key: request.key, acc: createHighlightAccumulator() }
+      }
+
+      lastRequestAtRef.current = performance.now()
+      setIsLoading(true)
+      const startedAt = startPerf()
+
+      void (async () => {
+        try {
+          const highlight = (forceReset?: boolean) =>
+            highlightTokensInWorker({
+              key: request.key,
+              text: request.code,
+              language: request.language,
+              theme: request.theme,
+              forceReset,
+            })
+
+          let chunk
+          try {
+            chunk = await highlight()
+          } catch (err) {
+            // 续传的前缀对不上（worker 侧流被丢弃或重开过）：带全量文本重开一次
+            if (!(err instanceof Error) || err.message !== 'stream-desync') throw err
+            chunk = await highlight(true)
+          }
+          if (!isCurrent()) return
+
+          let state = accumulatorRef.current
+          if (!state || state.key !== request.key) return
+          let applied = applyHighlightChunk(state.acc, chunk)
+
+          // 累积状态和 worker 对不上（上一拍被合并、或流被重开）：要一次全量重排
+          if (!applied.ok) {
+            chunk = await highlight(true)
+            if (!isCurrent()) return
+            state = accumulatorRef.current
+            if (!state || state.key !== request.key) return
+            applied = applyHighlightChunk(state.acc, chunk)
+            if (!applied.ok) return
+          }
+
+          const tokens = applied.tokens
+          setOutputState(prev => (prev?.code === chunk.code ? prev : { code: chunk.code, tokens }))
+        } catch (err) {
+          if (import.meta.env.DEV && err instanceof Error && err.message !== 'superseded') {
+            reportRenderFailure('highlight', 'degraded', err)
+          }
+          // 语法/词法失败按语言冷却；superseded / 续传错位不是语法问题
+          if (!(err instanceof Error) || (err.message !== 'superseded' && err.message !== 'stream-desync')) {
+            markHighlightLanguageFailed(request.language)
+          }
+        } finally {
+          finishPerf('highlight.stream', startedAt, 80, `${request.code.length} chars`)
+          if (isCurrent()) setIsLoading(false)
+        }
+      })()
+    }
+
     if (!enabled) {
+      if (timerRef.current !== null) {
+        window.clearTimeout(timerRef.current)
+        timerRef.current = null
+      }
+      accumulatorRef.current = null
       if (workerKeyRef.current) {
         disposeShikiWorkerKey(workerKeyRef.current)
         workerKeyRef.current = ''
       }
-      setIsLoading(false)
       return
     }
 
-    let cancelled = false
     const previousKey = workerKeyRef.current
-    if (previousKey && previousKey !== key) disposeShikiWorkerKey(previousKey)
-    workerKeyRef.current = key
-
-    // 同帧多次 code 变更只打一次 worker（读 codeRef 拿最新文本）
-    const frame = requestAnimationFrame(() => {
-      if (cancelled) return
-      const text = codeRef.current
-      setIsLoading(true)
-      void highlightTokensInWorker({ key, text, language: normalizedLang, theme: resolvedTheme.theme })
-        .then(result => {
-          if (cancelled) return
-          setOutputState(prev => (prev?.code === result.code ? prev : { code: result.code, tokens: result.tokens }))
-        })
-        .catch(err => {
-          if (import.meta.env.DEV && err instanceof Error && err.message !== 'superseded') {
-            console.warn('[Syntax] streaming Shiki worker error:', err)
-          }
-        })
-        .finally(() => {
-          if (!cancelled) setIsLoading(false)
-        })
-    })
-
-    return () => {
-      cancelled = true
-      cancelAnimationFrame(frame)
+    if (previousKey && previousKey !== key) {
+      disposeShikiWorkerKey(previousKey)
+      accumulatorRef.current = null
+      // 换语言/主题后旧 token 的颜色和语法都不对，先清掉等新结果
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- 与 worker 的旧输出解耦，属于外部状态同步
+      setOutputState(null)
+      lastRequestAtRef.current = 0
     }
-  }, [code, enabled, key, normalizedLang, resolvedTheme.theme])
+    workerKeyRef.current = key
+    scheduleRequest()
+  }, [code, enabled, key, normalizedLang, resolvedTheme.theme, scheduleRequest])
 
   useEffect(() => {
     return () => {
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current)
+      timerRef.current = null
       if (workerKeyRef.current) disposeShikiWorkerKey(workerKeyRef.current)
     }
   }, [])
@@ -397,9 +434,7 @@ export function useSyntaxHighlight(code: string, options: HighlightOptions & { m
         const result = await highlightWithCache(code, normalizedLang, resolvedTheme.theme, resolvedTheme.key, mode)
         if (!cancelled) setOutputState({ key: outputKey, value: result })
       } catch (err) {
-        if (import.meta.env.DEV) {
-          console.warn('[Syntax] Shiki error:', err)
-        }
+        reportRenderFailure('highlight', 'degraded', err)
         if (!cancelled) setOutputState({ key: outputKey, value: null })
       } finally {
         if (!cancelled) setIsLoading(false)
@@ -507,9 +542,7 @@ export function useSyntaxHighlightRef(
           setVersion(v => v + 1)
         }
       } catch (err) {
-        if (import.meta.env.DEV) {
-          console.warn('[Syntax] Shiki error:', err)
-        }
+        reportRenderFailure('highlight', 'degraded', err)
         if (!cancelled) {
           tokensRef.current = null
           setVersion(v => v + 1)

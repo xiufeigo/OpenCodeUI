@@ -13,6 +13,10 @@ export type MarkdownStreamBlock = {
 export type MarkdownStreamProjection = {
   text: string
   blocks: MarkdownStreamBlock[]
+  /** 未分组源块，尾部重解析只从最后一个源块起点开始 */
+  sourceBlocks?: MarkdownSourceBlock[]
+  /** 已收集的引用定义（尾部重解析需要继承） */
+  referenceDefinitions?: string
 }
 
 const MARKUP_PREVIEW_LANGUAGES = new Set(['html', 'htm', 'xhtml', 'xml', 'svg'])
@@ -58,6 +62,16 @@ function getOpeningFence(raw: string) {
   return { char: match[1][0], size: match[1].length }
 }
 
+/**
+ * 围栏开头那一行是否已经换行。
+ *
+ * 没换行时语言名还在增长（` ```pytho` → ` ```python`），这一阶段必须重新切分；
+ * 走「未闭合 fence 纯追加」会把剩下的字符拼进代码内容，语言永远停在半截。
+ */
+function hasFenceOpeningLineBreak(raw: string): boolean {
+  return /^[ \t]{0,3}(?:`{3,}|~{3,})[^\n]*\n/.test(raw)
+}
+
 function hasOpenFence(raw: string) {
   return getTrailingOpenFenceStart(raw) === 0
 }
@@ -65,8 +79,14 @@ function hasOpenFence(raw: string) {
 function suffixClosesOpenFence(raw: string, suffix: string) {
   const fence = getOpeningFence(raw)
   if (!fence) return suffix.includes('```') || suffix.includes('~~~')
-  const prefix = raw.slice(-(fence.size - 1))
-  return new RegExp(`^[\\s\\S]*(?:^|\\n)[ \\t]{0,3}${fence.char}{${fence.size},}[ \\t]*(?:\\n|$)`).test(prefix + suffix)
+  // 用「当前行 + 后缀」判断：闭合围栏可能被拆成多次到达，也可能带缩进，
+  // 只取末尾几个字符会丢掉行首和缩进信息。
+  const lineStart = raw.lastIndexOf('\n') + 1
+  const currentLine = raw.slice(lineStart)
+  const closePattern = new RegExp(
+    `(?:^|\\n)[ \\t]{0,3}${fence.char}{${fence.size},}[ \\t]*(?:\\n|$)`,
+  )
+  return closePattern.test(currentLine + suffix)
 }
 
 function getLanguage(value: string | undefined) {
@@ -89,7 +109,41 @@ export function stripLeadingHtmlComments(source: string): string {
   return rest
 }
 
-type MarkdownSourceBlock = { start: number; raw: string; src: string; token?: Tokens.Generic }
+export type MarkdownSourceBlock = { start: number; raw: string; src: string; token?: Tokens.Generic }
+/** 相邻小段落合成块组的最小字符数：避免长回答被拆成几百个组件 */
+const MARKDOWN_GROUP_MIN_CHARS = 800
+/** 可以安全合并的 token：都是纯 Markdown 块；代码/表格/HTML artifact 必须保持独立 */
+const GROUPABLE_TOKEN_TYPES = new Set(['paragraph', 'heading', 'list', 'blockquote', 'hr'])
+
+function groupMarkdownBlocks(blocks: MarkdownSourceBlock[]): MarkdownSourceBlock[] {
+  const grouped: MarkdownSourceBlock[] = []
+  let buffer: MarkdownSourceBlock[] = []
+  let bufferRaw = ''
+
+  const flush = (force: boolean) => {
+    if (buffer.length === 0) return
+    if (buffer.length === 1 || (!force && bufferRaw.length < MARKDOWN_GROUP_MIN_CHARS)) {
+      grouped.push(...buffer)
+    } else {
+      grouped.push({ start: buffer[0].start, raw: bufferRaw, src: bufferRaw })
+    }
+    buffer = []
+    bufferRaw = ''
+  }
+
+  for (const block of blocks) {
+    if (!block.token || !GROUPABLE_TOKEN_TYPES.has(block.token.type)) {
+      flush(false)
+      grouped.push(block)
+      continue
+    }
+    buffer.push(block)
+    bufferRaw += block.raw
+    if (bufferRaw.length >= MARKDOWN_GROUP_MIN_CHARS) flush(true)
+  }
+  flush(false)
+  return grouped
+}
 
 const BLOCK_HTML_CONTAINERS = new Set([
   'address',
@@ -371,14 +425,19 @@ function splitMarkdownBlocks(markdown: string) {
   }
 }
 
-export function splitMarkdownStream(markdown: string, isStreaming: boolean): MarkdownStreamBlock[] {
+function buildStreamBlocks(
+  sourceBlocks: MarkdownSourceBlock[],
+  referenceDefinitions: string,
+  isStreaming: boolean,
+  fenceStart: number | null,
+): MarkdownStreamBlock[] {
   if (!isStreaming) {
-    if (!markdown) return [{ key: 'html:0', src: '', mode: 'full' }]
-    const { blocks, referenceDefinitions } = splitMarkdownBlocks(markdown)
-    if (blocks.length === 1 && blocks[0]?.token?.type !== 'code' && blocks[0]?.token?.type !== 'table') {
-      return [{ key: 'html:0', src: appendReferenceDefinitions(blocks[0]?.raw ?? markdown, referenceDefinitions), mode: 'full' }]
+    if (sourceBlocks.length === 0) return [{ key: 'html:0', src: '', mode: 'full' }]
+    const first = sourceBlocks[0]!
+    if (sourceBlocks.length === 1 && first.token?.type !== 'code' && first.token?.type !== 'table') {
+      return [{ key: 'html:0', src: appendReferenceDefinitions(first.raw, referenceDefinitions), mode: 'full' }]
     }
-    return blocks.map(block => {
+    return groupMarkdownBlocks(sourceBlocks).map(block => {
       if (block.token?.type === 'code') {
         const language = getLanguage((block.token as Tokens.Code).lang)
         return {
@@ -409,16 +468,21 @@ export function splitMarkdownStream(markdown: string, isStreaming: boolean): Mar
     })
   }
 
-  if (!markdown) return [{ key: 'html:0', src: '', mode: 'live' }]
+  if (sourceBlocks.length === 0) return [{ key: 'html:0', src: '', mode: 'live' }]
 
-  const fenceStart = getTrailingOpenFenceStart(markdown)
-  const { blocks, referenceDefinitions } = splitMarkdownBlocks(markdown)
-  if (blocks.length === 1 && blocks[0]?.token?.type !== 'code' && blocks[0]?.token?.type !== 'table') {
-    return [{ key: 'html:0', src: appendReferenceDefinitions(blocks[0]?.raw ?? markdown, referenceDefinitions), mode: 'live' }]
+  const first = sourceBlocks[0]!
+  if (sourceBlocks.length === 1 && first.token?.type !== 'code' && first.token?.type !== 'table') {
+    return [{ key: 'html:0', src: appendReferenceDefinitions(first.raw, referenceDefinitions), mode: 'live' }]
   }
 
-  return blocks.map(block => {
-    const isLiveTail = block === blocks[blocks.length - 1] || (fenceStart != null && block.start >= fenceStart)
+  // 流式时最后一块永远是 live 尾，不能并进稳定块组
+  const groupedBlocks = groupMarkdownBlocks(sourceBlocks.slice(0, -1))
+  const liveTail = sourceBlocks[sourceBlocks.length - 1]
+  if (liveTail) groupedBlocks.push(liveTail)
+
+  return groupedBlocks.map(block => {
+    const isLiveTail =
+      block === sourceBlocks[sourceBlocks.length - 1] || (fenceStart != null && block.start >= fenceStart)
     if (block.token?.type === 'code') {
       const complete = fenceStart == null || block.start < fenceStart
       const language = getLanguage((block.token as Tokens.Code).lang)
@@ -449,18 +513,102 @@ export function splitMarkdownStream(markdown: string, isStreaming: boolean): Mar
   })
 }
 
-/** suffix 可能切出新块时必须全量 re-lex；宁可多 split，不可错并块 */
-function suffixBreaksLiveBlock(suffix: string): boolean {
-  if (!suffix) return false
-  if (suffix.includes('\n\n')) return true
-  if (suffix.includes('```') || suffix.includes('~~~')) return true
-  // 引用定义 / 脚注标号
-  if (suffix.includes(']:')) return true
-  // 行首块结构（heading / list / quote / table / hr）
-  if (/\n(?:#{1,6}\s|[-*+]\s|\d+\.\s|>\s?|\||-{3,}|\*{3,}|_{3,})/.test(suffix)) return true
-  // suffix 本身以块结构开头（上一帧刚好停在段落边界之后）
-  if (/^(?:#{1,6}\s|[-*+]\s|\d+\.\s|>\s?|\|)/.test(suffix)) return true
-  return false
+function splitMarkdownStreamDetailed(
+  markdown: string,
+  isStreaming: boolean,
+): Required<Pick<MarkdownStreamProjection, 'blocks' | 'sourceBlocks' | 'referenceDefinitions'>> {
+  const { blocks, referenceDefinitions } = splitMarkdownBlocks(markdown)
+  const fenceStart = isStreaming ? (getTrailingOpenFenceStart(markdown) ?? null) : null
+  return {
+    blocks: buildStreamBlocks(blocks, referenceDefinitions, isStreaming, fenceStart),
+    sourceBlocks: blocks,
+    referenceDefinitions,
+  }
+}
+
+export function splitMarkdownStream(markdown: string, isStreaming: boolean): MarkdownStreamBlock[] {
+  return splitMarkdownStreamDetailed(markdown, isStreaming).blocks
+}
+
+/**
+ * 只从最后一个源块开始重解析。
+ *
+ * 前面的源块已经收尾，新的文本只可能扩展/改变最后一个块；把尾部切片重新 lex，
+ * 再和稳定源块拼起来重新分组。引用定义出现在尾部时会影响稳定块的链接，
+ * 这种情况返回 null，让调用方走全量切分。
+ */
+function projectTail(
+  previous: MarkdownStreamProjection,
+  markdown: string,
+  isStreaming: boolean,
+): MarkdownStreamProjection | null {
+  const sources = previous.sourceBlocks
+  const tailStart = sources?.at(-1)?.start
+  if (!sources || tailStart === undefined) return null
+
+  const tailText = markdown.slice(tailStart)
+  const { blocks: tailSources, referenceDefinitions: tailDefinitions } = splitMarkdownBlocks(tailText)
+  // 新定义会影响已经稳定的块，走全量
+  if (tailDefinitions && tailDefinitions !== (previous.referenceDefinitions ?? '')) return null
+  if (tailSources.length === 0) return null
+
+  const combined = [
+    ...sources.slice(0, -1),
+    ...tailSources.map(block => ({ ...block, start: block.start + tailStart })),
+  ]
+  const tailFenceOffset = getTrailingOpenFenceStart(tailText)
+  const fenceStart = tailFenceOffset === undefined ? null : tailFenceOffset + tailStart
+
+  return {
+    text: markdown,
+    blocks: buildStreamBlocks(combined, previous.referenceDefinitions ?? '', isStreaming, fenceStart),
+    sourceBlocks: combined,
+    referenceDefinitions: previous.referenceDefinitions ?? '',
+  }
+}
+
+/**
+ * 未闭合代码块的代码文本。
+ *
+ * marked 对开放围栏的处理是：取开头围栏行之后的全部内容，只裁掉末尾一个换行。
+ * 这里按同一规则从 raw 派生，避免累积拼接和解析器不一致（空行、行尾换行都会偏差）。
+ */
+function openFenceCodeText(raw: string): string {
+  const lineEnd = raw.indexOf('\n')
+  if (lineEnd === -1) return ''
+  const content = raw.slice(lineEnd + 1)
+  return content.endsWith('\n') ? content.slice(0, -1) : content
+}
+/**
+ * live 段能否纯追加。
+ *
+ * 块类型只可能在换行处改变，所以只放行「同一行内继续写」这一种情况：
+ * - 后缀里有换行 → 可能开始新的块，重新切分
+ * - 当前段已经停在行首 → 下一个字符可能开启块，重新切分
+ * - 当前行正在补围栏开头（``` / ~~~）→ 重新切分，让 launcher 尽早变成 code
+ *
+ * 同一行内的追加只影响行内语法，块渲染器会重新解析这一段，类型不会漂移。
+ */
+function canAppendToLiveTail(tail: MarkdownStreamBlock, suffix: string): boolean {
+  if (!suffix || suffix.includes('\n')) return false
+  if (!tail.src || tail.src.endsWith('\n')) return false
+
+  const lastLine = tail.src.slice(tail.src.lastIndexOf('\n') + 1)
+  // 已经是 3 个以上的围栏字符：这一段应该是代码块，不能继续当段落追加
+  if (/^[ \t]{0,3}(?:`{3,}|~{3,})/.test(lastLine)) return false
+  // 正在补齐围栏开头（例如两个反引号 + 新的反引号）
+  if (/^[ \t]{0,3}[`~]+$/.test(lastLine) && /^[ \t]*[`~]/.test(suffix)) return false
+  // 链接/脚注定义是在同一行内变成 def 的，会让这一块从 blocks 里消失
+  if (/^[ \t]{0,3}\[[^\]\n]+\]:/.test(lastLine + suffix)) return false
+
+  // 行首块标记也可能在同一行内完成（"-" -> "- "、"--" -> "---"、"#" -> "# "），
+  // 只有当前行还停在「纯标记」状态时才需要重新切分；一旦标记后面有内容，类型已定。
+  const combinedLine = (lastLine + suffix).replace(/^ {0,3}/, '')
+  if (/^(?:[-*+>]|#{1,6}|\d{1,9}[.)])[ \t]*$/.test(combinedLine)) return false
+  if (/^(?:`{1,2}|~{1,2})$/.test(combinedLine)) return false
+  if (/^(?:=+|-+|\*{3,}|_{3,})$/.test(combinedLine)) return false
+
+  return true
 }
 
 export function projectMarkdownStream(
@@ -469,7 +617,7 @@ export function projectMarkdownStream(
   isStreaming: boolean,
 ): MarkdownStreamProjection {
   if (!isStreaming || !previous || !markdown.startsWith(previous.text)) {
-    return { text: markdown, blocks: splitMarkdownStream(markdown, isStreaming) }
+    return { text: markdown, ...splitMarkdownStreamDetailed(markdown, isStreaming) }
   }
 
   const suffix = markdown.slice(previous.text.length)
@@ -486,21 +634,33 @@ export function projectMarkdownStream(
     hasOpenFence(tail.raw) &&
     !suffixClosesOpenFence(tail.raw, suffix)
   ) {
+    // 开头围栏行还没换行 → 语言名可能还在长，重新切分
+    if (!hasFenceOpeningLineBreak(tail.raw)) {
+      return (
+        projectTail(previous, markdown, isStreaming) ?? {
+          text: markdown,
+          ...splitMarkdownStreamDetailed(markdown, isStreaming),
+        }
+      )
+    }
+    const nextRaw = tail.raw + suffix
     return {
       text: markdown,
       blocks: [
         ...stablePrefix,
         {
           ...tail,
-          raw: tail.raw + suffix,
-          src: tail.src + suffix,
+          raw: nextRaw,
+          src: openFenceCodeText(nextRaw),
         },
       ],
+      sourceBlocks: previous.sourceBlocks,
+      referenceDefinitions: previous.referenceDefinitions,
     }
   }
 
-  // live 尾段纯追加：稳定块保持同一引用，只改 tail.src
-  if (tail?.mode === 'live' && !suffixBreaksLiveBlock(suffix)) {
+  // live 尾段纯追加：只在同一行内继续写时成立
+  if (tail?.mode === 'live' && canAppendToLiveTail(tail, suffix)) {
     return {
       text: markdown,
       blocks: [
@@ -510,8 +670,16 @@ export function projectMarkdownStream(
           src: tail.src + suffix,
         },
       ],
+      sourceBlocks: previous.sourceBlocks,
+      referenceDefinitions: previous.referenceDefinitions,
     }
   }
 
-  return { text: markdown, blocks: splitMarkdownStream(markdown, isStreaming) }
+  // 只需要重解析最后一个源块；不稳定时退回全量
+  return (
+    projectTail(previous, markdown, isStreaming) ?? {
+      text: markdown,
+      ...splitMarkdownStreamDetailed(markdown, isStreaming),
+    }
+  )
 }

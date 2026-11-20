@@ -1,4 +1,5 @@
 import { useMemo, useRef } from 'react'
+import { measurePerf } from '../../utils/perfTrace'
 import { isAssistantMessage, isUserMessage, userMessageText, type SessionMessageInfo } from '../../types/api/message'
 import { buildOutlineSourceEntries, type OutlineSourceEntry } from '../../components/outlineIndexModel'
 import {
@@ -24,27 +25,35 @@ export interface ChatPageViewModel {
   forkTargetIdMap: Map<string, string | undefined>
   turnDurationMap: Map<string, number>
   turnLatestAssistantIds: Set<string>
+  /** 内部结构共享用，不参与渲染（流式时避免每帧重建大纲） */
+  outlineModel?: StableOutlineModel
 }
 
-interface StableOutlineModel {
-  signature: string
+export interface StableOutlineModel {
+  source: SessionMessageInfo[]
   entries: OutlineSourceEntry[]
   ownerByMessageId: Map<string, string>
 }
 
-const OUTLINE_MODEL_CACHE_LIMIT = 16
-const outlineModelCache = new Map<string, StableOutlineModel>()
-
-function buildOutlineSignature(messages: SessionMessageInfo[]): string {
-  let signature = ''
-  for (const message of messages) {
-    signature += `${message.id}:${message.type}|`
-    if (isUserMessage(message)) {
-      // v2 的用户消息没有 summary，正文就是 message.text
-      signature += `${userMessageText(message)}|`
+/**
+ * 大纲只由「用户消息正文」和「消息 id/type 序列」决定。
+ * 流式期间变化的是最后一条 assistant 的内容，这里按引用 + 身份比较即可，
+ * 不再每帧把所有用户文本拼成一个巨型签名。
+ */
+function sameOutlineSource(previous: SessionMessageInfo[], next: SessionMessageInfo[]): boolean {
+  if (previous === next) return true
+  if (previous.length !== next.length) return false
+  for (let index = 0; index < next.length; index += 1) {
+    const left = previous[index]
+    const right = next[index]
+    if (left === right) continue
+    if (left.id !== right.id || left.type !== right.type) return false
+    // assistant 内容变化不影响大纲；用户消息文本变化才需要重建
+    if (isUserMessage(left) && isUserMessage(right) && userMessageText(left) !== userMessageText(right)) {
+      return false
     }
   }
-  return signature
+  return true
 }
 
 function buildOutlineOwnerByMessageId(messages: SessionMessageInfo[]): Map<string, string> {
@@ -59,26 +68,16 @@ function buildOutlineOwnerByMessageId(messages: SessionMessageInfo[]): Map<strin
   return ownerByMessageId
 }
 
-function getStableOutlineModel(messages: SessionMessageInfo[]): StableOutlineModel {
-  const signature = buildOutlineSignature(messages)
-  const cached = outlineModelCache.get(signature)
-  if (cached) {
-    outlineModelCache.delete(signature)
-    outlineModelCache.set(signature, cached)
-    return cached
-  }
-
-  const next: StableOutlineModel = {
-    signature,
+function getStableOutlineModel(
+  messages: SessionMessageInfo[],
+  previous?: StableOutlineModel,
+): StableOutlineModel {
+  if (previous && sameOutlineSource(previous.source, messages)) return previous
+  return {
+    source: messages,
     entries: buildOutlineSourceEntries(messages),
     ownerByMessageId: buildOutlineOwnerByMessageId(messages),
   }
-  outlineModelCache.set(signature, next)
-  if (outlineModelCache.size > OUTLINE_MODEL_CACHE_LIMIT) {
-    const oldestKey = outlineModelCache.keys().next().value
-    if (oldestKey) outlineModelCache.delete(oldestKey)
-  }
-  return next
 }
 
 function sameStringList(a: readonly string[], b: readonly string[]) {
@@ -249,7 +248,7 @@ export function buildChatPageViewModel(
   )
   const visibleMessages = visibleMessagesFromEntries(previous?.visibleMessages, visibleMessageEntries)
   const forkTargetIdMap = reuseMap(previous?.forkTargetIdMap, buildForkTargetIdMap(visibleMessageEntries))
-  const outlineModel = getStableOutlineModel(visibleMessages)
+  const outlineModel = getStableOutlineModel(visibleMessages, previous?.outlineModel)
   const turnDurationMap = reuseMap(previous?.turnDurationMap, buildTurnDurationMap(messages, visibleMessages))
   const turnLatestAssistantIds = reuseSet(
     previous?.turnLatestAssistantIds,
@@ -272,6 +271,7 @@ export function buildChatPageViewModel(
       )
       return pageRecords
     },
+    outlineModel,
     outlineSourceEntries: outlineModel.entries,
     outlineOwnerByMessageId: outlineModel.ownerByMessageId,
     forkTargetIdMap,
@@ -283,7 +283,12 @@ export function buildChatPageViewModel(
 export function useChatPageViewModel(messages: SessionMessageInfo[], showNotices = false): ChatPageViewModel {
   const previousRef = useRef<ChatPageViewModel | undefined>(undefined)
   return useMemo(() => {
-    const viewModel = buildChatPageViewModel(messages, previousRef.current, showNotices)
+    const viewModel = measurePerf(
+      'chat.pageViewModel',
+      () => buildChatPageViewModel(messages, previousRef.current, showNotices),
+      4,
+      `${messages.length} msgs`,
+    )
     previousRef.current = viewModel
     return viewModel
   }, [messages, showNotices])

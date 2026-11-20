@@ -27,6 +27,9 @@ vi.mock('./CodeBlock', () => ({
     forceHighlight,
     streamingHighlight,
     headerActions,
+    folded,
+    onToggleFold,
+    foldLabel,
   }: {
     code: string
     language?: string
@@ -35,6 +38,9 @@ vi.mock('./CodeBlock', () => ({
     forceHighlight?: boolean
     streamingHighlight?: boolean
     headerActions?: React.ReactNode
+    folded?: boolean
+    onToggleFold?: () => void
+    foldLabel?: { expand: string; collapse: string }
   }) => (
     <div
       data-testid="code-block"
@@ -46,6 +52,11 @@ vi.mock('./CodeBlock', () => ({
       {language}
       {headerActions}
       {`${language ?? 'text'}:${code}`}
+      {onToggleFold ? (
+        <button type="button" onClick={onToggleFold}>
+          {folded ? foldLabel?.expand : foldLabel?.collapse}
+        </button>
+      ) : null}
     </div>
   ),
 }))
@@ -95,6 +106,21 @@ describe('MarkdownRenderer', () => {
     const codeEl = screen.getByText('pnpm')
     expect(codeEl).toBeInTheDocument()
     expect(codeEl.tagName).toBe('CODE')
+  })
+
+  it('keeps h5/h6 semantics instead of collapsing them to h4', () => {
+    const { container } = render(<MarkdownRenderer content={'##### Five\n\n###### Six'} />)
+
+    expect(container.querySelector('h5')).toHaveTextContent('Five')
+    expect(container.querySelector('h6')).toHaveTextContent('Six')
+  })
+
+  it('drops raw HTML comments instead of showing them as text when HTML rendering is off', () => {
+    themeStore.setRenderHtmlContent(false)
+    const { container } = render(<MarkdownRenderer content={'before <!-- hidden note --> after'} />)
+
+    expect(container).toHaveTextContent('before after')
+    expect(container.textContent).not.toContain('hidden note')
   })
 
   it('renders inline code as a muted monospace chip (no accent color)', () => {
@@ -258,6 +284,24 @@ $$
     // marked 把 `[x]` 切成独立的 checkbox token，渲染器不能再自己加一个
     expect(container.querySelectorAll('input[type="checkbox"]')).toHaveLength(2)
     expect(container.querySelector('li input[type="checkbox"][checked]')).toBeInTheDocument()
+  })
+
+  it('marks GFM task items so the list marker does not double up with the checkbox', () => {
+    const { container } = render(<MarkdownRenderer content={'- [ ] todo\n- plain item'} />)
+
+    const items = Array.from(container.querySelectorAll('li'))
+    expect(items[0]).toHaveClass('task-list-item')
+    expect(items[1]).not.toHaveClass('task-list-item')
+  })
+
+  it('styles code blocks nested inside lists and quotes', () => {
+    const md = '- item\n\n  ```ts\n  const x = 1\n  ```\n'
+    const { container } = render(<MarkdownRenderer content={md} />)
+
+    const pre = container.querySelector('pre.markdown-nested-code')
+    expect(pre).toBeInTheDocument()
+    expect(pre).toHaveAttribute('data-language', 'ts')
+    expect(pre).toHaveTextContent('const x = 1')
   })
 
   it('emphasizes CJK runs that close after punctuation right before a CJK character', () => {
@@ -793,6 +837,16 @@ $$`
     const { container } = render(<MarkdownRenderer content={'Inline $x^2$ formula'} />)
 
     expect(container.querySelector('.katex [style*="top"]')).toBeInTheDocument()
+  })
+
+  it('renders tables nested inside blockquotes with the shared table style', () => {
+    const md = '> | A | B |\n> |:---|---:|\n> | 1 | 2 |'
+    const { container } = render(<MarkdownRenderer content={md} />)
+
+    const table = container.querySelector('.markdown-html-table')
+    expect(table).toBeInTheDocument()
+    expect(table?.querySelector('th')).toHaveTextContent('A')
+    expect(table?.querySelector('th[align="right"]')).toHaveTextContent('B')
   })
 
   it('styles raw HTML tables without losing merged-cell attributes', () => {
@@ -1473,6 +1527,22 @@ $$`
     expect(diagram).toHaveStyle({ transform: 'translate(-50px, -30px) scale(2)' })
   })
 
+  it('keeps the diagram svg out of hit testing so page scrolling stays native', async () => {
+    useInputCapabilitiesMock.mockReturnValue({
+      canHover: false,
+      hasCoarsePointer: true,
+      hasTouch: true,
+      preferTouchUi: true,
+    })
+
+    render(<MarkdownRenderer content={'```mermaid\ngraph TD\n  A-->B\n```'} />)
+
+    const diagram = await screen.findByRole('img', { name: 'Mermaid diagram' })
+    // 触摸落在 <svg> 上会被当成受限滚动目标，竖直滑动被反复拽回底部；
+    // 子树不参与命中测试，手势才会落回容器按 touch-action 原生滚动。
+    expect(diagram.className).toContain('[&_svg]:pointer-events-none')
+  })
+
   it('renders markdown table with copy button in default mode', () => {
     const md = '| A | B |\n|---|---|\n| 1 | 2 |'
     render(<MarkdownRenderer content={md} />)
@@ -1489,21 +1559,31 @@ $$`
     expect(copyButton.closest('tr')).toHaveClass('hover:bg-bg-200/12')
   })
 
-  it('keeps table text cells unwrapped and ignores alignment styles like the old renderer', () => {
-    const md = '| 类别 | 数量 |\n|:---|---:|\n| 代码块 | 7 |\n| 表格 | 2 |'
+  it('keeps table text cells unwrapped and applies column alignment', () => {
+    const md = '| 类别 | 数量 | 说明 |\n|:---|:---:|---:|\n| 代码块 | 7 | 多行 |\n| 表格 | 2 | 对齐 |'
     const { container } = render(<MarkdownRenderer content={md} />)
 
     const cells = Array.from(container.querySelectorAll('th, td'))
-    expect(cells).toHaveLength(6)
+    expect(cells).toHaveLength(9)
     for (const cell of cells) {
       expect(cell).not.toHaveAttribute('style')
     }
+
+    const headers = Array.from(container.querySelectorAll('thead th'))
+    expect(headers[0]).toHaveClass('text-left')
+    expect(headers[1]).toHaveClass('text-center')
+    expect(headers[2]).toHaveClass('text-right')
+
+    const firstRow = Array.from(container.querySelectorAll('tbody tr:first-child td'))
+    expect(firstRow[0]).toHaveClass('text-left')
+    expect(firstRow[1]).toHaveClass('text-center')
+    expect(firstRow[2]).toHaveClass('text-right')
 
     expect(container.querySelector('thead th:first-child span')).not.toBeInTheDocument()
     expect(container.querySelector('tbody td span')).not.toBeInTheDocument()
 
     const lastHeaderText = container.querySelector('thead th:last-child .pr-8')
-    expect(lastHeaderText).toHaveTextContent('数量')
+    expect(lastHeaderText).toHaveTextContent('说明')
     expect(lastHeaderText?.querySelector('span')).not.toBeInTheDocument()
   })
 
@@ -1649,5 +1729,21 @@ describe('MarkdownRenderer HTML 渲染开关', () => {
     render(<MarkdownRenderer content={'<div><strong>Rendered HTML</strong></div>'} />)
 
     expect(screen.getByText('Rendered HTML').tagName).toBe('STRONG')
+  })
+})
+
+describe('长代码块折叠', () => {
+  it('超过阈值默认折叠，点击后展开', async () => {
+    const body = Array.from({ length: 40 }, (_, index) => `const line${index} = ${index}`).join('\n')
+    render(<MarkdownRenderer content={'```ts\n' + body + '\n```'} />)
+
+    const expand = await screen.findByRole('button', { name: /expand|展开/i })
+    fireEvent.click(expand)
+    expect(await screen.findByRole('button', { name: /collapse|收起/i })).toBeInTheDocument()
+  })
+
+  it('短代码块不出现折叠按钮', () => {
+    render(<MarkdownRenderer content={'```ts\nconst a = 1\n```'} />)
+    expect(screen.queryByRole('button', { name: /expand|展开/i })).toBeNull()
   })
 })

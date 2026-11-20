@@ -20,7 +20,7 @@ import {
   useMemo,
   useState,
 } from 'react'
-import { useVirtualizer, elementScroll, defaultRangeExtractor, type VirtualItem } from '@tanstack/react-virtual'
+import { useVirtualizer, elementScroll, type VirtualItem } from '@tanstack/react-virtual'
 import { useTranslation } from 'react-i18next'
 import { MessageRenderer, ProcessCollapseBlock, messageHasFinalContent, messageHasProcessContent } from '../message'
 import { MessageErrorView } from '../message/parts'
@@ -48,7 +48,24 @@ import {
   type TurnDiffInfo,
 } from './chatPageModel'
 import { useTheme } from '../../hooks/useTheme'
-import { getStreamingHotIndexes, getTimelineRowYClass, mergeVirtualRangeIndexes } from './chatAreaUtils'
+import { measurePerf } from '../../utils/perfTrace'
+import { createFrameSampler, reportFrameStats } from '../../utils/frameSampler'
+import {
+  getStreamingHotIndexes,
+  getTimelineRowYClass,
+  mergeVirtualRangeIndexes,
+  nextPrependAdjustment,
+  pickPrependAnchor,
+} from './chatAreaUtils'
+import {
+  buildCachedSizeMap,
+  estimateTimelineItemSize,
+  estimateTimelineTotalHeight,
+  readSessionMeasurements,
+  restoreMeasurements,
+  sessionCacheKey,
+  writeSessionMeasurements,
+} from './timelineMetrics'
 import { useAutoScroll } from './virtual/useAutoScroll'
 import { useEmptyWorkingShellGate } from './virtual/useEmptyWorkingShellGate'
 
@@ -57,33 +74,13 @@ function isAssistantStreaming(message: SessionMessageInfo): boolean {
   return isAssistantMessage(message) && message.time.completed == null
 }
 
-const ROW_ESTIMATE = 60
-/** 过程壳 header 行高（Working / Worked 一行） */
-const PROCESS_SHELL_HEADER = 36
 /** 用户入场生长结束后，空 Working 壳再等多久（有 assistant 则立刻挂，不等） */
 const EMPTY_WORKING_SHELL_EXTRA_DELAY_MS = 500
 const DEFAULT_BOTTOM_SPACER = 256
-const SESSION_CACHE_LIMIT = 16
 const EMPTY_QUEUE: QueuedUserPrompt[] = []
 const EMPTY_COMPACTIONS: QueuedCompaction[] = []
 
 const bottomSpacerHeight = (bottomPadding: number) => (bottomPadding > 0 ? bottomPadding + 48 : DEFAULT_BOTTOM_SPACER)
-
-function estimateTimelineItemSize(item: ProcessTimelineItem | undefined): number {
-  if (!item) return ROW_ESTIMATE
-  if (item.kind === 'message') return ROW_ESTIMATE
-  // 进行中默认展开：header + 壳内消息（空回合至少占 header）
-  if (item.isActive) {
-    const body = Math.max(item.children.length, 1) * ROW_ESTIMATE
-    return PROCESS_SHELL_HEADER + body
-  }
-  // 结束后默认折叠：只估 header + 壳外 final，避免刷新时 120→36 的假高度再回弹
-  return PROCESS_SHELL_HEADER + (item.finalMessage ? ROW_ESTIMATE : 0)
-}
-
-function sessionCacheKey(sessionId: string, processCollapseEnabled: boolean): string {
-  return `${sessionId}:${processCollapseEnabled ? 'process' : 'flat'}`
-}
 
 // ─── 接口定义（保持不变） ───────────────────────────────────────
 
@@ -172,12 +169,18 @@ const MessageBody = memo(function MessageBody({
   onEntryGrowComplete,
 }: MessageBodyProps) {
   const messageId = message.id
+  const registerNode = useCallback(
+    (node: HTMLDivElement | null) => {
+      registerMessage?.(messageId, node)
+    },
+    [messageId, registerMessage],
+  )
   const isUser = isUserMessage(message)
   // undo 边界：用户消息，或 v2 的独立压缩消息（revert.stage 接受任意 messageID）
   const undoable = isUser || message.type === 'compaction'
   return (
     <div
-      ref={node => registerMessage?.(messageId, node as HTMLDivElement | null)}
+      ref={registerNode}
       data-message-id={messageId}
       data-anchor-source-id={forkMessageId ?? messageId}
     >
@@ -364,10 +367,6 @@ const VirtualRow = memo(
     prev.onEntryGrowComplete === next.onEntryGrowComplete,
 )
 
-// ─── 会话缓存（LRU 16） ───────────────────────────────────────
-
-const sessionCache = new Map<string, { measurements: VirtualItem[] }>()
-
 // ─── ChatArea ────────────────────────────────────────────────
 
 export const ChatArea = memo(
@@ -450,16 +449,22 @@ export const ChatArea = memo(
         items?: ProcessTimelineItem[]
       }>({ processCollapseEnabled })
       const timeline = useMemo<ProcessTimelineItem[]>(() => {
-        const next = !processCollapseEnabled
-          ? buildFlatTimeline(visibleMessages, isStreaming, showTurnDiff)
-          : buildProcessTimeline(visibleMessages, {
-              turnDurationMap,
-              sessionIsStreaming: isStreaming,
-              messageHasProcess: messageHasProcessContent,
-              messageHasFinal: messageHasFinalContent,
-              isUserEntryReady: emptyShellGate.isReady,
-              turnDiff: showTurnDiff,
-            })
+        const next = measurePerf(
+          'chat.timeline',
+          () =>
+            !processCollapseEnabled
+              ? buildFlatTimeline(visibleMessages, isStreaming, showTurnDiff)
+              : buildProcessTimeline(visibleMessages, {
+                  turnDurationMap,
+                  sessionIsStreaming: isStreaming,
+                  messageHasProcess: messageHasProcessContent,
+                  messageHasFinal: messageHasFinalContent,
+                  isUserEntryReady: emptyShellGate.isReady,
+                  turnDiff: showTurnDiff,
+                }),
+          4,
+          `${visibleMessages.length} rows`,
+        )
         const previous =
           previousTimelineRef.current.processCollapseEnabled === processCollapseEnabled
             ? previousTimelineRef.current.items
@@ -496,6 +501,18 @@ export const ChatArea = memo(
       // ── Refs（避免闭包过期） ──
       const scrollRef = useRef<HTMLDivElement | null>(null)
       const contentRef = useRef<HTMLDivElement | null>(null)
+      /** 已写入容器的总高度，避免重复写同一个值 */
+      const appliedContentHeightRef = useRef(-1)
+      /**
+       * 容器总高 = 全部条目之和（含未渲染条目的估算）。
+       * 必须跟着尺寸/条数变化同步：只在 scrollToFn 里写会让 scrollHeight 停在旧值，
+       * 贴底时算出的 max 偏小，滚动条长度也不对。
+       */
+      const writeContentHeight = useCallback((height: number) => {
+        if (Math.abs(height - appliedContentHeightRef.current) < 0.5) return
+        appliedContentHeightRef.current = height
+        if (contentRef.current) contentRef.current.style.height = `${height}px`
+      }, [])
       const sessionIdRef = useRef(sessionId)
       sessionIdRef.current = sessionId
       const onLoadMoreRef = useRef(onLoadMore)
@@ -568,35 +585,66 @@ export const ChatArea = memo(
       // parent key={sessionId} remount 后，这里只在 mount 时读一次 cache
       // cache key 必须带过程折叠模式：flat 与 process 的 item key/高度完全不同
       const cacheKey = sessionId ? sessionCacheKey(sessionId, processCollapseEnabled) : null
-      const initialCacheRef = useRef(cacheKey ? sessionCache.get(cacheKey)?.measurements : undefined)
-      const coldBottomMount = !initialCacheRef.current?.length
-      const [renderOverscan, setRenderOverscan] = useState(initialCacheRef.current?.length || coldBottomMount ? 6 : 15)
+      const initialCacheRef = useRef(cacheKey ? readSessionMeasurements(cacheKey) : undefined)
+      const cachedSizeByKey = useMemo(
+        () => buildCachedSizeMap(initialCacheRef.current),
+        // 只在 mount 读一次
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [],
+      )
+      /**
+       * 视口外预渲染的高度预算，按视口高度的倍数算，而不是按行数。
+       *
+       * 按行数会让短消息只预渲染不到一屏、长消息预渲染好几屏；按像素才能保证
+       * 用户感知到的始终是「上下各两屏已经画好了」。首帧用小预算，两帧后放大，
+       * 避免冷启动一次挂太多。
+       */
+      const RENDER_BUFFER_RATIO = 2
+      const RENDER_BUFFER_RATIO_FIRST_PAINT = 0.5
+      const [renderBufferRatio, setRenderBufferRatio] = useState(RENDER_BUFFER_RATIO_FIRST_PAINT)
+      /** rangeExtractor 可能在 virtualizer 赋值前就被调用，用 holder 拿测量值避免暂时性死区 */
+      const measurementsHolder = useRef<Array<{ size?: number } | undefined> | null>(null)
       const resizePinnedRef = useRef<number[]>([])
       const resizePinFrame = useRef<number | undefined>(undefined)
       const resizeAnchorScheduled = useRef(false)
+      /** dev：上方行从估算修正为实测的累计幅度，用来判断估算模型够不够准 */
+      const sizeDriftRef = useRef({ count: 0, px: 0, lastLog: 0 })
       /** 流式热行 pin：ref 更新，不碰贴底/SSE 路径 */
       const hotPinnedRef = useRef<number[]>([])
       hotPinnedRef.current = getStreamingHotIndexes(timeline.length, isStreaming)
 
-      // 冷启动估在底部：有 cache 用 cache 总高，否则 estimate*count + paddingEnd。
+      // 流式期间的掉帧采样：只在 dev 里跑，结束时只在指标确实差时打一条警告
+      useEffect(() => {
+        if (!import.meta.env.DEV || import.meta.env.MODE === 'test' || !isStreaming) return
+        const sampler = createFrameSampler()
+        sampler.start()
+        return () => reportFrameStats('chat.stream.jank', sampler.stop())
+      }, [isStreaming])
+
+      // 恢复上一次会话测量值时按当前 timeline 的 key 重新取：
+      // 消息追加/删除后，旧快照里的绝对 start/end 已经不可信，只有 key→size 还有效。
+      const initialMeasurementsCache = useMemo(
+        () => restoreMeasurements(initialCacheRef.current, timeline),
+        // 只在 mount 恢复一次
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [],
+      )
+
+      // 冷启动估在底部：已知 key 用真实高度，新消息用估算值重新累加。
+      // 直接用缓存最后一条的 end 会在「缓存之后又来了新消息」时把初始位置算低。
       // 不用 MAX_SAFE_INTEGER（单列 range 不会向前扩，只会渲染最后一项）。
-      const estimatedBottomOffset = useMemo(() => {
-        const cached = initialCacheRef.current
-        if (cached?.length) {
-          const last = cached[cached.length - 1]
-          return Math.max(0, (last?.end ?? 0) + spacerHeight - 600)
-        }
-        const estimatedTotal = timeline.reduce((sum, item) => sum + estimateTimelineItemSize(item), 0)
-        return Math.max(0, estimatedTotal + spacerHeight - 600)
+      const estimatedBottomOffset = useMemo(
+        () => Math.max(0, estimateTimelineTotalHeight(timeline, cachedSizeByKey) + spacerHeight - 600),
         // 只在 mount 用初始 count 估一次
         // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [])
+        [],
+      )
 
       const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
         count: timeline.length,
         getScrollElement: () => scrollRef.current,
         initialOffset: estimatedBottomOffset,
-        initialMeasurementsCache: initialCacheRef.current,
+        initialMeasurementsCache,
         estimateSize: index => estimateTimelineItemSize(timeline[index]),
         getItemKey: i => timeline[i]?.key ?? `removed:${i}`,
         // 关键修复：同步重测（ref / layoutEffect，无 RO entry）必须读真实 DOM 高度。
@@ -615,7 +663,7 @@ export const ChatArea = memo(
         scrollEndThreshold: 80,
         // 预写 total height，避免浏览器把新 offset clamp 到旧高度（oc 同款）
         scrollToFn: (offset, options, instance) => {
-          if (contentRef.current) contentRef.current.style.height = `${instance.getTotalSize()}px`
+          writeContentHeight(instance.getTotalSize())
           autoMarkAuto(scrollRef.current)
           elementScroll(offset, options, instance)
         },
@@ -625,12 +673,33 @@ export const ChatArea = memo(
         directDomUpdates: true,
         directDomUpdatesMode: 'transform',
         rangeExtractor: range => {
-          const indexes = defaultRangeExtractor({ ...range, overscan: renderOverscan })
+          // 从可见范围向两侧按估算/实测高度累加，直到覆盖预算
+          const viewport = scrollRef.current?.clientHeight || 800
+          const budget = viewport * renderBufferRatio
+          const measurements = measurementsHolder.current
+
+          let start = range.startIndex
+          let accumulated = 0
+          while (start > 0 && accumulated < budget) {
+            start -= 1
+            accumulated += measurements?.[start]?.size ?? 200
+          }
+
+          let end = range.endIndex
+          accumulated = 0
+          while (end < range.count - 1 && accumulated < budget) {
+            end += 1
+            accumulated += measurements?.[end]?.size ?? 200
+          }
+
+          const indexes: number[] = []
+          for (let index = start; index <= end; index += 1) indexes.push(index)
           return mergeVirtualRangeIndexes(indexes, resizePinnedRef.current, hotPinnedRef.current)
         },
       })
 
       // 一次性 overrides（resizeItem + shouldAdjust）——对齐 oc
+      measurementsHolder.current = (virtualizer as any).measurementsCache
       const overridesApplied = useRef(false)
       if (!overridesApplied.current) {
         const origResize = virtualizer.resizeItem
@@ -638,14 +707,34 @@ export const ChatArea = memo(
           const item = (virtualizer as any).measurementsCache[index]
           const prev = item ? ((virtualizer as any).itemSizeCache.get(item.key) ?? item.size) : undefined
           const root = scrollRef.current
+
+          // dev 诊断：只看视口上方的行——它们的尺寸修正才会引发位置补偿
+          if (import.meta.env.DEV && item && prev !== undefined && root) {
+            const drift = Math.abs(size - prev)
+            const offset = (virtualizer as any).getScrollOffset?.() ?? 0
+            if (drift > 4 && item.end <= offset) {
+              const stats = sizeDriftRef.current
+              stats.count += 1
+              stats.px += drift
+              const now = performance.now()
+              if (now - stats.lastLog > 2000) {
+                console.warn(`[perf] chat.rowResize count=${stats.count} px=${Math.round(stats.px)}`)
+                stats.count = 0
+                stats.px = 0
+                stats.lastLog = now
+              }
+            }
+          }
           if (root && prev !== undefined && Math.abs(size - prev) > root.clientHeight) {
             const view = root.getBoundingClientRect()
-            resizePinnedRef.current = [...root.querySelectorAll<HTMLElement>('[data-index]')]
-              .filter(el => {
-                const r = el.getBoundingClientRect()
-                return r.bottom > view.top && r.top < view.bottom
+            const container = contentRef.current
+            resizePinnedRef.current = Array.from(container?.children ?? [])
+              .filter((node): node is HTMLElement => node instanceof HTMLElement && node.hasAttribute('data-index'))
+              .filter(element => {
+                const rect = element.getBoundingClientRect()
+                return rect.bottom > view.top && rect.top < view.bottom
               })
-              .map(el => Number(el.dataset.index))
+              .map(element => Number(element.dataset.index))
             if (resizePinFrame.current !== undefined) cancelAnimationFrame(resizePinFrame.current)
             resizePinFrame.current = requestAnimationFrame(() => {
               resizePinFrame.current = requestAnimationFrame(() => {
@@ -673,6 +762,8 @@ export const ChatArea = memo(
             origResize(index, size)
             opts.anchorTo = origAnchor
           }
+          // 尺寸变了总高就变了：同步容器高度，贴底取 max 和滚动条才跟得上
+          writeContentHeight(virtualizer.getTotalSize())
           // 跟随中的贴底：绝对写底，不做 isAtEnd 门槛——shouldAnchorBottom()
           // 已经表达了跟随意图，>80px 的单帧突增（图片/代码块渲染）也必须追回。
           if (root && shouldAnchorBottom() && !resizeAnchorScheduled.current) {
@@ -690,10 +781,23 @@ export const ChatArea = memo(
         }
         virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item: VirtualItem, _delta: number, instance: any) => {
           if (shouldAnchorBottom()) return false
-          return item.end <= (instance.getScrollOffset?.() ?? 0) + (instance.scrollAdjustments ?? 0)
+          const offset = instance.getScrollOffset?.() ?? 0
+          // 只补偿完全在视口上方的行：跨过顶边的行自身变高不会推动下面的内容
+          if (item.end > offset + (instance.scrollAdjustments ?? 0)) return false
+          // 首次测量（还没有缓存尺寸）无论往哪滚都要补偿——否则估算和实测的
+          // 差额会一直留在那里；只有「重新测量」在向上滚时跳过，避免
+          // 一圈接一圈的尺寸修正把滚动顶得一跳一跳。
+          const sized = instance.itemSizeCache?.has?.(item.key) ?? false
+          return !sized || instance.scrollDirection !== 'backward'
         }
         overridesApplied.current = true
       }
+
+      // 条数/结构变化（追加、前插、切换视图）都会改变总高，先同步一次；
+      // 单行尺寸变化走 resizeItem
+      useLayoutEffect(() => {
+        writeContentHeight(virtualizer.getTotalSize())
+      }, [writeContentHeight, virtualizer, timeline])
 
       // ── 历史加载（prepend 锚点） ──
       const prependAnchor = useRef<{ key: string; offset: number } | undefined>(undefined)
@@ -713,32 +817,35 @@ export const ChatArea = memo(
         const root = scrollRef.current
         if (!root) return
         const view = root.getBoundingClientRect()
-        const anchor = [...root.querySelectorAll<HTMLElement>('[data-timeline-key]')]
-          .map(el => ({ el, rect: el.getBoundingClientRect() }))
-          .filter(x => x.rect.bottom > view.top && x.rect.top < view.bottom)
-          .sort((a, b) => a.rect.top - b.rect.top)[0]
-        if (anchor?.el.dataset.timelineKey) {
-          prependAnchor.current = { key: anchor.el.dataset.timelineKey, offset: anchor.rect.top - view.top }
-        }
+        // 只遍历已挂载的行（虚拟列表里就十来行），单次取最靠上的可见行
+        const rows: Array<{ key?: string; top: number; bottom: number }> = []
+        root.querySelectorAll<HTMLElement>('[data-timeline-key]').forEach(el => {
+          const rect = el.getBoundingClientRect()
+          rows.push({ key: el.dataset.timelineKey, top: rect.top, bottom: rect.bottom })
+        })
+        const next = pickPrependAnchor(rows, view.top, view.bottom)
+        if (next) prependAnchor.current = next
       }, [])
 
       const applyPrependAnchor = useCallback(() => {
         const root = scrollRef.current
         if (!root || !prependAnchor.current) return
         if (prependFrame.current !== undefined) cancelAnimationFrame(prependFrame.current)
-        let frames = 0,
-          stable = 0
+
+        let state = { frames: 0, stable: 0, expectedScrollTop: undefined as number | undefined }
         const apply = () => {
           prependFrame.current = undefined
           const a = prependAnchor.current
           if (!a) return
+
           const el = root.querySelector<HTMLElement>(`[data-timeline-key="${CSS.escape(a.key)}"]`)
           const delta = el ? el.getBoundingClientRect().top - root.getBoundingClientRect().top - a.offset : undefined
-          if (delta !== undefined && Math.abs(delta) > 0.5) {
-            root.scrollTop += delta
-            stable = 0
-          } else stable++
-          if (++frames >= 180 || stable >= 30) {
+          const decision = nextPrependAdjustment(state, { scrollTop: root.scrollTop, delta })
+
+          if (decision.delta !== 0) root.scrollTop += decision.delta
+          state = { frames: decision.frames, stable: decision.stable, expectedScrollTop: root.scrollTop }
+
+          if (decision.stop) {
             if (!prependLoading.current) prependAnchor.current = undefined
             return
           }
@@ -820,6 +927,26 @@ export const ChatArea = memo(
         if (max - el.scrollTop >= 2) el.scrollTop = max
       }, [autoMarkAuto])
 
+      // 流式期间每帧兜底：高度可能来自工具卡、输出文本、图片、展开面板……
+      // 只靠某条 resizeItem 路径会漏；用户没离底时按绝对位置贴住，
+      // 离底后立刻停手，不会把人拽回去。
+      useEffect(() => {
+        if (!isStreaming) return
+        let frame = 0
+        const tick = () => {
+          const el = scrollRef.current
+          // 先判断意图再读高度：用户离底后连布局都不碰。
+          // 只有真的需要补位才调 pinToBottom（它内部会 markAuto + 写 scrollTop）。
+          if (el && !userScrolledRef.current) {
+            const max = Math.max(0, el.scrollHeight - el.clientHeight)
+            if (max - el.scrollTop >= 2) pinToBottom()
+          }
+          frame = requestAnimationFrame(tick)
+        }
+        frame = requestAnimationFrame(tick)
+        return () => cancelAnimationFrame(frame)
+      }, [isStreaming, pinToBottom])
+
       // ── 事件处理 ──
       const onScroll = useCallback(() => {
         if (prependLoading.current) updatePrependAnchor()
@@ -896,7 +1023,7 @@ export const ChatArea = memo(
           if (shouldAnchorBottom()) pinToBottom()
           inner = requestAnimationFrame(() => {
             if (cancelled) return
-            if (renderOverscan < 15) setRenderOverscan(15)
+            if (renderBufferRatio < RENDER_BUFFER_RATIO) setRenderBufferRatio(RENDER_BUFFER_RATIO)
             if (shouldAnchorBottom()) pinToBottom()
           })
         })
@@ -959,11 +1086,7 @@ export const ChatArea = memo(
           if (resizePinFrame.current !== undefined) cancelAnimationFrame(resizePinFrame.current)
           clearPrepend()
           if (!key) return
-          sessionCache.delete(key)
-          sessionCache.set(key, { measurements: virtualizer.takeSnapshot() })
-          while (sessionCache.size > SESSION_CACHE_LIMIT) {
-            sessionCache.delete(sessionCache.keys().next().value!)
-          }
+          writeSessionMeasurements(key, virtualizer.takeSnapshot())
         }
       }, [cacheKey, virtualizer, clearPrepend])
 
@@ -978,11 +1101,19 @@ export const ChatArea = memo(
         [items, timeline],
       )
 
-      // Outline 可见消息：跟随虚拟行挂载变化
+      // Outline 可见消息：observer 只建一次，虚拟范围变化时只补/撤观察目标。
+      // 以前每次虚拟范围变化都新建 observer 并重新 observe 全部行，快速滚动时每帧都在重建。
+      const outlineObserverRef = useRef<{
+        observer: IntersectionObserver
+        visible: Set<string>
+        targets: Set<Element>
+      } | null>(null)
+
       useEffect(() => {
         const root = scrollRef.current
-        if (!root) return
+        if (!root || typeof IntersectionObserver === 'undefined') return
         const visible = new Set<string>()
+        const targets = new Set<Element>()
         const observer = new IntersectionObserver(
           entries => {
             let changed = false
@@ -1003,8 +1134,34 @@ export const ChatArea = memo(
           },
           { root, rootMargin: '100% 0px' },
         )
-        root.querySelectorAll<HTMLElement>('[data-message-id]').forEach(el => observer.observe(el))
-        return () => observer.disconnect()
+        const state = { observer, visible, targets }
+        outlineObserverRef.current = state
+        return () => {
+          observer.disconnect()
+          targets.clear()
+          if (outlineObserverRef.current === state) outlineObserverRef.current = null
+        }
+      }, [])
+
+      useEffect(() => {
+        const state = outlineObserverRef.current
+        const root = scrollRef.current
+        if (!state || !root) return
+        const current = new Set<Element>(root.querySelectorAll<HTMLElement>('[data-message-id]'))
+        let changed = false
+        for (const element of state.targets) {
+          if (current.has(element)) continue
+          state.observer.unobserve(element)
+          state.targets.delete(element)
+          const id = element.getAttribute('data-message-id')
+          if (id && state.visible.delete(id)) changed = true
+        }
+        for (const element of current) {
+          if (state.targets.has(element)) continue
+          state.targets.add(element)
+          state.observer.observe(element)
+        }
+        if (changed) onVisibleIdsRef.current?.(Array.from(state.visible))
       }, [mountedMessageIdsKey])
 
       // ── 命令式接口 ──

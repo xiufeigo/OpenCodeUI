@@ -332,6 +332,111 @@ inside comment
     expect(next.blocks).toEqual(splitMarkdownStream('before\n\n```ts\nconst x = 1\n```', true))
   })
 
+  it('keeps re-splitting while the fence language is still growing', () => {
+    // 首拍只有半个语言名：不能被当成已打开的代码块做纯追加
+    const first = projectMarkdownStream(undefined, '```pytho', true)
+    const second = projectMarkdownStream(first, '```python', true)
+    const tail = second.blocks.at(-1)!
+
+    expect(tail.mode).toBe('code')
+    expect(tail.language).toBe('python')
+    expect(tail.src).toBe('')
+
+    // 换行之后语言定型，才允许把后续内容当代码追加
+    const third = projectMarkdownStream(second, '```python\nprint(1)', true)
+    const tailAfter = third.blocks.at(-1)!
+    expect(tailAfter.language).toBe('python')
+    expect(tailAfter.src).toContain('print(1)')
+  })
+
+  it('never merges a new block started after a line break', () => {
+    // 换行后的列表项必须重新切分，不能被并进上一段
+    let text = 'para\n'
+    let projection = projectMarkdownStream(undefined, text, true)
+    text += '- item'
+    projection = projectMarkdownStream(projection, text, true)
+
+    expect(projection.blocks).toEqual(splitMarkdownStream(text, true))
+    expect(projection.blocks.at(-1)!.src).toContain('- item')
+  })
+
+  it('recognizes setext headings formed across ticks', () => {
+    let text = 'Title'
+    let projection = projectMarkdownStream(undefined, text, true)
+    for (const part of ['\n===', '\n']) {
+      text += part
+      projection = projectMarkdownStream(projection, text, true)
+    }
+
+    expect(projection.blocks).toEqual(splitMarkdownStream(text, true))
+  })
+
+  it('recognizes a fence opener arriving one character at a time', () => {
+    let text = 'para\n'
+    let projection = projectMarkdownStream(undefined, text, true)
+    for (const part of ['`', '`', '`', 'python', '\n', 'print(1)']) {
+      text += part
+      projection = projectMarkdownStream(projection, text, true)
+    }
+
+    const tail = projection.blocks.at(-1)!
+    expect(tail.mode).toBe('code')
+    expect(tail.language).toBe('python')
+    expect(tail.src).toContain('print(1)')
+  })
+
+  it('closes a fence arriving one character at a time', () => {
+    let text = '```ts\nx\n'
+    let projection = projectMarkdownStream(undefined, text, true)
+    for (const part of ['`', '`', '`']) {
+      text += part
+      projection = projectMarkdownStream(projection, text, true)
+    }
+
+    expect(projection.blocks).toEqual(splitMarkdownStream(text, true))
+    expect(projection.blocks.at(-1)!.complete).toBe(true)
+  })
+
+  it('closes an indented fence arriving one character at a time', () => {
+    let text = '```ts\nx\n'
+    let projection = projectMarkdownStream(undefined, text, true)
+    for (const part of [' ', ' ', '`', '`', '`']) {
+      text += part
+      projection = projectMarkdownStream(projection, text, true)
+    }
+
+    expect(projection.blocks.at(-1)!.complete).toBe(true)
+  })
+
+  it('tail re-split stays equivalent to a full split across a mixed document', () => {
+    const source = [
+      '# 标题',
+      '第一段普通文本，包含 **粗体** 和 `行内代码`。',
+      '- 列表一',
+      '- 列表二',
+      '```ts',
+      'const a = 1',
+      'const b = 2',
+      '```',
+      '| 列一 | 列二 |',
+      '| --- | --- |',
+      '| 1 | 2 |',
+      '结尾段落，带一个 [引用][ref]。',
+      '',
+      '[ref]: https://example.com',
+      '',
+      '最后一行。',
+    ].join('\n\n')
+
+    let text = ''
+    let projection: ReturnType<typeof projectMarkdownStream> | undefined
+    for (let index = 0; index < source.length; index += 7) {
+      text = source.slice(0, index + 7)
+      projection = projectMarkdownStream(projection, text, true)
+      expect(projection.blocks).toEqual(splitMarkdownStream(text, true))
+    }
+  })
+
   it('projects pure live-tail append without rebuilding stable blocks', () => {
     const first = projectMarkdownStream(undefined, 'hello', true)
     const next = projectMarkdownStream(first, 'hello world', true)
@@ -363,5 +468,78 @@ inside comment
     const next = projectMarkdownStream(first, 'intro\n- item', true)
 
     expect(next.blocks).toEqual(splitMarkdownStream('intro\n- item', true))
+  })
+})
+
+describe('Markdown 块组', () => {
+  it('把达到阈值的一组相邻段落合并成单个块', () => {
+    const first = 'a'.repeat(400)
+    const second = 'b'.repeat(400)
+    const third = 'c'.repeat(300)
+    const blocks = splitMarkdownStream(`${first}\n\n${second}\n\n${third}`, false)
+
+    expect(blocks).toHaveLength(2)
+    expect(blocks[0]).toEqual(expect.objectContaining({ mode: 'full' }))
+    expect(blocks[0].src).toContain(first)
+    expect(blocks[0].src).toContain(second)
+    expect(blocks[0].src).not.toContain(third)
+    expect(blocks[1].src).toContain(third)
+  })
+
+  it('流式时最后一块始终独立，并保持稳定 key', () => {
+    const first = 'a'.repeat(400)
+    const second = 'b'.repeat(400)
+    const live = 'c'.repeat(40)
+    const md = `${first}\n\n${second}\n\n${live}`
+    const blocks = splitMarkdownStream(md, true)
+
+    expect(blocks).toHaveLength(2)
+    expect(blocks[0].mode).toBe('full')
+    expect(blocks[1].mode).toBe('live')
+    expect(blocks[1].src).toContain(live)
+
+    const next = splitMarkdownStream(`${md}${'d'.repeat(20)}`, true)
+    expect(next[0].key).toBe(blocks[0].key)
+    expect(next[1].key).toBe(blocks[1].key)
+    expect(next[1].src).toContain('c'.repeat(40) + 'd'.repeat(20))
+  })
+
+  it('不把代码块卷进块组', () => {
+    const md = `${'a'.repeat(400)}\n\n\`\`\`ts\nconst x = 1\n\`\`\`\n\n${'b'.repeat(400)}`
+    const blocks = splitMarkdownStream(md, false)
+
+    expect(blocks.some(block => block.mode === 'code')).toBe(true)
+    const code = blocks.find(block => block.mode === 'code')
+    expect(code?.src).toBe('const x = 1')
+  })
+})
+
+describe('尾部增量解析 · 逐字符', () => {
+  it('matches a full split for every single-character tick', () => {
+    const source = [
+      '# 标题',
+      '一段普通文本，**粗体**、`code`、[链接](https://example.com)。',
+      '- 列表一',
+      '- 列表二',
+      '```ts',
+      'const a = 1',
+      '',
+      'const b = 2',
+      '```',
+      '| a | b |',
+      '| - | - |',
+      '| 1 | 2 |',
+      '结尾 [引用][ref]。',
+      '',
+      '[ref]: https://example.com',
+    ].join('\n\n')
+
+    let text = ''
+    let projection: ReturnType<typeof projectMarkdownStream> | undefined
+    for (let index = 0; index < source.length; index += 1) {
+      text = source.slice(0, index + 1)
+      projection = projectMarkdownStream(projection, text, true)
+      expect(projection.blocks).toEqual(splitMarkdownStream(text, true))
+    }
   })
 })

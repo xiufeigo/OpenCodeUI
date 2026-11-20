@@ -197,6 +197,18 @@ export function useTheme() {
     themeStore.setCodeWordWrap(enabled)
   }, [])
 
+  const setStreamPacingEnabled = useCallback((enabled: boolean) => {
+    themeStore.setStreamPacingEnabled(enabled)
+  }, [])
+
+  const setStreamFadeEnabled = useCallback((enabled: boolean) => {
+    themeStore.setStreamFadeEnabled(enabled)
+  }, [])
+
+  const setMarkdownCodeFoldEnabled = useCallback((enabled: boolean) => {
+    themeStore.setMarkdownCodeFoldEnabled(enabled)
+  }, [])
+
   // ---- Font Scale ----
 
   const setUIFontScale = useCallback((scale: number) => {
@@ -349,6 +361,14 @@ export function useTheme() {
     // 代码块 / diff 自动换行
     codeWordWrap: state.codeWordWrap,
     setCodeWordWrap,
+
+    // 流式输出
+    streamPacingEnabled: state.streamPacingEnabled,
+    setStreamPacingEnabled,
+    streamFadeEnabled: state.streamFadeEnabled,
+    setStreamFadeEnabled,
+    markdownCodeFoldEnabled: state.markdownCodeFoldEnabled,
+    setMarkdownCodeFoldEnabled,
 
     // 界面字号偏移
     uiFontScale: state.uiFontScale,

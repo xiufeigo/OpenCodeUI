@@ -40,11 +40,25 @@ import { MessageExpandPanel, useMessageExpandRender } from './messageExpand'
 import type { AssistantContent, AssistantMessage, SessionMessageInfo, UserMessage } from '../../types/api/message'
 import { readPromptAttachments } from '../../api/message'
 import type { JsonValue } from '@opencode/client/promise'
-import { contentEntries, hasVisibleText, idleMessageError, userMessageText, type ContentEntry } from '../../types/api/message'
+import { contentEntries, hasVisibleText, idleMessageError, userMessageText } from '../../types/api/message'
 import { currentToolFailed } from '../../types/api/toolState'
+import { buildDescriptiveToolStepsSummary, isToolPartActive, type ToolEntry } from './toolSummary'
+import { useCardEnter } from './streamCardEnter'
+import {
+  getProcessSplit,
+  groupContentForRender,
+  messageHasFinalContent,
+  messageHasProcessContent,
+  messageStillStreamingProcess,
+  splitProcessRenderItems,
+  type ProcessSplit,
+  type RenderItem,
+} from './contentGrouping'
+
+export { messageHasFinalContent, messageHasProcessContent, messageStillStreamingProcess, splitProcessRenderItems }
+export type { ProcessSplit }
 import { resolveTaskChildSessionRef } from '../../utils/taskChildBinding'
 import { diffLineStats } from '../../utils/diffUtils'
-import { expandCodeModeSubCalls } from './parts/executeSubCallSummary'
 import {
   ENTRY_GROW_DURATION_MS,
   isEntryGrowComplete,
@@ -59,6 +73,7 @@ import {
 } from '../../utils/formatUtils'
 import { lockScrollAroundAnchor } from '../../utils/scrollUtils'
 import { useUiDisclosureState } from '../../utils/uiDisclosureState'
+import { prefersReducedMotion } from '../../utils/motion'
 
 /**
  * 过程折叠 header：进行中自己走表，只有这一行因计时更新；children 不跟时钟走。
@@ -174,98 +189,6 @@ export function ProcessCollapseBlock({
  * - inline: 完整渲染（已在外层过程块内）
  */
 export type ProcessContentScope = 'all' | 'process' | 'final' | 'inline'
-
-type ProcessSplit = {
-  processItems: RenderItem[]
-  finalItems: RenderItem[]
-  hasProcess: boolean
-  hasFinal: boolean
-}
-
-// ============================================
-// 渲染条目
-//
-// v2 的助手内容只有 text / reasoning / tool 三类，且元素**没有 id**：
-// 稳定 id 一律由 `contentEntries()` 按官方算法派生
-// （text/reasoning 用 `${message.id}:${type}:${perKindOrdinal}`，tool 用 `content.id`）。
-// ============================================
-
-/** 派生 id + 原生内容 */
-type ToolEntry = ContentEntry<Extract<AssistantContent, { type: 'tool' }>>
-
-type RenderItem =
-  | { type: 'single'; id: string; content: Exclude<AssistantContent, { type: 'tool' }> }
-  | { type: 'tool-group'; tools: ToolEntry[] }
-
-/**
- * 把 render items 拆成「过程」和「最终回答」。
- * 最终回答 = 消息中最后一段连续 text。
- * reasoning / tool 永远进过程。
- */
-export function splitProcessRenderItems(items: RenderItem[]): ProcessSplit {
-  if (items.length === 0) {
-    return { processItems: [], finalItems: [], hasProcess: false, hasFinal: false }
-  }
-
-  let lastTextIdx = -1
-  for (let i = items.length - 1; i >= 0; i--) {
-    const item = items[i]
-    if (item.type === 'single' && item.content.type === 'text') {
-      lastTextIdx = i
-      break
-    }
-    break
-  }
-
-  if (lastTextIdx < 0) {
-    return {
-      processItems: items,
-      finalItems: [],
-      hasProcess: items.length > 0,
-      hasFinal: false,
-    }
-  }
-
-  let textRunStart = lastTextIdx
-  while (textRunStart > 0) {
-    const prev = items[textRunStart - 1]
-    if (prev.type === 'single' && prev.content.type === 'text') {
-      textRunStart -= 1
-      continue
-    }
-    break
-  }
-
-  const finalItems = items.slice(textRunStart)
-  const processItems = items.slice(0, textRunStart)
-
-  return {
-    processItems,
-    finalItems,
-    hasProcess: processItems.length > 0,
-    hasFinal: finalItems.length > 0,
-  }
-}
-
-/** v2 没有 isStreaming 标志：助手消息 time.completed 缺失即仍在流式 */
-export function messageStillStreamingProcess(message: SessionMessageInfo): boolean {
-  if (message.type !== 'assistant') return false
-  return message.time.completed == null
-}
-
-/** 是否有可收进过程块的内容（tool / reasoning 等，不含尾部最终 text） */
-export function messageHasProcessContent(message: SessionMessageInfo): boolean {
-  if (message.type !== 'assistant') return false
-  if (messageStillStreamingProcess(message)) return true
-  return splitProcessRenderItems(groupContentForRender(message)).hasProcess
-}
-
-/** 是否有应留在折叠块外的最终 text（仅消息已结束后才拆） */
-export function messageHasFinalContent(message: SessionMessageInfo): boolean {
-  if (message.type !== 'assistant') return false
-  if (messageStillStreamingProcess(message)) return false
-  return splitProcessRenderItems(groupContentForRender(message)).hasFinal
-}
 
 interface MessageRendererProps {
   message: SessionMessageInfo
@@ -501,7 +424,7 @@ function useEntryGrowAnimation(
     }
 
     // 过程壳内消息禁止入场生长：会连着虚拟行反复 measure，造成整列高度抽搐
-    if (!enabled || !el) {
+    if (!enabled || !el || prefersReducedMotion()) {
       finish()
       return
     }
@@ -678,33 +601,38 @@ const AssistantMessageView = memo(function AssistantMessageView({
     if (message.time.completed == null) {
       return processContentScope === 'process' ? items : []
     }
-    const split = splitProcessRenderItems(items)
+    const split = getProcessSplit(message)
     if (processContentScope === 'process') return split.processItems
     if (processContentScope === 'final') return split.finalItems
     return items
   }, [message, processContentScope])
 
-  // 判断哪些 reasoning 内容已经结束（后面出现了任何其他 kind 的内容）
-  const endedReasoningIds = useMemo(() => {
+  // 哪些文本 / 推理块已经结束：后面出现了别的 content。
+  // 平滑只属于仍处于「打开」状态的最后一块；块一旦结束就直接显示完整内容，
+  // 避免后面的工具卡先出现、前面的文字还在追。
+  const endedBlockIds = useMemo(() => {
     const ended = new Set<string>()
     const entries = contentEntries(message)
-    for (let i = 0; i < entries.length; i++) {
-      if (entries[i].content.type !== 'reasoning') continue
-      if (i + 1 < entries.length) ended.add(entries[i].id)
+    for (let i = 0; i < entries.length - 1; i += 1) {
+      const type = entries[i].content.type
+      if (type === 'text' || type === 'reasoning') ended.add(entries[i].id)
     }
     return ended
   }, [message])
 
-  // 计算完整文本用于复制（缓存：content 引用未变时复用，避免流式每帧重算字符串拼接）
-  const fullText = useMemo(
-    () =>
+  // 复制内容按需拼接：流式每帧把整段正文 join 一遍是纯浪费
+  const getCopyText = useMemo(
+    () => () =>
       message.content
         .filter(entry => entry.type === 'text')
         .map(entry => entry.text)
         .join(''),
     [message],
   )
-  const hasCopyableText = fullText.trim().length > 0
+  const hasCopyableText = useMemo(
+    () => message.content.some(entry => entry.type === 'text' && hasVisibleText(entry)),
+    [message],
+  )
 
   // 检查消息级别错误（v2 是结构化对象）
   const messageError = message.error
@@ -713,6 +641,13 @@ const AssistantMessageView = memo(function AssistantMessageView({
   const { created } = message.time
   const completed = message.time.completed ?? message.time.streamed
   const duration = message.time.completed != null ? message.time.completed - created : undefined
+
+  // 工具组上下文对象保持稳定，ToolPartView / ToolGroup 的 memo 才能命中，
+  // 流式时不会把整组已完成工具重渲染一遍
+  const toolMessageContext = useMemo(
+    () => ({ messageID: message.id, created, completed }),
+    [message.id, created, completed],
+  )
 
   // agent / model（仅 assistant 消息）
   const agent = message.agent || undefined
@@ -765,7 +700,7 @@ const AssistantMessageView = memo(function AssistantMessageView({
                 <ToolGroup
                   key={item.tools[0].id}
                   tools={item.tools}
-                  messageContext={{ messageID: message.id, created, completed }}
+                  messageContext={toolMessageContext}
                   isStreaming={isStreaming}
                 />
               )
@@ -774,9 +709,15 @@ const AssistantMessageView = memo(function AssistantMessageView({
             const content = item.content
             switch (content.type) {
               case 'text':
-                return <TextPartView key={item.id} part={content} isStreaming={isStreaming} />
+                return (
+                  <TextPartView
+                    key={item.id}
+                    part={content}
+                    isStreaming={isStreaming && !endedBlockIds.has(item.id)}
+                  />
+                )
               case 'reasoning': {
-                const reasoningDone = endedReasoningIds.has(item.id)
+                const reasoningDone = endedBlockIds.has(item.id)
                 return (
                   <ReasoningPartView
                     key={item.id}
@@ -845,7 +786,7 @@ const AssistantMessageView = memo(function AssistantMessageView({
       {showMessageActions && hasCopyableText && (
         <div className={actionBarClass}>
           <ForkActionButton message={message} onFork={onFork} forkMessageId={forkMessageId} />
-          <CopyButton text={fullText} position="static" />
+          <CopyButton text={getCopyText} position="static" />
         </div>
       )}
     </div>
@@ -874,6 +815,8 @@ const LARGE_TOOL_GROUP_SIZE = 20
 
 const ToolGroup = memo(function ToolGroup({ tools, messageContext, isStreaming }: ToolGroupProps) {
   const { t } = useTranslation('message')
+  // 组初次挂载时的工具数：这批由组级入场带出来，之后新增的卡自己播
+  const initialToolCountRef = useRef(tools.length)
   const { descriptiveToolSteps, inlineToolRequests, immersiveMode, processCollapseEnabled } = useTheme()
   const { serverId, pendingPermissions, pendingQuestions } = useInlineToolRequests()
   const hasPendingInteraction =
@@ -994,6 +937,22 @@ const ToolGroup = memo(function ToolGroup({ tools, messageContext, isStreaming }
   // steps header: 多工具始终显示；描述型 steps 模式下，单工具也显示
   const showStepsHeader = totalCount > 1 || descriptiveToolSteps
 
+  // 组级入场：header 和第一张卡一起长出来，避免 header 先蹦、卡片再长。
+  // 之后新加进来的卡自己播入场（idx >= 初始数量）。
+  const groupEnter = useCardEnter({
+    id: `group:${tools[0]?.id ?? 'empty'}`,
+    created: tools[0]?.content.time.created ?? 0,
+    enabled: !!isStreaming && showStepsHeader,
+  })
+  const setGroupRootRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      groupEnter.ref(node)
+      stepsRootRef(node)
+    },
+    [groupEnter.ref, stepsRootRef],
+  )
+  const initialToolCount = initialToolCountRef.current
+
   // 只 map 一次：有 header 时受 expand mount 控制，无 header 时始终挂载
   const toolParts =
     !showStepsHeader || shouldRenderBody
@@ -1008,6 +967,7 @@ const ToolGroup = memo(function ToolGroup({ tools, messageContext, isStreaming }
             descriptive={descriptiveToolSteps}
             isStreaming={isStreaming}
             lazyBody={isLargeGroup}
+            skipEnter={groupEnter.willAnimate && idx < initialToolCount}
           />
         ))
       : null
@@ -1015,7 +975,7 @@ const ToolGroup = memo(function ToolGroup({ tools, messageContext, isStreaming }
   // 统一容器结构 — ToolPartView 始终在同一 React 树位置，
   // streaming→idle / 1→N 工具切换时不 remount，expanded 状态不丢失
   return (
-    <div ref={stepsRootRef} className="flex flex-col">
+    <div ref={setGroupRootRef} className="flex flex-col">
       {showStepsHeader &&
         (descriptiveToolSteps ? (
           <button
@@ -1085,6 +1045,24 @@ const ToolGroup = memo(function ToolGroup({ tools, messageContext, isStreaming }
       )}
     </div>
   )
+}, (prev, next) => {
+  if (prev.isStreaming !== next.isStreaming) return false
+  const previousContext = prev.messageContext
+  const nextContext = next.messageContext
+  if (
+    previousContext.messageID !== nextContext.messageID ||
+    previousContext.created !== nextContext.created ||
+    previousContext.completed !== nextContext.completed
+  ) {
+    return false
+  }
+  if (prev.tools.length !== next.tools.length) return false
+  for (let index = 0; index < prev.tools.length; index += 1) {
+    const left = prev.tools[index]
+    const right = next.tools[index]
+    if (left.id !== right.id || left.content !== right.content) return false
+  }
+  return true
 })
 
 // ============================================
@@ -1111,197 +1089,6 @@ function toStepFinishInfo(message: AssistantMessage): StepFinishInfo | undefined
     },
     cost,
   }
-}
-
-type ToolSummaryCategory =
-  | 'execute'
-  | 'code'
-  | 'write'
-  | 'edit'
-  | 'read'
-  | 'search'
-  | 'list'
-  | 'network'
-  | 'task'
-  | 'question'
-  | 'skill'
-  | 'think'
-  | 'other'
-
-type ToolSummaryPhase = 'done' | 'active' | 'failed'
-
-interface SummarySegment {
-  text: string
-  type: 'normal' | 'error' | 'active'
-}
-
-function buildDescriptiveToolStepsSummary(
-  tools: ToolEntry[],
-  t: (key: string, opts?: Record<string, unknown>) => string,
-): SummarySegment[] {
-  const sep = t('toolSteps.separator')
-  const segments: SummarySegment[] = []
-  const MAX_CATEGORIES = 3
-
-  // ── 按类别汇总 done / failed / active ──
-  const categoryOrder: ToolSummaryCategory[] = []
-  const doneMap = new Map<ToolSummaryCategory, number>()
-  const failedMap = new Map<ToolSummaryCategory, number>()
-  const activeMap = new Map<ToolSummaryCategory, number>()
-
-  for (const tool of tools) {
-    // v2 CodeMode（execute）：展开成实际调用的子工具分别归类计数，
-    // 摘要显示「读取了 2 个文件，写入了 1 个文件」而不是「运行了 1 段代码」
-    const subCalls = expandCodeModeSubCalls(tool.content)
-    if (subCalls) {
-      const parentActive = isToolPartActive(tool.content)
-      const parentFailed = currentToolFailed(tool.content)
-      for (const sub of subCalls) {
-        const cat = getToolSummaryCategory(sub.tool)
-        if (!doneMap.has(cat)) {
-          categoryOrder.push(cat)
-          doneMap.set(cat, 0)
-          failedMap.set(cat, 0)
-          activeMap.set(cat, 0)
-        }
-        // 有运行时状态用真实状态；纯代码静态解析的继承父工具状态
-        const status = sub.status ?? (parentActive ? 'running' : parentFailed ? 'error' : 'completed')
-        if (status === 'running') activeMap.set(cat, (activeMap.get(cat) || 0) + 1)
-        else if (status === 'error') failedMap.set(cat, (failedMap.get(cat) || 0) + 1)
-        else doneMap.set(cat, (doneMap.get(cat) || 0) + 1)
-      }
-      continue
-    }
-
-    const cat = getToolSummaryCategory(tool.content.name)
-    if (!doneMap.has(cat)) {
-      categoryOrder.push(cat)
-      doneMap.set(cat, 0)
-      failedMap.set(cat, 0)
-      activeMap.set(cat, 0)
-    }
-    if (isToolPartActive(tool.content)) activeMap.set(cat, (activeMap.get(cat) || 0) + 1)
-    else if (currentToolFailed(tool.content)) failedMap.set(cat, (failedMap.get(cat) || 0) + 1)
-    else doneMap.set(cat, (doneMap.get(cat) || 0) + 1)
-  }
-
-  // ── 已完成 + 失败（合并同类别）──
-  // 先收集所有完成态类别（含纯失败的类别）
-  const finishedCategories = categoryOrder.filter(cat => (doneMap.get(cat) || 0) > 0 || (failedMap.get(cat) || 0) > 0)
-
-  const pushFinishedSegments = (cats: ToolSummaryCategory[]) => {
-    for (const cat of cats) {
-      const done = doneMap.get(cat) || 0
-      const failed = failedMap.get(cat) || 0
-      if (segments.length > 0) segments.push({ text: sep, type: 'normal' })
-
-      if (done > 0 && failed > 0) {
-        // 同类别既有成功又有失败：合并成一句
-        const total = done + failed
-        segments.push({ text: formatToolSummarySegment(cat, total, 'done', t), type: 'normal' })
-        segments.push({ text: t('toolSteps.failedSuffix', { count: failed }), type: 'error' })
-      } else if (done > 0) {
-        segments.push({ text: formatToolSummarySegment(cat, done, 'done', t), type: 'normal' })
-      } else {
-        // 纯失败
-        if (failed === 1) {
-          segments.push({ text: formatToolSummarySegment(cat, failed, 'failed', t), type: 'error' })
-        } else {
-          segments.push({ text: formatToolSummarySegment(cat, failed, 'done', t), type: 'error' })
-          segments.push({ text: t('toolSteps.failedAllSuffix'), type: 'error' })
-        }
-      }
-    }
-  }
-
-  if (finishedCategories.length <= MAX_CATEGORIES) {
-    pushFinishedSegments(finishedCategories)
-  } else {
-    pushFinishedSegments(finishedCategories.slice(0, MAX_CATEGORIES))
-    const restCount = finishedCategories
-      .slice(MAX_CATEGORIES)
-      .reduce((sum, cat) => sum + (doneMap.get(cat) || 0) + (failedMap.get(cat) || 0), 0)
-    segments.push({ text: sep, type: 'normal' })
-    segments.push({ text: t('toolSteps.moreActions', { count: restCount }), type: 'normal' })
-  }
-
-  // ── 运行中 ──
-  const activeCategories = categoryOrder.filter(cat => (activeMap.get(cat) || 0) > 0)
-  for (const cat of activeCategories) {
-    if (segments.length > 0) segments.push({ text: sep, type: 'normal' })
-    segments.push({ text: formatToolSummarySegment(cat, activeMap.get(cat) || 0, 'active', t), type: 'active' })
-  }
-
-  if (segments.length === 0) {
-    return [{ text: t('stepsCount', { done: 0, total: tools.length }), type: 'normal' }]
-  }
-
-  let isFirstContent = true
-  for (const seg of segments) {
-    if (seg.text === sep) continue
-    if (isFirstContent) {
-      isFirstContent = false
-      continue
-    }
-    seg.text = seg.text.charAt(0).toLowerCase() + seg.text.slice(1)
-  }
-
-  return segments
-}
-
-function formatToolSummarySegment(
-  category: ToolSummaryCategory,
-  count: number,
-  phase: ToolSummaryPhase,
-  t: (key: string, opts?: Record<string, unknown>) => string,
-): string {
-  const key = `toolSteps.${category}${phase.charAt(0).toUpperCase()}${phase.slice(1)}`
-  return t(key, { count })
-}
-
-function getToolSummaryCategory(toolName: string): ToolSummaryCategory {
-  const lower = toolName.toLowerCase()
-
-  // v2 CodeMode 的 execute 工具是「运行一段编排其它工具的代码」，区别于 shell 命令
-  if (lower === 'execute') return 'code'
-  if (lower === 'task' || lower === 'subagent') return 'task'
-  if (lower.includes('question') || lower.includes('ask')) return 'question'
-  if (lower.includes('skill')) return 'skill'
-  if (
-    lower.includes('bash') ||
-    lower === 'sh' ||
-    lower.includes('cmd') ||
-    lower.includes('terminal') ||
-    lower.includes('shell')
-  ) {
-    return 'execute'
-  }
-  if (lower.includes('write') || lower.includes('save')) {
-    return 'write'
-  }
-  if (lower.includes('edit') || lower.includes('replace') || lower.includes('patch')) {
-    return 'edit'
-  }
-  if (
-    lower.includes('web') ||
-    lower.includes('fetch') ||
-    lower.includes('http') ||
-    lower.includes('browse') ||
-    lower.includes('network') ||
-    lower.includes('exa')
-  ) {
-    return 'network'
-  }
-  if (lower.includes('read') || lower.includes('cat')) return 'read'
-  if (lower.includes('grep') || lower.includes('search')) return 'search'
-  if (lower.includes('glob') || lower.includes('find')) return 'list'
-  if (lower.includes('think') || lower.includes('reason') || lower.includes('plan')) return 'think'
-  return 'other'
-}
-
-/** 工具是否仍在执行中（v2 的活跃态是 streaming / running） */
-function isToolPartActive(tool: Extract<AssistantContent, { type: 'tool' }>): boolean {
-  return tool.state.status === 'running' || tool.state.status === 'streaming'
 }
 
 /**
@@ -1368,58 +1155,4 @@ function computePartDiffStatsUncached(data: {
     return s && (s.additions || s.deletions) ? s : undefined
   }
   return undefined
-}
-
-// ============================================
-// Helper: Group content for rendering
-// ============================================
-
-/**
- * 内容是否会被渲染。
- *
- * 规则取自官方 `renderable()`（packages/session-ui/src/timeline/projection.ts）：
- *   - text / reasoning：正文非空白才渲染
- *   - tool：始终渲染（解析中的 streaming 工具也要让用户看到正在做什么）
- */
-function isRenderableContent(content: AssistantContent, isStreaming: boolean): boolean {
-  if (content.type === 'tool') return true
-  if (hasVisibleText(content)) return true
-  // 流式中的空片段保留，避免文字刚到时闪一下
-  return isStreaming
-}
-
-/**
- * 把原生 content 数组整成渲染条目。
- *
- * 与官方 `groupContent()` 的对应关系：官方会把相邻的 tool 合成一个
- * group（`toolGroupType`），这里沿用本仓库既有的「连续 tool 合并成一组」
- * 规则，视觉与交互保持不变。
- */
-function groupContentForRender(message: AssistantMessage): RenderItem[] {
-  const isStreaming = message.time.completed == null
-  const result: RenderItem[] = []
-  let toolGroup: ToolEntry[] = []
-
-  const flushToolGroup = () => {
-    if (toolGroup.length === 0) return
-    result.push({ type: 'tool-group', tools: toolGroup })
-    toolGroup = []
-  }
-
-  for (const entry of contentEntries(message)) {
-    if (!isRenderableContent(entry.content, isStreaming)) continue
-
-    if (entry.content.type === 'tool') {
-      // todowrite：官方整卡不渲染（session-ui/tool-renderer.tsx:1197）
-      if (entry.content.name.toLowerCase() === 'todowrite') continue
-      toolGroup.push(entry as ToolEntry)
-      continue
-    }
-
-    flushToolGroup()
-    result.push({ type: 'single', id: entry.id, content: entry.content })
-  }
-
-  flushToolGroup()
-  return result
 }

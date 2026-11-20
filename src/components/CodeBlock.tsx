@@ -3,7 +3,8 @@ import { useInputCapabilities } from '../hooks/useInputCapabilities'
 import { useSyntaxHighlight, useStreamingSyntaxHighlight, type HighlightTokens } from '../hooks/useSyntaxHighlight'
 import { themeStore } from '../store/themeStore'
 import { CopyButton } from './ui'
-import { useInView } from '../hooks/useInView'
+import { ChevronDownIcon, ChevronUpIcon } from './Icons'
+import { useNearViewport } from '../hooks/useInView'
 
 /** Languages that carry no useful information — hide the label */
 const HIDDEN_LANGS = new Set(['text', 'plain', 'txt', 'plaintext'])
@@ -46,12 +47,16 @@ function renderIncrementalTokens(tokens: HighlightTokens, suffix: string) {
 
 type FlatHighlightToken = { content: string; color?: string }
 
+/** 共享换行节点，避免每次重排都给换行新造一个对象 */
+const NEWLINE_TOKEN: FlatHighlightToken = { content: '\n' }
+
 function flattenTokens(tokens: HighlightTokens, suffix: string): FlatHighlightToken[] {
   const result: FlatHighlightToken[] = []
-  tokens.forEach((line, lineIndex) => {
-    line.forEach(token => result.push({ content: token.content, color: token.color }))
-    if (lineIndex < tokens.length - 1) result.push({ content: '\n' })
-  })
+  for (let lineIndex = 0; lineIndex < tokens.length; lineIndex += 1) {
+    const line = tokens[lineIndex]
+    for (let tokenIndex = 0; tokenIndex < line.length; tokenIndex += 1) result.push(line[tokenIndex])
+    if (lineIndex < tokens.length - 1) result.push(NEWLINE_TOKEN)
+  }
   if (suffix) result.push({ content: suffix })
   return result
 }
@@ -107,6 +112,11 @@ interface CodeBlockProps {
   streamingHighlight?: boolean
   /** Persistent controls rendered beside the copy action. */
   headerActions?: ReactNode
+  /** 折叠态：配合 maxHeight 裁剪而不是滚动，用于长代码块 */
+  folded?: boolean
+  /** 展开/收起回调；提供时在 header 或悬浮操作区显示对应按钮 */
+  onToggleFold?: () => void
+  foldLabel?: { expand: string; collapse: string }
 }
 
 export const CodeBlock = memo(function CodeBlock({
@@ -121,6 +131,9 @@ export const CodeBlock = memo(function CodeBlock({
   forceHighlight = false,
   streamingHighlight = false,
   headerActions,
+  folded = false,
+  onToggleFold,
+  foldLabel,
 }: CodeBlockProps) {
   const { codeWordWrap } = useSyncExternalStore(themeStore.subscribe, themeStore.getSnapshot)
   const { preferTouchUi } = useInputCapabilities()
@@ -129,7 +142,10 @@ export const CodeBlock = memo(function CodeBlock({
   const highlightCode = code
 
   // Lazy load highlighting when close to viewport
-  const { ref, inView } = useInView({ triggerOnce: true, rootMargin: '200px' })
+  // 高亮要赶在可见之前做完：2 屏的提前量，和虚拟列表的预渲染窗口对齐。
+  // 用 useNearViewport 而不是 useInView —— 后者 root 取视口，会被聊天滚动容器裁掉，
+  // 提前量实际不生效，滚到才高亮会看到一段纯文本。
+  const { ref, near } = useNearViewport({ rootMargin: '200% 0px', enabled: !deferHighlight, triggerOnce: true })
 
   // Auto-detect tree structure if language is missing or text
   const effectiveLanguage = useMemo(() => {
@@ -147,7 +163,7 @@ export const CodeBlock = memo(function CodeBlock({
     return language || 'text'
   }, [highlightCode, language])
 
-  const shouldHighlight = !deferHighlight && (inView || forceHighlight)
+  const shouldHighlight = !deferHighlight && (near || forceHighlight)
   const shouldStreamHighlight = shouldHighlight && streamingHighlight
 
   const { output: highlightedTokens } = useSyntaxHighlight(highlightCode, {
@@ -207,6 +223,28 @@ export const CodeBlock = memo(function CodeBlock({
   const lineHeight = isReasoning ? 'leading-5' : 'leading-6'
   const textColor = isReasoning ? 'text-text-300' : 'text-text-200'
 
+  const foldActionLabel = folded ? foldLabel?.collapse : foldLabel?.expand
+  const renderFoldAction = (compact: boolean) =>
+    onToggleFold ? (
+      <button
+        type="button"
+        onClick={event => {
+          event.stopPropagation()
+          onToggleFold()
+        }}
+        title={foldActionLabel}
+        aria-label={foldActionLabel}
+        aria-expanded={!folded}
+        className={
+          compact
+            ? 'inline-flex h-8 w-8 items-center justify-center rounded-md bg-bg-300/70 p-2 text-text-400 backdrop-blur-md transition-colors hover:bg-bg-300/90 hover:text-text-200'
+            : 'inline-flex h-8 w-8 items-center justify-center rounded-md p-2 text-text-400 transition-colors hover:bg-bg-300/60 hover:text-text-200'
+        }
+      >
+        {folded ? <ChevronDownIcon size={14} /> : <ChevronUpIcon size={14} />}
+      </button>
+    ) : null
+
   const content = displayedHighlight ? (
     <pre
       className={`shiki-wrapper m-0 font-mono select-text ${textColor} ${fontSize} ${lineHeight} ${contentPad} ${
@@ -258,6 +296,7 @@ export const CodeBlock = memo(function CodeBlock({
             <span className="truncate">{language}</span>
           </div>
           <div className="inline-flex h-8 shrink-0 items-center gap-0.5 pr-2 opacity-0 group-hover/code:opacity-100 group-focus-within/code:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity">
+            {renderFoldAction(false)}
             {headerActions}
             <CopyButton text={code} position="static" className="!h-8 !w-8 !p-2" />
           </div>
@@ -266,6 +305,8 @@ export const CodeBlock = memo(function CodeBlock({
         <div
           className={`absolute top-2 right-2 z-10 opacity-0 group-hover/code:opacity-100 group-focus-within/code:opacity-100 ${requireTapToRevealCopy ? '[@media(hover:none)]:opacity-0' : '[@media(hover:none)]:opacity-100'} transition-opacity`}
         >
+          {renderFoldAction(true)}
+          {headerActions}
           <CopyButton
             text={code}
             position="static"
@@ -274,7 +315,7 @@ export const CodeBlock = memo(function CodeBlock({
         </div>
       )}
 
-      {/* Scrollable content */}
+      {/* Scrollable content：折叠态就是限高滚动，不裁切、不渐隐 */}
       <div className={scrollClasses} style={maxHeight ? { maxHeight } : undefined}>
         {content}
       </div>

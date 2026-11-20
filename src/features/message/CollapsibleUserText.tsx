@@ -11,6 +11,7 @@ import { useTranslation } from 'react-i18next'
 import { MarkdownRenderer } from '../../components/MarkdownRenderer'
 import { useDisclosureScrollLock } from '../../hooks'
 import { useUiDisclosureState } from '../../utils/uiDisclosureState'
+import { BoundedCache } from '../../utils/boundedCache'
 
 /** 默认预览 8 行 */
 const COLLAPSE_PREVIEW_LINES = 8
@@ -20,7 +21,7 @@ export const USER_HTML_ARTIFACT_PATTERN =
   /(?:```(?:html|htm)\b|<!doctype\s+html\b|<html\b|<style\b|<script\b|<canvas\b|\son[a-z]+\s*=)/i
 
 // 折叠状态缓存：消息是否溢出
-const overflowStateCache = new Map<string, boolean>()
+const overflowStateCache = new BoundedCache<string, boolean>({ maxEntries: 2000 })
 
 export interface CollapsibleUserTextProps {
   text: string

@@ -12,22 +12,46 @@ import {
 } from 'react'
 import morphdom from 'morphdom'
 import { CodeBlock } from './CodeBlock'
-import { CodeIcon, EyeIcon, HandIcon, RetryIcon, ZoomInIcon, ZoomOutIcon } from './Icons'
+import { CodeIcon, EyeIcon } from './Icons'
 import { CopyButton } from './ui'
 import { useTheme } from '../hooks/useTheme'
 import { useInputCapabilities } from '../hooks/useInputCapabilities'
+import { useResponsiveMaxHeight } from '../hooks/useResponsiveMaxHeight'
+import { useUiDisclosureState } from '../utils/uiDisclosureState'
 import { detectLanguage } from '../utils/languageUtils'
 import { isTauri } from '../utils/tauri'
 import { marked } from 'marked'
 import type { Tokens } from 'marked'
 import { isMarkupPreviewLanguage, projectMarkdownStream, stripLeadingHtmlComments, type MarkdownStreamProjection } from './markdownStream'
-import { renderMarkdownToHtml, renderKatexHtml } from './markdownHtmlRenderer'
+import { usePacedStreamContent } from './streamPacing'
+import { appendStreamingTextWithFade, createStreamFadeState, resetStreamFade } from './streamFade'
+import { BoundedCache } from '../utils/boundedCache'
+import { measurePerf, notePerf } from '../utils/perfTrace'
+import { renderMarkdownToHtml, renderKatexHtml, sanitizeHtml } from './markdownHtmlRenderer'
+import { cancelMarkdownParse, parseMarkdownInWorker } from '../lib/markdownWorkerClient'
 import { getFootnoteId, scanTextSegments } from './markdownSegments'
+import { trimUnstableInlineTail } from './markdownInlineLookahead'
+import { useTranslation } from 'react-i18next'
 import { themeStore } from '../store/themeStore'
 
 /** 只订阅 renderHtmlContent 布尔值（useTheme 全量订阅会让每条消息的 markdown 跟着任何设置变动重渲染） */
 function useRenderHtmlContent(): boolean {
   return useSyncExternalStore(themeStore.subscribe, () => themeStore.renderHtmlContent)
+}
+
+/** 只订阅流式节奏开关 */
+function useStreamPacingEnabled(): boolean {
+  return useSyncExternalStore(themeStore.subscribe, () => themeStore.streamPacingEnabled)
+}
+
+/** 只订阅尾部淡入开关 */
+function useStreamFadeEnabled(): boolean {
+  return useSyncExternalStore(themeStore.subscribe, () => themeStore.streamFadeEnabled)
+}
+
+/** 只订阅长代码块折叠开关 */
+function useMarkdownCodeFoldEnabled(): boolean {
+  return useSyncExternalStore(themeStore.subscribe, () => themeStore.markdownCodeFoldEnabled)
 }
 import type { MarkdownSegment } from './markdownSegments'
 import {
@@ -38,8 +62,8 @@ import {
   HTML_SANDBOX_SECURITY_HEAD,
   HTML_SANDBOX_VIEWPORT_HEAD,
 } from './htmlSandbox'
-import { getCachedMermaidSvg, getOrRenderMermaidSvg } from './mermaidRenderCache'
 import { inferImageDimensions } from './imageDimensions'
+import { MermaidBlock } from './markdown/mermaidBlock'
 
 interface MarkdownRendererProps {
   content: string
@@ -48,28 +72,48 @@ interface MarkdownRendererProps {
   variant?: 'default' | 'reasoning'
 }
 
-const MERMAID_MIN_SCALE = 0.5
-const MERMAID_MAX_SCALE = 3
-const MERMAID_SCALE_STEP = 0.15
-const MERMAID_CONTROL_BUTTON_BASE_CLASS =
-  'inline-flex h-8 w-8 items-center justify-center rounded-md bg-bg-300/70 backdrop-blur-md transition-colors duration-150 hover:bg-bg-300/85 disabled:opacity-40 disabled:cursor-not-allowed'
-const MERMAID_CONTROL_BUTTON_CLASS = `${MERMAID_CONTROL_BUTTON_BASE_CLASS} text-text-400 hover:text-text-200`
 const LOCAL_FILE_LINK_PREFIX = '#opencode-local-file:'
 
-type DiagramPointer = { x: number; y: number }
+const markdownProjectionCache = new Map<string, MarkdownStreamProjection>()
+/** 非流式消息的分块结果：虚拟列表来回挂载时避免整段重新 lex */
+const staticProjectionCache = new BoundedCache<string, MarkdownStreamProjection>({
+  maxEntries: 64,
+  maxCost: 4 * 1024 * 1024,
+  costOf: projection => projection.text.length,
+})
 
-type PinchGesture = {
-  startDistance: number
-  startScale: number
-  startOffset: { x: number; y: number }
-  startCenter: { x: number; y: number }
+function getStaticProjection(content: string): MarkdownStreamProjection {
+  const cached = staticProjectionCache.get(content)
+  if (cached) return cached
+  const projection = measurePerf(
+    'markdown.split',
+    () => projectMarkdownStream(undefined, content, false),
+    6,
+    `${content.length} chars`,
+  )
+  staticProjectionCache.set(content, projection)
+  return projection
 }
 
-let mermaidRenderCounter = 0
-const markdownProjectionCache = new Map<string, MarkdownStreamProjection>()
+const htmlCache = new BoundedCache<string, string>({
+  maxEntries: 256,
+  maxCost: 4 * 1024 * 1024,
+  costOf: html => html.length,
+})
+/** 单块过大不进缓存：一个几百 KB 的表格/长段会挤掉几十个正常块 */
+const HTML_CACHE_MAX_ENTRY_CHARS = 512 * 1024
 
-const htmlCache = new Map<string, string>()
-const HTML_CACHE_MAX = 64
+/**
+ * 超大块的解析策略。
+ *
+ * 已经渲染过的块改用 worker 解析：主线程只做净化和 morph，流式期间不再重复占用
+ * 主线程跑 marked + KaTeX。首次挂载（还没有内容）仍走同步解析，避免空块造成高度
+ * 跳动；worker 不可用时退回同步路径，并按块大小限频。
+ */
+const LARGE_BLOCK_WORKER_MIN_CHARS = 32 * 1024
+const LARGE_LIVE_PARSE_INTERVAL_MS = 120
+/** 超过 128KB 后按倍数拉长间隔，避免每次完整 parse 都长时间占住主线程 */
+const LARGE_LIVE_PARSE_SCALE_CHARS = 128 * 1024
 const MARKDOWN_BLOCK_CONTENT_CLASS = 'space-y-4 whitespace-normal [&>*:first-child]:mt-0 [&>*:last-child]:mb-0'
 const MARKDOWN_USER_STATE_ATTRIBUTE = 'data-markdown-user-state'
 const HTML_SOURCE_BUTTON_CLASS = 'absolute right-2 top-2 z-10 inline-flex h-8 w-8 items-center justify-center rounded-md bg-bg-300/70 p-2 text-accent-main-100 opacity-0 shadow-sm backdrop-blur-md transition-all hover:bg-bg-300/90 hover:text-accent-main-100 group-hover/html-preview:opacity-100 group-focus-within/html-preview:opacity-100'
@@ -78,16 +122,35 @@ const PREFIXED_BLOCK_HTML_SOURCE_PATTERN = /^\s*<(?:style|script)\b[\s\S]*<(?:ad
 const ARTIFACT_HTML_SOURCE_PATTERN = /(?:<!doctype\s+html\b|<html\b|<style\b|<script\b|<canvas\b|\son[a-z]+\s*=|(?:href|src)\s*=\s*["']?\s*javascript:)/i
 const STREAMING_HTML_CONTENT_PATTERN = /(?:```(?:html|htm|xhtml|xml|svg)\b|<(?:address|article|aside|blockquote|canvas|center|details|dialog|div|dl|fieldset|figure|footer|form|header|html|main|nav|ol|section|style|svg|table|ul)\b)/i
 
+function htmlCacheKey(src: string, isReasoning: boolean, renderHtml: boolean): string {
+  return `${isReasoning ? 'r' : 'd'}:${renderHtml ? 'h' : 'x'}:${src}`
+}
+
+/** 代码块折叠状态的稳定 key（只看已定稿内容） */
+function markdownCodeStateKey(src: string): string {
+  let hash = 0
+  for (let index = 0; index < src.length; index += 1) hash = (hash * 31 + src.charCodeAt(index)) | 0
+  return `markdown-code:${src.length}:${hash}`
+}
+
+function peekCachedHtml(src: string, isReasoning: boolean, renderHtml: boolean): string | undefined {
+  return htmlCache.get(htmlCacheKey(src, isReasoning, renderHtml))
+}
+
+function cacheHtml(src: string, isReasoning: boolean, renderHtml: boolean, html: string): void {
+  if (html.length <= HTML_CACHE_MAX_ENTRY_CHARS) htmlCache.set(htmlCacheKey(src, isReasoning, renderHtml), html)
+}
+
 function getCachedHtml(src: string, isReasoning: boolean, renderHtml: boolean): string {
-  const key = `${isReasoning ? 'r' : 'd'}:${renderHtml ? 'h' : 'x'}:${src}`
-  const cached = htmlCache.get(key)
+  const cached = peekCachedHtml(src, isReasoning, renderHtml)
   if (cached !== undefined) return cached
-  const html = renderMarkdownToHtml(src, isReasoning, renderHtml)
-  if (htmlCache.size >= HTML_CACHE_MAX) {
-    const firstKey = htmlCache.keys().next().value
-    if (firstKey !== undefined) htmlCache.delete(firstKey)
-  }
-  htmlCache.set(key, html)
+  const html = measurePerf(
+    'markdown.parse',
+    () => renderMarkdownToHtml(src, isReasoning, renderHtml),
+    8,
+    `${src.length} chars`,
+  )
+  cacheHtml(src, isReasoning, renderHtml, html)
   return html
 }
 
@@ -113,13 +176,18 @@ function canAppendIntoTextNode(textNode: Text): boolean {
 }
 
 /** 把纯文本后缀接到 root 内最后一个 Text 节点；失败返回 false */
-function tryAppendLiveText(root: HTMLElement, suffix: string): boolean {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
-  let last: Text | null = null
-  let node = walker.nextNode()
-  while (node) {
-    last = node as Text
-    node = walker.nextNode()
+function tryAppendLiveText(root: HTMLElement, suffix: string, cached: { node: Text | null }): boolean {
+  // 连续追加时复用上一次的节点：长段落里逐字揭示不必每拍遍历整棵 DOM
+  let last = cached.node
+  if (!last || !root.contains(last) || !canAppendIntoTextNode(last)) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    last = null
+    let node = walker.nextNode()
+    while (node) {
+      last = node as Text
+      node = walker.nextNode()
+    }
+    cached.node = last
   }
   if (!last || !canAppendIntoTextNode(last)) return false
   last.textContent = `${last.textContent ?? ''}${suffix}`
@@ -158,91 +226,6 @@ function applyMarkdownHtml(root: HTMLElement, html: string) {
   })
 }
 
-function createMermaidRenderId(prefix: string) {
-  mermaidRenderCounter += 1
-  const safePrefix = prefix.replace(/[^a-zA-Z0-9_-]/g, '') || 'diagram'
-  return `mermaid-${safePrefix}-${mermaidRenderCounter}`
-}
-
-function scopeMermaidSvg(svg: string, instanceId: string) {
-  const template = document.createElement('template')
-  template.innerHTML = svg
-  const root = template.content.querySelector('svg')
-  if (!root) return svg
-
-  const idMap = new Map<string, string>()
-  const elementsWithIds = [...(root.hasAttribute('id') ? [root] : []), ...root.querySelectorAll('[id]')]
-  elementsWithIds.forEach((element, index) => {
-    const id = element.getAttribute('id')
-    if (!id) return
-    const nextId = `${instanceId}-${index}`
-    idMap.set(id, nextId)
-    element.setAttribute('id', nextId)
-  })
-
-  const replaceReferences = (value: string) =>
-    value.replace(/#([a-zA-Z0-9_.:-]+)/g, (match, id: string) => {
-      const nextId = idMap.get(id)
-      return nextId ? `#${nextId}` : match
-    })
-
-  const elements = [root, ...root.querySelectorAll('*')]
-  elements.forEach(element => {
-    for (const attribute of Array.from(element.attributes)) {
-      if (attribute.name === 'aria-labelledby' || attribute.name === 'aria-describedby') {
-        const value = attribute.value
-          .split(/\s+/)
-          .map(id => idMap.get(id) ?? id)
-          .join(' ')
-        element.setAttribute(attribute.name, value)
-        continue
-      }
-      const value = replaceReferences(attribute.value)
-      if (value !== attribute.value) element.setAttribute(attribute.name, value)
-    }
-  })
-  root.querySelectorAll('style').forEach(style => {
-    if (style.textContent) style.textContent = replaceReferences(style.textContent)
-  })
-
-  return root.outerHTML
-}
-
-async function getMermaidSvg(code: string, theme: 'dark' | 'default', renderPrefix: string) {
-  const cacheKey = `${theme}:${code}`
-  return getOrRenderMermaidSvg(cacheKey, async () => {
-    const { default: mermaid } = await import('mermaid')
-    mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme })
-    const result = await mermaid.render(createMermaidRenderId(renderPrefix), code)
-    return result.svg
-  })
-}
-
-function clampMermaidScale(scale: number) {
-  return Math.min(MERMAID_MAX_SCALE, Math.max(MERMAID_MIN_SCALE, Number(scale.toFixed(2))))
-}
-
-function getPointerDistance(first: DiagramPointer, second: DiagramPointer) {
-  return Math.hypot(first.x - second.x, first.y - second.y)
-}
-
-function getPointerCenter(first: DiagramPointer, second: DiagramPointer) {
-  return {
-    x: (first.x + second.x) / 2,
-    y: (first.y + second.y) / 2,
-  }
-}
-
-function getRelativeCenter(target: HTMLDivElement, first: DiagramPointer, second: DiagramPointer) {
-  const center = getPointerCenter(first, second)
-  const rect = target.parentElement?.getBoundingClientRect()
-  if (!rect) return center
-  return {
-    x: center.x - rect.left,
-    y: center.y - rect.top,
-  }
-}
-
 function decodeLocalFileHref(href?: string): string | null {
   if (!href?.startsWith(LOCAL_FILE_LINK_PREFIX)) return null
   try {
@@ -262,290 +245,6 @@ function getOrderedListPadding(start: number, itemCount: number): string {
   const markerChars = String(Math.abs(endNumber)).length + (endNumber < 0 ? 1 : 0)
   return `${Math.max(3, markerChars + 2)}ch`
 }
-
-// ─── Mermaid ────────────────────────────────────────────────────
-
-const MarkdownMermaid = memo(function MarkdownMermaid({ code, isIncomplete }: { code: string; isIncomplete?: boolean }) {
-  const { resolvedTheme } = useTheme()
-  const mermaidTheme = resolvedTheme === 'dark' ? 'dark' : 'default'
-  const { hasCoarsePointer, hasTouch, preferTouchUi } = useInputCapabilities()
-  const supportsTouchGestures = hasCoarsePointer || hasTouch
-  const renderPrefix = useId()
-  const instanceSvgId = `mermaid-instance-${renderPrefix.replace(/[^a-zA-Z0-9_-]/g, '')}`
-  const dragRef = useRef<{
-    pointerId: number
-    startX: number
-    startY: number
-    originX: number
-    originY: number
-  } | null>(null)
-  const touchPointersRef = useRef<Map<number, DiagramPointer>>(new Map())
-  const pinchRef = useRef<PinchGesture | null>(null)
-  const [svg, setSvg] = useState(() => (isIncomplete ? '' : (getCachedMermaidSvg(`${mermaidTheme}:${code}`) ?? '')))
-  const [error, setError] = useState('')
-  const [scale, setScale] = useState(1)
-  const [offset, setOffset] = useState({ x: 0, y: 0 })
-  const [isTouchPanEnabled, setIsTouchPanEnabled] = useState(false)
-
-  const resetView = useCallback(() => {
-    setScale(1)
-    setOffset({ x: 0, y: 0 })
-  }, [])
-  const scopedSvg = useMemo(() => scopeMermaidSvg(svg, instanceSvgId), [instanceSvgId, svg])
-
-  const zoomBy = useCallback((delta: number) => {
-    setScale(current => clampMermaidScale(current + delta))
-  }, [])
-
-  const clearTouchGesture = useCallback(() => {
-    touchPointersRef.current.clear()
-    pinchRef.current = null
-    dragRef.current = null
-  }, [])
-
-  const beginPinchGesture = useCallback(
-    (target: HTMLDivElement) => {
-      const pointers = Array.from(touchPointersRef.current.values())
-      if (pointers.length < 2) return
-      const [first, second] = pointers
-      pinchRef.current = {
-        startDistance: Math.max(1, getPointerDistance(first, second)),
-        startScale: scale,
-        startOffset: offset,
-        startCenter: getRelativeCenter(target, first, second),
-      }
-      dragRef.current = null
-    },
-    [offset, scale],
-  )
-
-  const handleContainerClick = useCallback(
-    (event: React.MouseEvent<HTMLDivElement>) => {
-      if (!preferTouchUi) return
-      if (event.target instanceof HTMLElement && event.target.closest('button')) return
-      event.currentTarget.focus({ preventScroll: true })
-    },
-    [preferTouchUi],
-  )
-
-  const handleContainerBlur = useCallback(
-    (event: React.FocusEvent<HTMLDivElement>) => {
-      if (!preferTouchUi) return
-      const nextTarget = event.relatedTarget
-      if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return
-      setIsTouchPanEnabled(false)
-      clearTouchGesture()
-    },
-    [clearTouchGesture, preferTouchUi],
-  )
-
-  useEffect(() => {
-    if (isTouchPanEnabled) return
-    clearTouchGesture()
-  }, [clearTouchGesture, isTouchPanEnabled])
-
-  const handlePointerDown = useCallback(
-    (event: React.PointerEvent<HTMLDivElement>) => {
-      if (event.pointerType === 'mouse' && event.button !== 0) return
-      if (supportsTouchGestures && event.pointerType !== 'mouse' && !isTouchPanEnabled) return
-      if (event.pointerType !== 'mouse') {
-        touchPointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
-        if (touchPointersRef.current.size >= 2) {
-          beginPinchGesture(event.currentTarget)
-          event.currentTarget.setPointerCapture?.(event.pointerId)
-          return
-        }
-      }
-      dragRef.current = {
-        pointerId: event.pointerId,
-        startX: event.clientX,
-        startY: event.clientY,
-        originX: offset.x,
-        originY: offset.y,
-      }
-      event.currentTarget.setPointerCapture?.(event.pointerId)
-    },
-    [beginPinchGesture, supportsTouchGestures, isTouchPanEnabled, offset.x, offset.y],
-  )
-
-  const handlePointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.pointerType !== 'mouse' && touchPointersRef.current.has(event.pointerId)) {
-      touchPointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
-      const pointers = Array.from(touchPointersRef.current.values())
-      const pinch = pinchRef.current
-      if (pointers.length >= 2 && pinch) {
-        const [first, second] = pointers
-        const distance = Math.max(1, getPointerDistance(first, second))
-        const center = getRelativeCenter(event.currentTarget, first, second)
-        const nextScale = clampMermaidScale(pinch.startScale * (distance / pinch.startDistance))
-        const anchorX = (pinch.startCenter.x - pinch.startOffset.x) / pinch.startScale
-        const anchorY = (pinch.startCenter.y - pinch.startOffset.y) / pinch.startScale
-
-        event.preventDefault()
-        setScale(nextScale)
-        setOffset({
-          x: center.x - anchorX * nextScale,
-          y: center.y - anchorY * nextScale,
-        })
-        return
-      }
-    }
-
-    const drag = dragRef.current
-    if (!drag || drag.pointerId !== event.pointerId) return
-    event.preventDefault()
-    setOffset({
-      x: drag.originX + event.clientX - drag.startX,
-      y: drag.originY + event.clientY - drag.startY,
-    })
-  }, [])
-
-  const handlePointerEnd = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.pointerType !== 'mouse') {
-      touchPointersRef.current.delete(event.pointerId)
-      if (touchPointersRef.current.size < 2) pinchRef.current = null
-    }
-    if (dragRef.current?.pointerId === event.pointerId) {
-      dragRef.current = null
-    }
-    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (isIncomplete || !code.trim()) {
-      return
-    }
-
-    let cancelled = false
-
-    async function renderDiagram() {
-      try {
-        const cached = getCachedMermaidSvg(`${mermaidTheme}:${code}`)
-        setSvg(cached ?? '')
-        setError('')
-        resetView()
-        if (cached !== undefined) return
-        const result = await getMermaidSvg(code, mermaidTheme, renderPrefix)
-        if (!cancelled) setSvg(result)
-      } catch (err) {
-        if (import.meta.env.DEV) {
-          console.warn('[Markdown] Mermaid render failed:', err)
-        }
-        if (!cancelled) {
-          setSvg('')
-          setError(err instanceof Error ? err.message : 'Failed to render Mermaid diagram')
-        }
-      }
-    }
-
-    void renderDiagram()
-
-    return () => {
-      cancelled = true
-    }
-  }, [code, isIncomplete, mermaidTheme, renderPrefix, resetView])
-
-  if (isIncomplete) {
-    return <CodeBlock code={code} language="mermaid" deferHighlight />
-  }
-
-  if (error) {
-    return (
-      <div className="my-4 first:mt-0 last:mb-0 rounded-md border border-danger-100/30 bg-danger-bg/40 p-3">
-        <p className="mb-2 text-[length:var(--fs-sm)] font-medium text-danger-100">Mermaid render failed</p>
-        <CodeBlock code={code} language="mermaid" />
-      </div>
-    )
-  }
-
-  if (!svg) {
-    return (
-      <div
-        className="my-4 first:mt-0 last:mb-0 flex min-h-40 items-center justify-center"
-        aria-label="Rendering diagram"
-      >
-        <span className="h-4 w-4 animate-spin rounded-full border-2 border-text-400/25 border-t-text-400" />
-      </div>
-    )
-  }
-
-  return (
-    <div
-      className={`group/mermaid relative my-4 first:mt-0 last:mb-0 overflow-hidden ${preferTouchUi ? 'focus:outline-none' : ''}`}
-      tabIndex={preferTouchUi ? 0 : undefined}
-      onClick={preferTouchUi ? handleContainerClick : undefined}
-      onBlur={preferTouchUi ? handleContainerBlur : undefined}
-    >
-      <div
-        className={`absolute right-2 top-2 z-10 flex items-center gap-1 opacity-0 transition-opacity group-hover/mermaid:opacity-100 group-focus-within/mermaid:opacity-100 ${preferTouchUi ? '[@media(hover:none)]:opacity-0' : '[@media(hover:none)]:opacity-100'}`}
-        onMouseDown={event => event.preventDefault()}
-      >
-        <CopyButton text={code} position="static" className={`!h-8 !w-8 !p-2 ${MERMAID_CONTROL_BUTTON_BASE_CLASS}`} />
-        {preferTouchUi && (
-          <button
-            type="button"
-            className={`${MERMAID_CONTROL_BUTTON_CLASS} ${isTouchPanEnabled ? 'ring-1 ring-accent-main-100/60 !text-accent-main-100' : ''}`}
-            onClick={() => setIsTouchPanEnabled(current => !current)}
-            title={isTouchPanEnabled ? 'Disable diagram pan' : 'Enable diagram pan'}
-            aria-label={isTouchPanEnabled ? 'Disable diagram pan' : 'Enable diagram pan'}
-            aria-pressed={isTouchPanEnabled}
-          >
-            <HandIcon />
-          </button>
-        )}
-        {!preferTouchUi && (
-          <>
-            <button
-              type="button"
-              className={MERMAID_CONTROL_BUTTON_CLASS}
-              onClick={() => zoomBy(-MERMAID_SCALE_STEP)}
-              disabled={scale <= MERMAID_MIN_SCALE}
-              title="Zoom out"
-              aria-label="Zoom out diagram"
-            >
-              <ZoomOutIcon />
-            </button>
-            <button
-              type="button"
-              className={MERMAID_CONTROL_BUTTON_CLASS}
-              onClick={() => zoomBy(MERMAID_SCALE_STEP)}
-              disabled={scale >= MERMAID_MAX_SCALE}
-              title="Zoom in"
-              aria-label="Zoom in diagram"
-            >
-              <ZoomInIcon />
-            </button>
-          </>
-        )}
-        <button
-          type="button"
-          className={MERMAID_CONTROL_BUTTON_CLASS}
-          onClick={resetView}
-          title="Reset view"
-          aria-label="Reset diagram view"
-        >
-          <RetryIcon />
-        </button>
-      </div>
-      <div
-        className={`mermaid-diagram min-h-40 min-w-fit select-none overflow-hidden p-1 [&_svg]:max-w-full [&_svg]:h-auto ${supportsTouchGestures && !isTouchPanEnabled ? 'cursor-default touch-pan-y' : 'cursor-grab touch-none active:cursor-grabbing'}`}
-        role="img"
-        aria-label="Mermaid diagram"
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerEnd}
-        onPointerCancel={handlePointerEnd}
-        style={{
-          transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
-          transformOrigin: 'top left',
-        }}
-        dangerouslySetInnerHTML={{ __html: scopedSvg }}
-      />
-    </div>
-  )
-})
 
 // ─── Markdown Table (React) ─────────────────────────────────────
 
@@ -581,18 +280,21 @@ function MarkdownTableCell({
   children,
   isHeader,
   isReasoning,
+  align,
 }: {
   children: React.ReactNode
   isHeader: boolean
   isReasoning: boolean
+  align?: 'left' | 'center' | 'right' | null
 }) {
+  const alignClass = align === 'center' ? 'text-center' : align === 'right' ? 'text-right' : 'text-left'
   if (isHeader) {
     return (
       <th
-        className={isReasoning
-          ? 'px-3 py-1.5 text-left text-[length:var(--fs-sm)] font-medium whitespace-nowrap border-b border-border-200/32'
-          : 'relative px-3 py-2.5 text-left text-[length:var(--fs-md)] font-semibold whitespace-nowrap border-b border-border-200/38'
-        }
+        className={`${isReasoning
+          ? 'px-3 py-1.5 text-[length:var(--fs-sm)] font-medium whitespace-nowrap border-b border-border-200/32'
+          : 'relative px-3 py-2.5 text-[length:var(--fs-md)] font-semibold whitespace-nowrap border-b border-border-200/38'
+        } ${alignClass}`}
       >
         {children}
       </th>
@@ -600,10 +302,10 @@ function MarkdownTableCell({
   }
   return (
     <td
-      className={isReasoning
+      className={`${isReasoning
         ? 'px-3 py-1.5 text-[length:var(--fs-sm)] text-text-300 w-max border-b border-border-200/18'
         : 'px-3 py-2 text-[length:var(--fs-md)] text-text-300 leading-[1.55] w-max border-b border-border-200/14'
-      }
+      } ${alignClass}`}
     >
       {children}
     </td>
@@ -642,7 +344,7 @@ function renderTableFromSrc(src: string, isReasoning: boolean): React.ReactNode 
           {tableToken.header.map((cell, i) => {
             const isLastHeader = i === tableToken.header.length - 1
             return (
-              <MarkdownTableCell key={i} isHeader isReasoning={isReasoning}>
+              <MarkdownTableCell key={i} isHeader isReasoning={isReasoning} align={cell.align}>
                 {isLastHeader && copyText && !isReasoning ? (
                   <>
                     <span className="block pr-8">
@@ -670,7 +372,7 @@ function renderTableFromSrc(src: string, isReasoning: boolean): React.ReactNode 
         {tableToken.rows.map((row, rowIndex) => (
           <MarkdownTableRow key={rowIndex} isReasoning={isReasoning}>
             {row.map((cell, cellIndex) => (
-              <MarkdownTableCell key={cellIndex} isHeader={false} isReasoning={isReasoning}>
+              <MarkdownTableCell key={cellIndex} isHeader={false} isReasoning={isReasoning} align={cell.align}>
                 {cell.tokens ? renderInlineTokensToReact(cell.tokens, isReasoning) : cell.text}
               </MarkdownTableCell>
             ))}
@@ -1262,17 +964,26 @@ const MarkdownDomBlock = memo(function MarkdownDomBlock({
   isReasoning,
   isLive,
   renderHtml,
+  enableFade = true,
 }: {
   src: string
   isReasoning: boolean
   isLive?: boolean
   renderHtml: boolean
+  enableFade?: boolean
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const appliedHtmlRef = useRef<string | null>(null)
   const appliedSrcRef = useRef<string | null>(null)
-  // useSmoothMarkdownStream 上游已做 rAF 平滑，这里不再叠 useDeferredValue：
-  // 双重延迟会让 React 18 concurrent 每帧跑两轮协调（紧急+deferred），流式帧时长翻倍。
+  const lastLiveTextRef = useRef<{ node: Text | null }>({ node: null })
+  const fadeStateRef = useRef(createStreamFadeState())
+  const lastFullParseAtRef = useRef(0)
+  const latestSrcRef = useRef(src)
+  const largeBlockNoteRef = useRef(false)
+  // worker 里按块合并解析请求用的稳定 key
+  const parseKey = useId()
+  // 上游已按节奏揭示文本，这里不再叠 useDeferredValue：
+  // 双重延迟会让 React concurrent 每帧跑两轮协调（紧急+deferred），流式帧时长翻倍。
   const renderSrc = src
 
   useEffect(() => {
@@ -1291,9 +1002,38 @@ const MarkdownDomBlock = memo(function MarkdownDomBlock({
     }
   }, [])
 
+  useEffect(() => () => resetStreamFade(fadeStateRef.current), [])
+
   useLayoutEffect(() => {
     const root = rootRef.current
     if (!root) return
+
+    latestSrcRef.current = renderSrc
+
+    // 诊断：单块长到几百 KB 才值得考虑行级窗口化，平时不必为此增加复杂度
+    if (!largeBlockNoteRef.current && renderSrc.length > LARGE_BLOCK_WORKER_MIN_CHARS * 4) {
+      largeBlockNoteRef.current = true
+      notePerf('markdown.block.large', `${renderSrc.length} chars`)
+    }
+
+    const applyHtml = (html: string) => {
+      if (appliedHtmlRef.current !== html) {
+        appliedHtmlRef.current = html
+        lastLiveTextRef.current.node = null
+        measurePerf('markdown.morph', () => applyMarkdownHtml(root, html), 6)
+      }
+      appliedSrcRef.current = renderSrc
+    }
+
+    // 同步兜底用的限频：worker 不可用时，超大块不跟满每一拍
+    const canSyncParseLarge = () => {
+      const now = performance.now()
+      const interval =
+        LARGE_LIVE_PARSE_INTERVAL_MS * Math.max(1, Math.ceil(renderSrc.length / LARGE_LIVE_PARSE_SCALE_CHARS))
+      if (now - lastFullParseAtRef.current < interval) return false
+      lastFullParseAtRef.current = now
+      return true
+    }
 
     // live 纯文本追加：跳过 parse + morphdom，只改最后一个 Text 节点
     const prevSrc = appliedSrcRef.current
@@ -1304,26 +1044,67 @@ const MarkdownDomBlock = memo(function MarkdownDomBlock({
       renderSrc.startsWith(prevSrc)
     ) {
       const suffix = renderSrc.slice(prevSrc.length)
-      if (canAppendLiveMarkdownSuffix(suffix) && tryAppendLiveText(root, suffix)) {
-        appliedSrcRef.current = renderSrc
-        // 文本已偏离开 html 快照，强制后续全量路径重算
-        appliedHtmlRef.current = null
+      if (canAppendLiveMarkdownSuffix(suffix)) {
+        // 优先做尾部淡入（每个节拍一个短命 span）；环境不支持时退回纯文本追加
+        if (enableFade && appendStreamingTextWithFade(root, suffix, fadeStateRef.current)) {
+          appliedSrcRef.current = renderSrc
+          appliedHtmlRef.current = null
+          lastLiveTextRef.current.node = null
+          return
+        }
+        if (tryAppendLiveText(root, suffix, lastLiveTextRef.current)) {
+          appliedSrcRef.current = renderSrc
+          // 文本已偏离开 html 快照，强制后续全量路径重算
+          appliedHtmlRef.current = null
+          return
+        }
+      }
+    }
+
+    // 全量 parse 会替换整个子树，先取消还没结算的淡入 span
+    resetStreamFade(fadeStateRef.current)
+
+    if (renderSrc.length > LARGE_BLOCK_WORKER_MIN_CHARS) {
+      const cached = peekCachedHtml(renderSrc, isReasoning, renderHtml)
+      if (cached !== undefined) {
+        applyHtml(cached)
         return
+      }
+
+      // 已经渲染过内容才交给 worker：首次挂载保持同步解析，避免空块造成高度跳动
+      if (root.hasChildNodes()) {
+        let cancelled = false
+        void parseMarkdownInWorker({ key: parseKey, src: renderSrc, isReasoning, renderHtml }).then(result => {
+          if (cancelled || latestSrcRef.current !== renderSrc) return
+          if (result.status === 'superseded') return
+          if (result.status === 'unavailable') {
+            if (isLive && !canSyncParseLarge()) return
+            applyHtml(getCachedHtml(renderSrc, isReasoning, renderHtml))
+            return
+          }
+          if (result.src !== renderSrc) return
+          const html = renderHtml ? sanitizeHtml(result.html) : result.html
+          if (!isLive) cacheHtml(renderSrc, isReasoning, renderHtml, html)
+          applyHtml(html)
+        })
+        return () => {
+          cancelled = true
+          cancelMarkdownParse(parseKey)
+        }
       }
     }
 
     // live 中间态不进 htmlCache（避免 64 槽被流式碎片挤爆）；稳定块才缓存
     const html = isLive
-      ? renderMarkdownToHtml(renderSrc, isReasoning, renderHtml)
+      ? measurePerf(
+          'markdown.parse.live',
+          () => renderMarkdownToHtml(renderSrc, isReasoning, renderHtml),
+          8,
+          `${renderSrc.length} chars`,
+        )
       : getCachedHtml(renderSrc, isReasoning, renderHtml)
-    if (appliedHtmlRef.current === html) {
-      appliedSrcRef.current = renderSrc
-      return
-    }
-    appliedHtmlRef.current = html
-    appliedSrcRef.current = renderSrc
-    applyMarkdownHtml(root, html)
-  }, [renderSrc, isReasoning, isLive, renderHtml])
+    applyHtml(html)
+  }, [renderSrc, isReasoning, isLive, renderHtml, parseKey])
 
   const handleClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     if (event.defaultPrevented) return
@@ -1406,6 +1187,7 @@ const MarkdownStreamBlock = memo(function MarkdownStreamBlock({
   isReasoning,
   isStreaming,
   renderHtml,
+  enableFade,
 }: {
   src: string
   mode: 'full' | 'live' | 'code' | 'table'
@@ -1414,9 +1196,28 @@ const MarkdownStreamBlock = memo(function MarkdownStreamBlock({
   isReasoning: boolean
   isStreaming: boolean
   renderHtml: boolean
+  enableFade: boolean
 }) {
   // 流式高亮/未完成态只对「未闭合 code」或 live 有意义；稳定 full 块 isStreaming 恒 false 以冻 memo
   const streamActive = isStreaming && (mode === 'live' || (mode === 'code' && !complete))
+
+  const { t } = useTranslation('common')
+  const responsiveMaxHeight = useResponsiveMaxHeight()
+  const markdownCodeFoldEnabled = useMarkdownCodeFoldEnabled()
+  const isMermaidCode = language?.toLowerCase() === 'mermaid'
+  const isHtmlCode = renderHtml && isMarkupPreviewLanguage(language)
+  // 长代码块折叠：可见高度沿用工具块的响应式上限，超过两倍才折
+  const foldable =
+    markdownCodeFoldEnabled && mode === 'code' && !isReasoning && !streamActive && !isMermaidCode && !isHtmlCode
+  const lineCount = useMemo(() => (foldable ? src.split('\n').length : 0), [foldable, src])
+  const foldThreshold = Math.max(20, Math.floor(responsiveMaxHeight / 24) * 2)
+  const canFold = foldable && lineCount > foldThreshold
+  const foldKey = useMemo(
+    () => (canFold ? markdownCodeStateKey(src) : 'markdown-code:off'),
+    [canFold, src],
+  )
+  const [folded, setFolded] = useUiDisclosureState(foldKey, true)
+  const displayFolded = canFold && folded
 
   if (mode === 'table') {
     return (
@@ -1431,7 +1232,7 @@ const MarkdownStreamBlock = memo(function MarkdownStreamBlock({
       return (
         <div className="markdown-stream-block">
           <div className={MARKDOWN_BLOCK_CONTENT_CLASS}>
-            <MarkdownMermaid code={src} isIncomplete={streamActive} />
+            <MermaidBlock code={src} isIncomplete={streamActive} />
           </div>
         </div>
       )
@@ -1461,6 +1262,10 @@ const MarkdownStreamBlock = memo(function MarkdownStreamBlock({
               wordwrap={isReasoning}
               forceHighlight={streamActive}
               streamingHighlight={streamActive}
+              folded={displayFolded}
+              maxHeight={displayFolded ? responsiveMaxHeight : undefined}
+              onToggleFold={canFold ? () => setFolded(!folded) : undefined}
+              foldLabel={{ expand: t('expand'), collapse: t('collapse') }}
             />
           </div>
         </div>
@@ -1506,51 +1311,18 @@ const MarkdownStreamBlock = memo(function MarkdownStreamBlock({
 
   return (
     <div className="markdown-stream-block">
-      <MarkdownDomBlock src={src} isReasoning={isReasoning} isLive={mode === 'live'} renderHtml={renderHtml} />
+      <MarkdownDomBlock
+        src={src}
+        isReasoning={isReasoning}
+        isLive={mode === 'live'}
+        renderHtml={renderHtml}
+        enableFade={enableFade}
+      />
     </div>
   )
 })
 
 // ─── Smooth stream ──────────────────────────────────────────────
-
-function useSmoothMarkdownStream(content: string, enabled: boolean) {
-  const [displayedContent, setDisplayedContent] = useState(content)
-  const displayedRef = useRef(content)
-  const targetRef = useRef(content)
-  const rafRef = useRef<number | null>(null)
-
-  const stop = useCallback(() => {
-    if (rafRef.current !== null) cancelAnimationFrame(rafRef.current)
-    rafRef.current = null
-  }, [])
-
-  useEffect(() => {
-    if (!enabled) {
-      stop()
-      if (displayedRef.current !== content) {
-        displayedRef.current = content
-        setDisplayedContent(content)
-      }
-      return
-    }
-
-    targetRef.current = content
-    if (content === displayedRef.current) return
-
-    if (rafRef.current !== null) return
-
-    rafRef.current = requestAnimationFrame(() => {
-      rafRef.current = null
-      const target = targetRef.current
-      if (target === displayedRef.current) return
-      displayedRef.current = target
-      setDisplayedContent(target)
-    })
-    return stop
-  }, [content, enabled, stop])
-
-  return displayedContent
-}
 
 // ─── Main Renderer ──────────────────────────────────────────────
 
@@ -1563,13 +1335,24 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   const isReasoning = variant === 'reasoning'
   const projectionKey = useId()
   const renderHtml = useRenderHtmlContent()
+  const streamPacingEnabled = useStreamPacingEnabled()
+  const streamFadeEnabled = useStreamFadeEnabled()
   const renderHtmlImmediately = isStreaming && renderHtml && STREAMING_HTML_CONTENT_PATTERN.test(content)
-  const smoothedContent = useSmoothMarkdownStream(content, isStreaming && !renderHtmlImmediately)
-  const renderedContent = renderHtmlImmediately ? content : isStreaming ? smoothedContent : content
+  const smoothedContent = usePacedStreamContent(
+    content,
+    isStreaming && !renderHtmlImmediately && streamPacingEnabled,
+  )
+  const renderedContent = isStreaming ? smoothedContent : content
   const streamBlocks = useMemo(() => {
-    const projection = projectMarkdownStream(markdownProjectionCache.get(projectionKey), renderedContent, isStreaming)
+    if (!isStreaming) return getStaticProjection(renderedContent).blocks
+    const projection = projectMarkdownStream(markdownProjectionCache.get(projectionKey), renderedContent, true)
     markdownProjectionCache.set(projectionKey, projection)
-    return projection.blocks
+    // 行内语法没闭合时先不渲染最后那一段，避免 ** / ` / ~~ 闪一下字面量
+    return projection.blocks.map(block => {
+      if (block.mode !== 'live' || !block.src) return block
+      const trimmed = trimUnstableInlineTail(block.src)
+      return trimmed === block.src ? block : { ...block, src: trimmed }
+    })
   }, [projectionKey, renderedContent, isStreaming])
 
   useEffect(() => {
@@ -1591,6 +1374,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
           complete={block.complete}
           isReasoning={isReasoning}
           renderHtml={renderHtml}
+          enableFade={streamFadeEnabled}
           isStreaming={
             isStreaming && (block.mode === 'live' || (block.mode === 'code' && !block.complete))
           }
